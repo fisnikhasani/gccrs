@@ -18,7 +18,10 @@
 
 #include "optional.h"
 #include "rust-common.h"
+#include "rust-diagnostics.h"
 #include "rust-hir-expr.h"
+#include "rust-hir-map.h"
+#include "rust-rib.h"
 #include "rust-system.h"
 #include "rust-tyty-call.h"
 #include "rust-hir-type-check-struct-field.h"
@@ -31,11 +34,10 @@
 #include "rust-hir-type-check-stmt.h"
 #include "rust-hir-type-check-item.h"
 #include "rust-type-util.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 #include "rust-compile-base.h"
 #include "rust-tyty-util.h"
 #include "rust-tyty.h"
-#include "tree.h"
 
 namespace Rust {
 namespace Resolver {
@@ -198,9 +200,23 @@ TypeCheckExpr::visit (HIR::ReturnExpr &expr)
 			    ? expr.get_expr ().get_locus ()
 			    : expr.get_locus ();
 
-  TyTy::BaseType *expr_ty = expr.has_return_expr ()
-			      ? TypeCheckExpr::Resolve (expr.get_expr ())
-			      : TyTy::TupleType::get_unit_type ();
+  // Push expected type so the resolver of the return expression
+  // inference before checking its arguments which is needed
+  // for things like:
+  //
+  //    return Try::from_error(...)
+  //
+  // Where Self has to bind from the fn return type before the param
+  // projection can be normalized.
+  TyTy::BaseType *expr_ty;
+  if (expr.has_return_expr ())
+    {
+      context->push_expected_type (fn_return_tyty);
+      expr_ty = TypeCheckExpr::Resolve (expr.get_expr ());
+      context->pop_expected_type ();
+    }
+  else
+    expr_ty = TyTy::TupleType::get_unit_type ();
 
   coercion_site (expr.get_mappings ().get_hirid (),
 		 TyTy::TyWithLocation (fn_return_tyty),
@@ -273,49 +289,48 @@ TypeCheckExpr::visit (HIR::CallExpr &expr)
 
   infered = TyTy::TypeCheckCallExpr::go (function_tyty, expr, variant, context);
 
+  // Pre-GATS: associated types were PlaceholderType; post-GATS they are
+  // ProjectionType, this hHandle both so the isize special-case still fires
   auto discriminant_type_lookup
     = mappings.lookup_lang_item (LangItem::Kind::DISCRIMINANT_TYPE);
-  if (infered->is<TyTy::PlaceholderType> () && discriminant_type_lookup)
+  bool is_discriminant_type = false;
+  if (discriminant_type_lookup)
     {
-      const auto &p = *static_cast<const TyTy::PlaceholderType *> (infered);
-      if (p.get_def_id () == discriminant_type_lookup.value ())
+      if (auto *p = infered->try_as<TyTy::PlaceholderType> ())
+	is_discriminant_type
+	  = p->get_def_id () == discriminant_type_lookup.value ();
+      else if (auto *p = infered->try_as<TyTy::ProjectionType> ())
+	is_discriminant_type
+	  = p->get_item_defid () == discriminant_type_lookup.value ();
+    }
+  if (is_discriminant_type)
+    {
+      // This is a special case: discriminant_value returns the repr of the
+      // enum. We don't currently support repr on enum yet, so the default
+      // is always isize.
+      bool ok = context->lookup_builtin ("isize", &infered);
+      rust_assert (ok);
+
+      rust_assert (function_tyty->is<TyTy::FnType> ());
+      auto &fn = *static_cast<TyTy::FnType *> (function_tyty);
+      rust_assert (fn.has_substitutions ());
+      rust_assert (fn.get_num_type_params () == 1);
+      auto &mapping = fn.get_substs ().at (0);
+      auto param_ty = mapping.get_param_ty ();
+
+      if (!param_ty->can_resolve ())
 	{
-	  // this is a special case where this will actually return the repr of
-	  // the enum. We dont currently support repr on enum yet to change the
-	  // discriminant type but the default is always isize. We need to
-	  // assert this is a generic function with one param
-	  //
-	  // fn<BookFormat> (v & T=BookFormat{Paperback) -> <placeholder:>
-	  //
-	  // note the default is isize
+	  rust_internal_error_at (expr.get_locus (),
+				  "something wrong computing return type");
+	  return;
+	}
 
-	  bool ok = context->lookup_builtin ("isize", &infered);
-	  rust_assert (ok);
-
-	  rust_assert (function_tyty->is<TyTy::FnType> ());
-	  auto &fn = *static_cast<TyTy::FnType *> (function_tyty);
-	  rust_assert (fn.has_substitutions ());
-	  rust_assert (fn.get_num_type_params () == 1);
-	  auto &mapping = fn.get_substs ().at (0);
-	  auto param_ty = mapping.get_param_ty ();
-
-	  if (!param_ty->can_resolve ())
-	    {
-	      // this could be a valid error need to test more weird cases and
-	      // look at rustc
-	      rust_internal_error_at (expr.get_locus (),
-				      "something wrong computing return type");
-	      return;
-	    }
-
-	  auto resolved = param_ty->resolve ();
-	  bool is_adt = resolved->is<TyTy::ADTType> ();
-	  if (is_adt)
-	    {
-	      const auto &adt = *static_cast<TyTy::ADTType *> (resolved);
-	      infered = adt.get_repr_options ().repr;
-	      rust_assert (infered != nullptr);
-	    }
+      auto resolved = param_ty->resolve ();
+      if (resolved->is<TyTy::ADTType> ())
+	{
+	  const auto &adt = *static_cast<TyTy::ADTType *> (resolved);
+	  infered = adt.get_repr_options ().repr;
+	  rust_assert (infered != nullptr);
 	}
     }
 }
@@ -622,6 +637,10 @@ TypeCheckExpr::visit (HIR::BlockExpr &expr)
     context->push_new_loop_context (expr.get_mappings ().get_hirid (),
 				    expr.get_locus ());
 
+  // Forward the caller's expected type to the block's tail expression only.
+  TyTy::BaseType *outer_expected = context->peek_expected_type ();
+  context->push_expected_type (nullptr);
+
   for (auto &s : expr.get_statements ())
     {
       if (!s->is_item ())
@@ -639,6 +658,7 @@ TypeCheckExpr::visit (HIR::BlockExpr &expr)
       if (resolved == nullptr)
 	{
 	  rust_error_at (s->get_locus (), "failure to resolve type");
+	  context->pop_expected_type ();
 	  return;
 	}
 
@@ -651,8 +671,14 @@ TypeCheckExpr::visit (HIR::BlockExpr &expr)
 	}
     }
 
+  context->pop_expected_type ();
+
   if (expr.has_expr ())
-    infered = TypeCheckExpr::Resolve (expr.get_final_expr ())->clone ();
+    {
+      context->push_expected_type (outer_expected);
+      infered = TypeCheckExpr::Resolve (expr.get_final_expr ())->clone ();
+      context->pop_expected_type ();
+    }
   else if (expr.is_tail_reachable ())
     infered = TyTy::TupleType::get_unit_type ();
   else if (expr.has_label ())
@@ -1466,7 +1492,6 @@ TypeCheckExpr::visit (HIR::MethodCallExpr &expr)
       return;
     }
 
-  fn->prepare_higher_ranked_bounds ();
   rust_debug_loc (expr.get_locus (), "resolved method call to: {%u} {%s}",
 		  found_candidate.candidate.ty->get_ref (),
 		  found_candidate.candidate.ty->debug_str ().c_str ());
@@ -1491,10 +1516,7 @@ TypeCheckExpr::visit (HIR::MethodCallExpr &expr)
 	}
 
       if (!infer_arguments.is_empty ())
-	{
-	  lookup = SubstMapperInternal::Resolve (lookup, infer_arguments);
-	  lookup->debug ();
-	}
+	lookup = SubstMapperInternal::Resolve (lookup, infer_arguments);
     }
 
   // apply any remaining generic arguments
@@ -1535,11 +1557,11 @@ TypeCheckExpr::visit (HIR::MethodCallExpr &expr)
   // store the expected fntype
   context->insert_type (expr.get_method_name ().get_mappings (), lookup);
 
-  auto &nr_ctx = const_cast<Resolver2_0::NameResolutionContext &> (
-    Resolver2_0::ImmutableNameResolutionContext::get ().resolver ());
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   nr_ctx.map_usage (Resolver2_0::Usage (expr.get_mappings ().get_nodeid ()),
-		    Resolver2_0::Definition (resolved_node_id));
+		    Resolver2_0::Definition (resolved_node_id),
+		    Resolver2_0::Namespace::Values);
 
   // return the result of the function back
   infered = function_ret_tyty;
@@ -1885,10 +1907,9 @@ TypeCheckExpr::visit (HIR::ClosureExpr &expr)
   // Resolve closure captures
 
   std::set<NodeId> captures;
-  auto &nr_ctx = const_cast<Resolver2_0::NameResolutionContext &> (
-    Resolver2_0::ImmutableNameResolutionContext::get ().resolver ());
 
-  if (auto opt_cap = nr_ctx.mappings.lookup_captures (closure_node_id))
+  if (auto opt_cap
+      = Analysis::Mappings::get ().lookup_captures (closure_node_id))
     for (auto cap : opt_cap.value ())
       captures.insert (cap);
 
@@ -2137,7 +2158,6 @@ TypeCheckExpr::resolve_operator_overload (
     }
 
   // we found a valid operator overload
-  fn->prepare_higher_ranked_bounds ();
   rust_debug_loc (expr.get_locus (), "resolved operator overload to: {%u} {%s}",
 		  candidate.candidate.ty->get_ref (),
 		  candidate.candidate.ty->debug_str ().c_str ());
@@ -2180,11 +2200,11 @@ TypeCheckExpr::resolve_operator_overload (
   context->insert_operator_overload (expr.get_mappings ().get_hirid (), type);
 
   // set up the resolved name on the path
-  auto &nr_ctx = const_cast<Resolver2_0::NameResolutionContext &> (
-    Resolver2_0::ImmutableNameResolutionContext::get ().resolver ());
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   nr_ctx.map_usage (Resolver2_0::Usage (expr.get_mappings ().get_nodeid ()),
-		    Resolver2_0::Definition (resolved_node_id));
+		    Resolver2_0::Definition (resolved_node_id),
+		    Resolver2_0::Namespace::Types);
 
   // return the result of the function back
   infered = function_ret_tyty;
@@ -2286,12 +2306,8 @@ TypeCheckExpr::resolve_fn_trait_call (HIR::CallExpr &expr,
       return false;
     }
 
-  if (receiver_tyty->get_kind () == TyTy::TypeKind::CLOSURE)
-    {
-      const TyTy::ClosureType &closure
-	= static_cast<TyTy::ClosureType &> (*receiver_tyty);
-      closure.setup_fn_once_output ();
-    }
+  // FnOnce::Output is normalized lazily by normalize_projection's closure
+  // special-case; no explicit setup is required here.
 
   auto candidate = *candidates.begin ();
   rust_debug_loc (expr.get_locus (),
@@ -2376,18 +2392,23 @@ TypeCheckExpr::resolve_fn_trait_call (HIR::CallExpr &expr,
   context->insert_operator_overload (expr.get_mappings ().get_hirid (), fn);
 
   // set up the resolved name on the path
-  auto &nr_ctx = const_cast<Resolver2_0::NameResolutionContext &> (
-    Resolver2_0::ImmutableNameResolutionContext::get ().resolver ());
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
-  auto existing = nr_ctx.lookup (expr.get_mappings ().get_nodeid ());
+  // TODO: What namespace to use for inserting and looking up here? It's a trait
+  // call, so NS::Types is right?
+
+  auto existing = nr_ctx.lookup (expr.get_mappings ().get_nodeid (),
+				 Resolver2_0::Namespace::Types);
   if (existing)
     rust_assert (*existing == resolved_node_id);
   else
     nr_ctx.map_usage (Resolver2_0::Usage (expr.get_mappings ().get_nodeid ()),
-		      Resolver2_0::Definition (resolved_node_id));
+		      Resolver2_0::Definition (resolved_node_id),
+		      Resolver2_0::Namespace::Types);
 
   // return the result of the function back
-  *result = function_ret_tyty;
+  auto mono = function_ret_tyty->monomorphized_clone ();
+  *result = mono;
 
   return true;
 }

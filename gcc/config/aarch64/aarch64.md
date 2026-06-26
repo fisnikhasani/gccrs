@@ -162,7 +162,7 @@
     ;; actual contents of ZA and PSTATE.ZA with the current function's
     ;; ZA_REGNUM and SME_STATE_REGNUM.  Conceptually, these extra writes
     ;; do not change the value of SME_STATE_REGNUM.  They simply act as
-    ;; sequencing points.  They means that all direct accesses to ZA can
+    ;; sequencing points.  They mean that all direct accesses to ZA can
     ;; depend only on ZA_REGNUM and SME_STATE_REGNUM, rather than also
     ;; depending on ZA_SAVED_REGNUM etc.
     (SME_STATE_REGNUM 89)
@@ -393,6 +393,7 @@
     UNSPEC_SYSREG_WTI
     UNSPEC_PLDX
     UNSPEC_PLDIR
+    UNSPEC_PLDX_RANGE
     ;; Represents an SVE-style lane index, in which the indexing applies
     ;; within the containing 128-bit block.
     UNSPEC_SVE_LANE_SELECT
@@ -400,6 +401,7 @@
     UNSPEC_SVE_PREFETCH
     UNSPEC_SVE_PREFETCH_GATHER
     UNSPEC_SVE_COMPACT
+    UNSPEC_SVE_EXPAND
     UNSPEC_SVE_SPLICE
     UNSPEC_GEN_TAG		; Generate a 4-bit MTE tag.
     UNSPEC_GEN_TAG_RND		; Generate a random 4-bit MTE tag.
@@ -502,7 +504,7 @@
 ;; Q registers and is equivalent to "simd".
 
 (define_enum "arches" [any rcpc8_4 fp fp_q base_simd nobase_simd
-		       simd nosimd sve fp16 sme cssc])
+		       simd nosimd sve fp16 sme cssc fprcvt sve2p2_or_sme2p2])
 
 (define_enum_attr "arch" "arches" (const_string "any"))
 
@@ -581,7 +583,13 @@
 	     (match_test "TARGET_SVE"))
 
 	(and (eq_attr "arch" "sme")
-	     (match_test "TARGET_SME"))))
+	     (match_test "TARGET_SME"))
+
+	(and (eq_attr "arch" "sve2p2_or_sme2p2")
+	     (match_test "TARGET_SVE2p2_OR_SME2p2"))
+
+	(and (eq_attr "arch" "fprcvt")
+	     (match_test "TARGET_FPRCVT"))))
     (const_string "yes")
     (const_string "no")))
 
@@ -1381,6 +1389,15 @@
   [(set_attr "type" "load_4")]
 )
 
+(define_insn "aarch64_rprfm"
+  [(unspec [(match_operand 0 "" "")
+	    (match_operand:DI 1 "aarch64_prefetch_operand" "Dp")
+	    (match_operand:DI 2 "memory_operand" "Q")] UNSPEC_PLDX_RANGE)]
+  ""
+  "rprfm\\t%0, %1, %2"
+  [(set_attr "type" "load_4")]
+)
+
 (define_insn "trap"
   [(trap_if (const_int 1) (const_int 8))]
   ""
@@ -1819,7 +1836,7 @@
      [r, r   ; mov_reg  , *   , 4] mov\t%x0, %x1
      [k, r   ; mov_reg  , *   , 4] mov\t%0, %x1
      [r, k   ; mov_reg  , *   , 4] mov\t%x0, %1
-     [r, O   ; mov_imm  , *   , 4] << aarch64_is_mov_xn_imm (INTVAL (operands[1])) ? "mov\t%x0, %1" : "mov\t%w0, %1";
+     [r, O   ; mov_imm  , *   , 4] << aarch64_output_move_imm (operands[1]);
      [r, n   ; mov_imm  , *   ,16] #
      /* The "mov_imm" type for CNT is just a placeholder.  */
      [r, Usv ; mov_imm  , sve , 4] << aarch64_output_sve_cnt_immediate ("cnt", "%x0", operands[1]);
@@ -2055,7 +2072,7 @@
      [ r        , m   ; load_8      , *     ] ldr\t%x0, %1
      [ m        , rY  ; store_8     , *     ] str\t%x1, %0
      [ r        , r   ; mov_reg     , *     ] mov\t%x0, %x1
-     [ r        , O   ; fconstd     , *     ] << aarch64_is_mov_xn_imm (INTVAL (operands[1])) ? "mov\t%x0, %1" : "mov\t%w0, %1";
+     [ r        , O   ; fconstd     , *     ] << aarch64_output_move_imm (operands[1]);
   }
 )
 
@@ -3152,8 +3169,8 @@
 (define_insn "*adds_<optab><ALLX:mode>_shift_<GPI:mode>"
   [(set (reg:CC_NZ CC_REGNUM)
 	(compare:CC_NZ
-	 (plus:GPI (ashift:GPI 
-		    (ANY_EXTEND:GPI 
+	 (plus:GPI (ashift:GPI
+		    (ANY_EXTEND:GPI
 		     (match_operand:ALLX 1 "register_operand" "r"))
 		    (match_operand 2 "aarch64_imm3" "Ui3"))
 		   (match_operand:GPI 3 "register_operand" "rk"))
@@ -3171,7 +3188,7 @@
   [(set (reg:CC_NZ CC_REGNUM)
 	(compare:CC_NZ
 	 (minus:GPI (match_operand:GPI 1 "register_operand" "rk")
-		    (ashift:GPI 
+		    (ashift:GPI
 		     (ANY_EXTEND:GPI
 		      (match_operand:ALLX 2 "register_operand" "r"))
 		     (match_operand 3 "aarch64_imm3" "Ui3")))
@@ -4534,7 +4551,7 @@
 
 ;; umax (a, add (a, b)) => [sum, ovf] = adds (a, b); !ovf ? sum : a
 ;; umin (a, add (a, b)) => [sum, ovf] = adds (a, b); !ovf ? a : sum
-;; ... and the commutated versions:
+;; ... and the commuted versions:
 ;; umax (a, add (b, a)) => [sum, ovf] = adds (b, a); !ovf ? sum : a
 ;; umin (a, add (b, a)) => [sum, ovf] = adds (b, a); !ovf ? a : sum
 (define_insn_and_split "*aarch64_plus_within_<optab><mode>3_<ovf_commutate>"
@@ -4988,8 +5005,7 @@
     else
       /* Otherwise, generate table-based CRC.  */
       expand_reversed_crc_table_based (operands[0], operands[1], operands[2],
-				       operands[3], <ALLI:MODE>mode,
-				       generate_reflecting_code_standard);
+				       operands[3], <ALLI:MODE>mode);
     DONE;
   }
 )
@@ -5784,6 +5800,11 @@
   ""
   "rbit\\t%<w>0, %<w>1"
   [(set_attr "type" "rbit")]
+)
+
+(define_expand "bitreverse<mode>2"
+  [(set (match_operand:GPI 0 "register_operand")
+	(bitreverse:GPI (match_operand:GPI 1 "register_operand")))]
 )
 
 (define_expand "ffs<mode>2"
@@ -7093,13 +7114,15 @@
 ;; frcvt floating-point round to integer and convert standard patterns.
 ;; Expands to lbtrunc, lceil, lfloor, lround.
 (define_insn "l<fcvt_pattern><su_optab><GPF_F16:mode><GPI:mode>2"
-  [(set (match_operand:GPI 0 "register_operand" "=r")
+  [(set (match_operand:GPI 0 "register_operand")
 	(FIXUORS:GPI
-	  (unspec:GPF_F16 [(match_operand:GPF_F16 1 "register_operand" "w")]
+	  (unspec:GPF_F16 [(match_operand:GPF_F16 1 "register_operand")]
 	   FCVT)))]
-  "TARGET_FLOAT"
-  "fcvt<frint_suffix><su>\\t%<GPI:w>0, %<GPF_F16:s>1"
-  [(set_attr "type" "f_cvtf2i")]
+  ""
+  {@ [ cons: =0 , 1 ; attrs: type , arch   ]
+     [ r        , w ; f_cvtf2i    , fp     ] fcvt<frint_suffix><su>\t%<GPI:w>0, %<GPF_F16:s>1
+     [ w        , w ; f_cvtf2i    , fprcvt ] fcvt<frint_suffix><su>\t%<GPI:v>0, %<GPF_F16:s>1
+  }
 )
 
 (define_insn "*aarch64_fcvt<su_optab><GPF:mode><GPI:mode>2_mult"
@@ -7280,32 +7303,38 @@
 ;; Convert HF -> SI or DI
 
 (define_insn "<optab>_trunchf<GPI:mode>2"
-  [(set (match_operand:GPI 0 "register_operand" "=r")
-	(FIXUORS:GPI (match_operand:HF 1 "register_operand" "w")))]
+  [(set (match_operand:GPI 0 "register_operand")
+	(FIXUORS:GPI (match_operand:HF 1 "register_operand")))]
   "TARGET_FP_F16INST"
-  "fcvtz<su>\t%<w>0, %h1"
-  [(set_attr "type" "f_cvtf2i")]
+  {@ [ cons: =0 , 1 ; attrs: type , arch   ]
+     [ r        , w ; f_cvtf2i    , fp     ] fcvtz<su>\t%<w>0, %h1
+     [ w        , w ; f_cvtf2i    , fprcvt ] fcvtz<su>\t%<s>0, %h1
+  }
 )
 
 ;; Convert DF -> SI or SF -> DI which can only be accomplished with
 ;; input in a fp register and output in a integer register
 
 (define_insn "<optab>_trunc<fcvt_change_mode><GPI:mode>2"
-  [(set (match_operand:GPI 0 "register_operand" "=r")
-	(FIXUORS:GPI (match_operand:<FCVT_CHANGE_MODE> 1 "register_operand" "w")))]
+  [(set (match_operand:GPI 0 "register_operand")
+	(FIXUORS:GPI (match_operand:<FCVT_CHANGE_MODE> 1 "register_operand")))]
   "TARGET_FLOAT"
-  "fcvtz<su>\t%<w>0, %<fpw>1"
-  [(set_attr "type" "f_cvtf2i")]
+  {@ [ cons: =0 , 1 ; attrs: type      , arch   ]
+     [ r        , w ; f_cvtf2i         , fp     ] fcvtz<su>\t%<w>0, %<fpw>1
+     [ w        , w ; f_cvtf2i         , fprcvt ] fcvtz<su>\t%<s>0, %<fpw>1
+  }
 )
 
 (define_insn "*fix_to_zero_extend<mode>di2"
-  [(set (match_operand:DI 0 "register_operand" "=r")
+  [(set (match_operand:DI 0 "register_operand")
 	(zero_extend:DI
 	 (unsigned_fix:SI
-	  (match_operand:GPF 1 "register_operand" "w"))))]
+	  (match_operand:GPF 1 "register_operand"))))]
   "TARGET_FLOAT"
-  "fcvtzu\t%w0, %<s>1"
-  [(set_attr "type" "f_cvtf2i")]
+  {@ [ cons: =0 , 1 ; attrs: type      , arch   ]
+     [ r        , w ; f_cvtf2i         , fp     ] fcvtzu\t%w0, %<s>1
+     [ w        , w ; f_cvtf2i         , fprcvt ] fcvtzu\t%s0, %<s>1
+  }
 )
 
 ;; Equal width integer to fp and multiply combine.
@@ -7358,10 +7387,13 @@
 
 ;; Unequal width integer to fp conversions.
 (define_insn "<optab><fcvt_iesize><GPF:mode>2"
-  [(set (match_operand:GPF 0 "register_operand" "=w")
-        (FLOATUORS:GPF (match_operand:<FCVT_IESIZE> 1 "register_operand" "r")))]
+  [(set (match_operand:GPF 0 "register_operand")
+	(FLOATUORS:GPF (match_operand:<FCVT_IESIZE> 1 "register_operand")))]
   "TARGET_FLOAT"
-  "<su_optab>cvtf\t%<GPF:s>0, %<w2>1"
+  {@ [ cons: =0 , 1 ; attrs: type      , arch   ]
+     [ w        , r ; f_cvti2f         , fp     ] <su_optab>cvtf\t%<GPF:s>0, %<w2>1
+     [ w        , w ; f_cvti2f         , fprcvt ] <su_optab>cvtf\t%<GPF:s>0, %<fpw>1
+  }
   [(set_attr "type" "f_cvti2f")]
 )
 
@@ -7373,11 +7405,13 @@
 ;; of the mid-end logic.
 
 (define_insn "aarch64_fp16_<optab><mode>hf2"
-  [(set (match_operand:HF 0 "register_operand" "=w")
-	(FLOATUORS:HF (match_operand:GPI 1 "register_operand" "r")))]
+  [(set (match_operand:HF 0 "register_operand")
+	(FLOATUORS:HF (match_operand:GPI 1 "register_operand")))]
   "TARGET_FP_F16INST"
-  "<su_optab>cvtf\t%h0, %<w>1"
-  [(set_attr "type" "f_cvti2f")]
+  {@ [ cons: =0 , 1 ; attrs: type , arch   ]
+     [ w        , r ; f_cvti2f    , fp     ] <su_optab>cvtf\t%h0, %<w>1
+     [ w        , w ; f_cvti2f    , fprcvt ] <su_optab>cvtf\t%h0, %<v>1
+  }
 )
 
 (define_expand "<optab>sihf2"
@@ -8119,11 +8153,10 @@
   {
     if (TARGET_SVE)
       {
-	rtx abi = aarch64_gen_callee_cookie (AARCH64_ISA_MODE,
-					     aarch64_tlsdesc_abi_id (),
-					     false);
+	rtx abi = aarch64_gen_callee_cookie (AARCH64_ISA_MODE, false);
 	rtx_insn *call
 	  = emit_call_insn (gen_tlsdesc_small_sve_<mode> (operands[0], abi));
+	CALL_INSN_ABI_ID (call) = aarch64_tlsdesc_abi_id ();
 	RTL_CONST_CALL_P (call) = 1;
       }
     else

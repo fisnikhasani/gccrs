@@ -1,7 +1,7 @@
 .ds lang COBOL
 .ds gcobol GCC\ \*[lang]\ Front-end
 .ds isostd ISO/IEC 1989:2023
-.Dd \& February 2025
+.Dd \& May 2026
 .Dt GCOBOL 1\& "GCC \*[lang] Compiler"
 .Os Linux
 .Sh NAME
@@ -11,6 +11,7 @@
 .Nm
 .Op Fl D Ns Ar name Ns Oo Li = Ns Ar value Oc
 .Op Fl E
+.Op Fl B
 .Op Fl fdefaultbyte Ns Li = Ns Ar value
 .Op Fl fsyntax-only
 .Op Fl I Ns Ar copybook-path
@@ -24,9 +25,10 @@
 .Op Fl fcobol-exceptions Ar exception Ns Op Ns \/, Ns Ar exception Ns ...
 .Op Fl copyext Ar ext
 .Op Fl ffixed-form | Fl ffree-form
-.Op Fl findicator-column
+.Op Fl findicator-column Ns Ar column
 .Op Fl fexec-charset= Ns Ar encoding
 .Op Fl fexec-national-charset= Ns Ar encoding
+.Op Fl fno-trunc
 .ig
 .Op Fl collseq Ar encoding Ns \/, Fl ncolseq Ar encoding
 ..
@@ -55,6 +57,7 @@
 .Op Fl Wno-copybook-found
 .Op Fl Wno-ec-unknown
 .Op Fl Wno-entry-convention
+.Op Fl Wno-ibm-cdf
 .Op Fl Wno-iconv-error
 .Op Fl Wno-include-file-found
 .Op Fl Wno-include-file-not-found
@@ -143,6 +146,38 @@ See below for examples showing the use of
 .Fl main
 and
 .Fl nomain.
+.It Fl B Ar prefix
+Add a search location for the system copybooks, so they can be found with the
+.Sy COPY
+statement. For each location, the
+.Sy cobol1
+compiler shall search for copybooks inside the following subdirectories,
+relative to
+.Ar prefix :
+.Pp
+.Bl -tag -compact
+.It Sy compat/gnu/lib/
+.It Sy compat/gnu/cpy/
+.It Sy compat/gnu/udf/
+.It Sy posix/cpy/
+.It Sy posix/udf/
+.It Sy cobol/compat/gnu/lib/
+.It Sy cobol/compat/gnu/cpy/
+.It Sy cobol/compat/gnu/udf/
+.It Sy cobol/posix/cpy/
+.It Sy cobol/posix/udf/
+.El
+.Pp
+Additionally,
+.Sy cobol1
+shall append the configured
+.Sy LIBSUBDIR
+as an additional search location, where
+.Sy LIBSUBDIR
+is typically configured to
+.Ar machine/version/ ,
+relative to the configured
+.Ar libdir .
 .It Fl D Ar name Ns Op Li = Ns Ar expr
 Define a CDF name (for use with
 .Sy >>IF )
@@ -156,9 +191,9 @@ output to indicate where copybook files were included.  For
 line-number consistency with the input, blank lines are retained.
 .Pp
 Unlike the C compiler, This option does not prevent compilation.
-To prevent compilation, use the option
-.D1 Fl Sy fsyntax-only
-also.
+To prevent compilation, use the
+.Fl Sy fsyntax-only
+option.
 .It Fl fdefaultbyte Ns Li = Ns Ar value
 Use
 .Ar value ,
@@ -358,7 +393,20 @@ is an encoding name as defined by
 .Xr iconv 3 .
 To use an EBCDIC encoding for data items, one might use
 .D1 Fl fexec-national-charset= Ns Li CP1140
-for example. 
+for example.
+.It Fl fno-trunc
+Affects
+.Sy BINARY
+data-items.  
+For arithmetic assignment and
+.Sy MOVE ,
+limit the value to the number of digits specified in the
+.Sy PICTURE ,
+not the capacity that the size of the binary storage would otherwise allow.
+Truncation happens from the left, meaning that
+.D1 77 RECEIVER PICTURE 9(3).
+.D1 MOVE 1000 TO RECEIVER.
+results in 0, not 100.  
 .
 .It Fl dialect Ar dialect-name
 By default,
@@ -388,6 +436,50 @@ segment
 <number>
 .It
 .Sy VOLATILE
+.It
+Per-program Registers
+.Bl -tag -compact -width XML-NNAMESPACE-PREFIX
+.\" .It Sy JSON-CODE
+.\" S9(9)
+.\" .It Sy JSON-STATUS
+.\" S9(9)
+.It Sy RETURN-CODE
+S9(4)
+.It Sy SORT-CONTROL
+X(160)
+.It Sy SORT-CORE-SIZE
+S9(8)
+.It Sy SORT-FILE-SIZE
+S9(8)
+.It Sy SORT-MESSAGE
+X(8)
+.It Sy SORT-MODE-SIZE
+S9(5)
+.It Sy SORT-RETURN
+S9(4)
+.It Sy TALLY
+9(5)
+.It Sy WHEN-COMPILED
+X(16)
+.It Sy XML-CODE
+S9(9)
+.It Sy XML-EVENT
+X(30)
+.It Sy XML-INFORMATION
+S9(9)
+.It Sy XML-NAMESPACE
+X(0) to X(32,768)
+.It Sy XML-NNAMESPACE
+N(0) to N(16,384)
+.It Sy XML-NAMESPACE-PREFIX
+X(0) to X(4,096)
+.It Sy XML-NNAMESPACE-PREFIX
+N(0) to N(2,048)
+.It Sy XML-NTEXT
+N(0) to N(2,000,000)
+.It Sy XML-TEXT
+X(0) to X(2,147,483,646)
+.El
 .El
 .It gnu
 to indicate GnuCOBOL syntax, generally compatible with MicroFocus.
@@ -582,6 +674,14 @@ Warn if SET ... TO LOCALE is used.
 .
 `.\" convert errors to warnings
 Warn if a line directive is malformed (instead of error).
+.It Fl Wibm-cdf
+Warn if IBM-specific CDF directives are used (instead of error).
+With
+.Fl dialect Sy ibm
+some potentially important directives produce a warning.
+This option allows the warning to be defeated or, with
+.Fl Werror ,
+converted to an error.
 .It Fl Wno-iconv-error
 Warn if iconv(3) cannot convert between encodings (instead of error).
 .It Fl Wno-include-file-not-found
@@ -755,7 +855,7 @@ alphanumeric literal, or a
 data item.
 .Pp
 .Nm
-supports static linking where possible, unless defeated by
+uses static linking unless defeated by
 .Fl fno-static-call .
 If the parameter value is known at compile time, the compiler produces
 an external reference to be resolved by the linker.  The referenced
@@ -832,8 +932,7 @@ ends with a call to
 .Xr abort 3
 and process termination. 
 .Pp
-Not all Exception Conditions are implemented.  Any attempt to enable
-an EC that that is not implemented produces a warning message.
+Not all Exception Conditions are implemented.  
 The following are implemented:
 .Pp
 .Bl -tag -offset 5n -compact
@@ -1033,6 +1132,62 @@ or
 Name of the start element tag or empty element tag.
 .El
 .
+.Ss MicroFocus and GnuCOBOL Runtime Library
+GnuCOBOL emulates some of the
+.Dq "runtime library"
+functions defined originally by MicroFocus COBOL (now owned by Rocket Software).
+.Nm
+includes a library,
+.Pa libgcobol-compat-gnu ,
+that
+.Dq "emulates the emulation" ,
+i.e., mimic the GnuCOBOL implementation. This version includes these functions:
+.Bl -tag -compact
+.It Sy CBL_ALLOC_MEM
+.It Sy CBL_CHECK_FILE_EXIST
+.It Sy CBL_CLOSE_FILE
+.It Sy CBL_CREATE_FILE
+.It Sy CBL_DELETE_FILE
+.It Sy CBL_FREE_MEM
+.It Sy CBL_OPEN_FILE
+.It Sy CBL_READ_FILE
+.It Sy CBL_WRITE_FILE
+.El
+These functions are implemented in COBOL as User Defined Functions.  
+They are documented in man pages included with this distribution of
+.Nm .
+.
+.Ss POSIX Bindings
+To facilitate access to POSIX functions (in particular for the above
+compatibility functions),
+.Nm
+includes
+.Pa libgcobol-posix.so .
+This library is written in COBOL as User Defined Functions. The
+following functions are included:
+.Bl -tag -compact
+.It Sy posix-close
+.It Sy posix-exit
+.It Sy posix-fstat
+.It Sy posix-ftruncate
+.It Sy posix-localtime
+.It Sy posix-lseek
+.It Sy posix-mkdir
+.It Sy posix-open
+.It Sy posix-read
+.It Sy posix-stat
+.It Sy posix-unlink
+.It Sy posix-write
+.El
+These functions have the same signature as defined by POSIX: the same
+parameters, and the same return status.  If a string is NUL-terminated
+according to POSIX, the COBOL functions accept ordinary COBOL
+.Sy "PIC X"
+data-items, and supply the NUL as needed.
+.Pp
+The POSIX bindings are not documented separately on the theory that
+the POSIX definition suffices.
+.
 .Sh ISO \*[lang] Implementation Status
 .Ss USAGE Data Types
 .Nm
@@ -1188,7 +1343,7 @@ suite has been identified.
 .
 .Ss CDF Text Manipulation
 .Bl -tag -width >>DEFINE
-.It Sy COPY Ar copybook Li Oo OF|BY Ar library Oc Oo Sy REPLACING ... Oc
+.It Sy COPY Ar copybook Li Oo OF|IN Ar library Oc Oo Sy REPLACING ... Oc
 If
 .Ar copybook
 is a literal, it treated a literal filename, which either does or does not exist.  If
@@ -1952,4 +2107,34 @@ are not compatible with that of any other \*[lang] compiler. Enhancements
 to the I/O support will be readily available to the paying customer.
 .El
 .
+.Sh COPYRIGHT
+.Bd -unfilled -indent
+Copyright (c) 2021-2026 Symas Corporation
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+* Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+* Neither the name of the Symas Corporation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+.Ed
 .\" .Sh BUGS

@@ -20,6 +20,7 @@
 #include "rust-abi.h"
 #include "rust-compile-stmt.h"
 #include "rust-compile-expr.h"
+#include "rust-compile-drop.h"
 #include "rust-compile-fnparam.h"
 #include "rust-compile-var-decl.h"
 #include "rust-compile-type.h"
@@ -33,7 +34,7 @@
 #include "rust-compile-implitem.h"
 #include "rust-attribute-values.h"
 #include "rust-attributes.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 
 #include "fold-const.h"
 #include "stringpool.h"
@@ -51,7 +52,10 @@ bool inline should_mangle_item (const tree fndecl)
 {
   return lookup_attribute (Values::Attributes::NO_MANGLE,
 			   DECL_ATTRIBUTES (fndecl))
-	 == NULL_TREE;
+	   == NULL_TREE
+	 && lookup_attribute (Values::Attributes::RUSTC_STD_INTERNAL_SYMBOL,
+			      DECL_ATTRIBUTES (fndecl))
+	      == NULL_TREE;
 }
 
 void
@@ -62,7 +66,7 @@ HIRCompileBase::setup_fndecl (tree fndecl, bool is_main_entry_point,
 {
   // if its the main fn or pub visibility mark its as DECL_PUBLIC
   // please see https://github.com/Rust-GCC/gccrs/pull/137
-  bool is_pub = visibility.get_vis_type () == HIR::Visibility::VisType::PUBLIC;
+  bool is_pub = visibility.get_vis_type () == HIR::Visibility::VisType::Public;
   if (is_main_entry_point || (is_pub && !is_generic_fn))
     {
       TREE_PUBLIC (fndecl) = 1;
@@ -78,24 +82,24 @@ HIRCompileBase::setup_fndecl (tree fndecl, bool is_main_entry_point,
   // is it inline?
   for (const auto &attr : attrs)
     {
-      bool is_inline
-	= attr.get_path ().as_string () == Values::Attributes::INLINE;
-      bool is_must_use
-	= attr.get_path ().as_string () == Values::Attributes::MUST_USE;
-      bool is_cold = attr.get_path ().as_string () == Values::Attributes::COLD;
-      bool is_link_section
-	= attr.get_path ().as_string () == Values::Attributes::LINK_SECTION;
-      bool no_mangle
-	= attr.get_path ().as_string () == Values::Attributes::NO_MANGLE;
-      bool is_deprecated
-	= attr.get_path ().as_string () == Values::Attributes::DEPRECATED;
-      bool is_proc_macro
-	= attr.get_path ().as_string () == Values::Attributes::PROC_MACRO;
+      std::string attr_str = attr.get_path ().as_string ();
+
+      bool is_inline = attr_str == Values::Attributes::INLINE;
+      bool is_must_use = attr_str == Values::Attributes::MUST_USE;
+      bool is_cold = attr_str == Values::Attributes::COLD;
+      bool is_link_section = attr_str == Values::Attributes::LINK_SECTION;
+      bool no_mangle = attr_str == Values::Attributes::NO_MANGLE;
+      bool is_std_internal
+	= attr_str == Values::Attributes::RUSTC_STD_INTERNAL_SYMBOL;
+      bool is_deprecated = attr_str == Values::Attributes::DEPRECATED;
+      bool is_proc_macro = attr_str == Values::Attributes::PROC_MACRO;
       bool is_proc_macro_attribute
-	= attr.get_path ().as_string ()
-	  == Values::Attributes::PROC_MACRO_ATTRIBUTE;
-      bool is_proc_macro_derive = attr.get_path ().as_string ()
-				  == Values::Attributes::PROC_MACRO_DERIVE;
+	= attr_str == Values::Attributes::PROC_MACRO_ATTRIBUTE;
+      bool is_proc_macro_derive
+	= attr_str == Values::Attributes::PROC_MACRO_DERIVE;
+      bool is_allocator = attr_str == Values::Attributes::RUSTC_ALLOCATOR;
+      bool is_allocator_nounwind
+	= attr_str == Values::Attributes::RUSTC_ALLOCATOR_NOUNWIND;
 
       if (is_inline)
 	{
@@ -121,6 +125,10 @@ HIRCompileBase::setup_fndecl (tree fndecl, bool is_main_entry_point,
 	{
 	  handle_no_mangle_attribute_on_fndecl (fndecl, attr);
 	}
+      else if (is_std_internal)
+	{
+	  handle_rustc_std_internal_symbol_attribute_on_fndecl (fndecl, attr);
+	}
       else if (is_proc_macro)
 	{
 	  handle_bang_proc_macro_attribute_on_fndecl (fndecl, attr);
@@ -132,6 +140,14 @@ HIRCompileBase::setup_fndecl (tree fndecl, bool is_main_entry_point,
       else if (is_proc_macro_derive)
 	{
 	  handle_derive_proc_macro_attribute_on_fndecl (fndecl, attr);
+	}
+      else if (is_allocator)
+	{
+	  handle_rustc_allocator_on_fndecl (fndecl, attr);
+	}
+      else if (is_allocator_nounwind)
+	{
+	  handle_rustc_allocator_nounwind_on_fndecl (fndecl, attr);
 	}
     }
 }
@@ -283,6 +299,64 @@ HIRCompileBase::handle_no_mangle_attribute_on_fndecl (
   DECL_ATTRIBUTES (fndecl)
     = tree_cons (get_identifier (Values::Attributes::NO_MANGLE), NULL_TREE,
 		 DECL_ATTRIBUTES (fndecl));
+}
+
+void
+HIRCompileBase::handle_rustc_std_internal_symbol_attribute_on_fndecl (
+  tree fndecl, const AST::Attribute &attr)
+{
+  DECL_ATTRIBUTES (fndecl)
+    = tree_cons (get_identifier (Values::Attributes::RUSTC_STD_INTERNAL_SYMBOL),
+		 NULL_TREE, DECL_ATTRIBUTES (fndecl));
+}
+
+void
+HIRCompileBase::handle_rustc_allocator_on_fndecl (tree fndecl,
+						  const AST::Attribute &attr)
+{
+  tree return_type = TREE_TYPE (TREE_TYPE (fndecl));
+  if (!POINTER_TYPE_P (return_type))
+    {
+      rust_error_at (attr.get_locus (),
+		     "%<rustc_allocator%> attribute must be applied to a "
+		     "function returning a pointer");
+      return;
+    }
+
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_middle/src/middle/codegen_fn_attrs.rs#L49
+  // `#[rustc_allocator]`: a hint to LLVM that the pointer returned from this
+  // function is never null.
+  //
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_typeck/src/collect.rs#L2482
+  // This attribute sets CodegenFnAttrFlags::ALLOCATOR.
+  //
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_codegen_llvm/src/attributes.rs#L302
+  // This flag activates LLVM::NoAlias attribute.
+  //
+  // In GCC, setting DECL_IS_MALLOC on a FUNCTION_DECL means this function
+  // should be treated as if it were a malloc, meaning it returns a pointer that
+  // is not an alias.
+  DECL_IS_MALLOC (fndecl) = 1;
+  DECL_ATTRIBUTES (fndecl) = tree_cons (get_identifier ("malloc"), NULL_TREE,
+					DECL_ATTRIBUTES (fndecl));
+}
+
+void
+HIRCompileBase::handle_rustc_allocator_nounwind_on_fndecl (
+  tree fndecl, const AST::Attribute &attr)
+{
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_middle/src/middle/codegen_fn_attrs.rs#L55
+  // `#[rustc_allocator_nounwind]`: an indicator that an imported FFI
+  // function will never unwind.
+  //
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_typeck/src/collect.rs#L2484
+  // This attribute sets CodegenFnAttrFlags::NOUNWIND.
+  //
+  // In GCC, setting TREE_NOTHROW on a FUNCTION_DECL means a call to the
+  // function cannot throw an exception, which exactly matches this behavior.
+  TREE_NOTHROW (fndecl) = 1;
+  DECL_ATTRIBUTES (fndecl) = tree_cons (get_identifier ("nothrow"), NULL_TREE,
+					DECL_ATTRIBUTES (fndecl));
 }
 
 void
@@ -634,6 +708,8 @@ HIRCompileBase::compile_function_body (tree fndecl,
 	  return_value = coercion_site (id, return_value, actual, expected,
 					lvalue_locus, rvalue_locus);
 
+	  CompileDrop::emit_current_scope_drop_calls (ctx);
+
 	  tree return_stmt
 	    = Backend::return_statement (fndecl, return_value, locus);
 	  ctx->add_statement (return_stmt);
@@ -656,6 +732,7 @@ HIRCompileBase::compile_function_body (tree fndecl,
       // errors should have occurred
       location_t locus = function_body.get_locus ();
       tree return_value = unit_expression (locus);
+      CompileDrop::emit_current_scope_drop_calls (ctx);
       tree return_stmt
 	= Backend::return_statement (fndecl, return_value, locus);
       ctx->add_statement (return_stmt);

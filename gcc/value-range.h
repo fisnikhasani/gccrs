@@ -209,7 +209,7 @@ irange_bitmask::get_precision () const
   return m_mask.get_precision ();
 }
 
-// The following two functions are meant for backwards compatability
+// The following two functions are meant for backwards compatibility
 // with the nonzero bitmask.  A cleared bit means the value must be 0.
 // A set bit means we have no information for the bit.
 
@@ -440,6 +440,45 @@ public:
   virtual void verify_range () const final override;
   irange_bitmask get_bitmask () const final override;
   void update_bitmask (const irange_bitmask &) final override;
+
+  // prange interface to points to information.
+  // It can point_to or point_away from an object.  This represents both
+  // sides of a conditional. ie:
+  //   if (p == &foo)
+  //     // p points to foo.
+  //   else
+  //     // p points away from foo.
+  // pt_invariant () and pt_invariant_away () - Return pt if this is invariant.
+  void set_pt (const prange &r);
+  void set_pt (tree ptr, bool points_to_p = true);
+
+  // unknown_p () is true if no object is pointed to.
+  void set_pt_unknown ();
+  bool pt_unknown_p () const;
+
+  // Invariant points-to are is_gimple_min_invariant_p ().
+  // Return expression or NULL_TREE for points-to or away
+  tree pt_invariant () const;
+  tree pt_invariant_away () const;
+
+  // Return true if THIS and R both point to the same object.
+  bool pt_invariant_p (const prange &r) const;
+  // Return true if THIS and R both point away from the same object.
+  bool pt_invariant_away_p (const prange &r) const;
+  // Return true if THIS and R refer to the same object, and one is inverted
+  // from the other,  Ie, both to and away.
+  bool pt_inverted_p (const prange &r) const;
+
+  // Invert THIS if it points either to or away from an object.
+  bool pt_invert ();
+
+  // pt_base () - object/allocation the pointer refers into.
+  tree pt_base () const;
+  // pt_offset () - possible byte offset range from BASE.
+  void pt_offset (irange &) const;
+  // pt_size () - possible size range of the referenced object.
+  void pt_size (irange &) const;
+
 protected:
   bool varying_compatible_p () const;
 
@@ -447,6 +486,12 @@ protected:
   wide_int m_min;
   wide_int m_max;
   irange_bitmask m_bitmask;
+
+   // A prange can point to an object, or NOT point to an object.
+  tree m_pt;		// object points-to refers to.
+  bool m_points_to_p;	// Does it point to it (TRUE), or not (FALSE).
+  // If P has the same points to fields as THIS.
+  bool pt_equal_p (const class prange &p) const;
 };
 
 // Unsupported temporaries may be created by ranger before it's known
@@ -767,13 +812,13 @@ public:
 //
 // Using any of the various constructors initializes the object
 // appropriately, but the default constructor is uninitialized and
-// must be initialized either with set_type() or by assigning into it.
+// must be initialized either with set_range_class() or by assigning into it.
 //
 // Assigning between incompatible types is allowed.  For example if a
 // temporary holds an irange, you can assign an frange into it, and
 // all the right things will happen.  However, before passing this
 // object to a function accepting a vrange, the correct type must be
-// set.  If it isn't, you can do so with set_type().
+// set.  If it isn't, you can do so with set_range_class().
 
 class value_range
 {
@@ -784,7 +829,7 @@ public:
   value_range (tree, tree, value_range_kind kind = VR_RANGE);
   value_range (const value_range &);
   ~value_range ();
-  void set_type (tree type);
+  void set_range_class (tree type);
   vrange& operator= (const vrange &);
   value_range& operator= (const value_range &);
   bool operator== (const value_range &r) const;
@@ -792,6 +837,7 @@ public:
   operator vrange &();
   operator const vrange &() const;
   void dump (FILE *) const;
+  void print (pretty_printer *) const;
   static bool supports_type_p (const_tree type);
 
   tree type () { return m_vrange->type (); }
@@ -832,7 +878,7 @@ private:
 };
 
 // The default constructor is uninitialized and must be initialized
-// with either set_type() or with an assignment into it.
+// with either set_range_class() or with an assignment into it.
 
 inline
 value_range::value_range ()
@@ -885,9 +931,10 @@ value_range::~value_range ()
 
 // Initialize object to an UNDEFINED range that can hold ranges of
 // TYPE.  Clean-up memory if there was a previous object.
+// Note that this does *not* set the type of the underlying vrange.
 
 inline void
-value_range::set_type (tree type)
+value_range::set_range_class (tree type)
 {
   if (m_vrange)
     m_vrange->~vrange ();
@@ -896,6 +943,7 @@ value_range::set_type (tree type)
 
 // Initialize object to an UNDEFINED range that can hold ranges of
 // TYPE.
+// Note that this does *not* set the type of the underlying vrange.
 
 inline void
 value_range::init (tree type)
@@ -1326,6 +1374,7 @@ inline void
 prange::set_undefined ()
 {
   m_kind = VR_UNDEFINED;
+  set_pt_unknown ();
 }
 
 inline void
@@ -1336,6 +1385,7 @@ prange::set_varying (tree type)
   m_min = wi::zero (TYPE_PRECISION (type));
   m_max = wi::max_value (TYPE_PRECISION (type), UNSIGNED);
   m_bitmask.set_unknown (TYPE_PRECISION (type));
+  set_pt_unknown ();
 
   if (flag_checking)
     verify_range ();
@@ -1349,6 +1399,7 @@ prange::set_nonzero (tree type)
   m_min = wi::one (TYPE_PRECISION (type));
   m_max = wi::max_value (TYPE_PRECISION (type), UNSIGNED);
   m_bitmask.set_unknown (TYPE_PRECISION (type));
+  set_pt_unknown ();
 
   if (flag_checking)
     verify_range ();
@@ -1362,6 +1413,7 @@ prange::set_zero (tree type)
   wide_int zero = wi::zero (TYPE_PRECISION (type));
   m_min = m_max = zero;
   m_bitmask = irange_bitmask (zero, zero);
+  set_pt_unknown ();
 
   if (flag_checking)
     verify_range ();
@@ -1376,7 +1428,10 @@ prange::contains_p (tree cst) const
 inline bool
 prange::zero_p () const
 {
-  return m_kind == VR_RANGE && m_min == 0 && m_max == 0;
+  bool ret = m_kind == VR_RANGE && m_min == 0 && m_max == 0;
+  // if zero_p is true, there should be no points to info.
+  gcc_checking_assert (!ret || pt_unknown_p ());
+  return ret;
 }
 
 inline bool
@@ -1409,8 +1464,8 @@ prange::upper_bound () const
 inline bool
 prange::varying_compatible_p () const
 {
-  return (!undefined_p ()
-	  && m_min == 0 && m_max == -1 && get_bitmask ().unknown_p ());
+  return (!undefined_p () && m_min == 0 && m_max == -1
+	  && get_bitmask ().unknown_p () && pt_unknown_p ());
 }
 
 inline irange_bitmask
@@ -1425,6 +1480,100 @@ prange::fits_p (const vrange &) const
   return true;
 }
 
+// Set this range's point-to object to PTR, and POINTS_TO_P is TRUE if it
+// does point to it, and FALSE if it does not point to it.
+
+inline void
+prange::set_pt (const prange &r)
+{
+  m_pt = r.m_pt;
+  m_points_to_p = r.m_points_to_p;
+
+  if (r.undefined_p ())
+    return;
+  // Check whether this is now VARYING or not.
+  if (varying_compatible_p ())
+    set_varying (type ());
+  else
+    m_kind = VR_RANGE;
+}
+
+// prange_pt methods.
+// ------------------------------------------------------------------
+
+inline void
+prange::set_pt_unknown ()
+{
+  m_pt = NULL_TREE;
+  m_points_to_p = false;
+}
+
+inline bool
+prange::pt_unknown_p () const
+{
+  return (m_pt == NULL_TREE);
+}
+
+inline bool
+prange::pt_equal_p (const prange &p) const
+{
+  return (m_points_to_p == p.m_points_to_p && m_pt == p.m_pt);
+}
+
+inline bool
+prange::pt_inverted_p (const prange &r) const
+{
+  return m_pt && vrp_operand_equal_p (m_pt, r.m_pt)
+	 && m_points_to_p != r.m_points_to_p;
+}
+
+inline bool
+prange::pt_invert ()
+{
+  if (m_pt)
+    {
+      m_points_to_p = !m_points_to_p;
+      return true;
+    }
+  return false;
+}
+
+inline tree
+prange::pt_invariant () const
+{
+  if (m_pt && m_points_to_p)
+    return m_pt;
+  return NULL_TREE;
+}
+
+inline tree
+prange::pt_invariant_away () const
+{
+  if (m_pt && !m_points_to_p)
+    return m_pt;
+  return NULL_TREE;
+}
+
+inline bool
+prange::pt_invariant_p (const prange &r) const
+{
+  if (m_pt && m_points_to_p && vrp_operand_equal_p (r.m_pt, m_pt)
+      && m_points_to_p == r.m_points_to_p)
+    return true;
+  return false;
+}
+
+inline bool
+prange::pt_invariant_away_p (const prange &r) const
+{
+  if (m_pt && !m_points_to_p && vrp_operand_equal_p (r.m_pt, m_pt)
+      && m_points_to_p == r.m_points_to_p)
+    return true;
+  return false;
+}
+
+
+// -----------------------------------------------------------------------
 
 inline
 frange::frange ()

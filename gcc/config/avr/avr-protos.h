@@ -119,6 +119,7 @@ extern const char* avr_out_xload (rtx_insn *, rtx*, int*);
 extern const char* avr_out_fload (rtx_insn *, rtx*, int*);
 extern const char* avr_out_cpymem (rtx_insn *, rtx*, int*);
 extern const char* avr_out_insert_bits (rtx*, int*);
+extern const char* avr_out_delay_loop (rtx_insn*, rtx*, int*);
 extern bool avr_popcount_each_byte (rtx, int, int);
 extern bool avr_xor_noclobber_dconst (rtx, int);
 extern bool avr_has_nibble_0xf (rtx);
@@ -235,6 +236,7 @@ typedef struct
   unsigned address_cost :1;
   unsigned builtin :1;
   unsigned constraints :1;
+  unsigned insert_attributes :1;
   unsigned insn_addresses :1;
   unsigned legitimate_address_p :1;
   unsigned legitimize_address :1;

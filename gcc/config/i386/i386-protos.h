@@ -263,6 +263,7 @@ extern rtx ix86_expand_ternlog (machine_mode mode, rtx op0, rtx op1, rtx op2,
 				int idx, rtx target);
 extern void ix86_expand_vector_sf2bf_with_vec_perm (rtx, rtx);
 extern void ix86_expand_vector_bf2sf_with_vec_perm (rtx, rtx);
+extern void ix86_expand_gfni_bitreverse (rtx, rtx);
 
 
 #ifdef TREE_CODE
@@ -312,6 +313,8 @@ extern bool ix86_expand_vector_init_duplicate (bool, machine_mode, rtx,
 extern bool ix86_expand_vector_init_one_nonzero (bool, machine_mode, rtx,
 						 rtx, int);
 extern bool ix86_extract_perm_from_pool_constant (int*, rtx);
+
+extern void ix86_expand_lcp_stall_peephole (rtx_insn *, rtx *, bool);
 
 /* In i386-c.cc  */
 extern void ix86_target_macros (void);

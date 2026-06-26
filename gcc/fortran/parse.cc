@@ -72,23 +72,39 @@ static void reject_statement (void);
    input with the passed string.  If this succeeds, we call the
    keyword-dependent matching function that will match the rest of the
    statement.  For single keywords, the matching subroutine is
-   gfc_match_eos().  */
+   gfc_match_eos().
+
+   If NO_SUBSTRING, the keyword must be followed by a character not
+   permitted in a name (for free form); EOF is not handled here. Due
+   to fixed-form Fortran, longer keywords still need to be matched
+   before shorter substrings.
+
+   If REJECT_STMT_ON_ERROR is false, it is assumed that no error
+   recovery handling is needed.  */
 
 static match
-match_word (const char *str, match (*subr) (void), locus *old_locus)
+match_word (const char *str, match (*subr) (void), locus *old_locus,
+	    bool no_substring = false, bool reject_stmt_on_error = true)
 {
   match m;
+  char c;
 
   if (str != NULL)
     {
       m = gfc_match (str);
       if (m != MATCH_YES)
 	return m;
+      if (no_substring && gfc_current_form == FORM_FREE
+	  && ((c = gfc_peek_ascii_char ()) == '_' || c == '$' || ISALNUM (c)))
+	{
+	  gfc_current_locus = *old_locus;
+	  return MATCH_NO;
+	}
     }
 
   m = (*subr) ();
 
-  if (m != MATCH_YES)
+  if (m == MATCH_NO || (reject_stmt_on_error && m == MATCH_ERROR))
     {
       gfc_current_locus = *old_locus;
       reject_statement ();
@@ -99,24 +115,33 @@ match_word (const char *str, match (*subr) (void), locus *old_locus)
 
 
 /* Like match_word, but if str is matched, set a flag that it
-   was matched.  */
+   was matched. Note that reject_statement() is not called if
+   SUBR returned a match error - and no substring matching is
+   assumed.  */
 static match
 match_word_omp_simd (const char *str, match (*subr) (void), locus *old_locus,
 		     bool *simd_matched)
 {
   match m;
+  char c;
 
   if (str != NULL)
     {
       m = gfc_match (str);
       if (m != MATCH_YES)
 	return m;
+      if (gfc_current_form == FORM_FREE
+	  && ((c = gfc_peek_ascii_char ()) == '_' || c == '$' || ISALNUM (c)))
+	{
+	  gfc_current_locus = *old_locus;
+	  return MATCH_NO;
+	}
       *simd_matched = true;
     }
 
   m = (*subr) ();
 
-  if (m != MATCH_YES)
+  if (m == MATCH_NO)
     {
       gfc_current_locus = *old_locus;
       reject_statement ();
@@ -677,21 +702,20 @@ decode_statement (void)
 }
 
 /* Like match and if spec_only, goto do_spec_only without actually
-   matching.  */
-/* If the directive matched but the clauses failed, do not start
-   matching the next directive in the same switch statement. */
-#define matcha(keyword, subr, st)				\
-    do {							\
-      match m2;							\
-      if (spec_only && gfc_match (keyword) == MATCH_YES)	\
-	goto do_spec_only;					\
-      else if ((m2 = match_word (keyword, subr, &old_locus))	\
-	       == MATCH_YES)					\
-	return st;						\
-      else if (m2 == MATCH_ERROR)				\
-	goto error_handling;					\
-      else							\
-	undo_new_statement ();				  	\
+   matching.  If the directive matched but the parsing then failed,
+   do not start matching the next directive in the same switch statement.  */
+#define matcha(keyword, subr, st)					\
+    do {								\
+      match m2;								\
+      if (spec_only && gfc_match (keyword) == MATCH_YES)		\
+	goto do_spec_only;						\
+      else if ((m2 = match_word (keyword, subr, &old_locus, true,	\
+				 false)) == MATCH_YES)			\
+	return st;							\
+      else if (m2 == MATCH_ERROR)					\
+	goto error_handling;						\
+      else								\
+	undo_new_statement ();				  		\
     } while (0)
 
 static gfc_statement
@@ -745,7 +769,7 @@ decode_oacc_directive (void)
       break;
     case 'd':
       matcha ("data", gfc_match_oacc_data, ST_OACC_DATA);
-      match ("declare", gfc_match_oacc_declare, ST_OACC_DECLARE);
+      matcha ("declare", gfc_match_oacc_declare, ST_OACC_DECLARE);
       break;
     case 'e':
       matcha ("end atomic", gfc_match_omp_eos_error, ST_OACC_END_ATOMIC);
@@ -791,17 +815,19 @@ decode_oacc_directive (void)
       break;
     }
 
-  /* Directive not found or stored an error message.
-     Check and give up.  */
+  /* Directive not found. */
+  gfc_error_now ("Unclassifiable OpenACC directive at %C");
+  goto recover;
 
+  /* Directive found but failed with an error, possibly with
+     a stored an error message.  */
  error_handling:
   if (gfc_error_check () == 0)
-    gfc_error_now ("Unclassifiable OpenACC directive at %C");
+    gfc_error_now ("Syntax error in statement at %C");
 
+ recover:
   reject_statement ();
-
   gfc_error_recovery ();
-
   return ST_NONE;
 
  do_spec_only:
@@ -811,6 +837,8 @@ decode_oacc_directive (void)
   gfc_current_locus = old_locus;
   return ST_GET_FCN_CHARACTERISTICS;
 }
+
+#undef matcha
 
 /* Checks for the ST_OMP_ALLOCATE. First, check whether all list items
    are allocatables/pointers - and if so, assume it is associated with a Fortran
@@ -911,23 +939,23 @@ check_omp_allocate_stmt (locus *loc)
    and if spec_only, goto do_spec_only without actually matching.  */
 /* If the directive matched but the clauses failed, do not start
    matching the next directive in the same switch statement. */
-#define matcho(keyword, subr, st)				\
-    do {							\
-      match m2;							\
-      if (!flag_openmp)						\
-	;							\
-      else if (spec_only && gfc_match (keyword) == MATCH_YES)	\
-	goto do_spec_only;					\
-      else if ((m2 = match_word (keyword, subr, &old_locus))	\
-	       == MATCH_YES)					\
-	{							\
-	  ret = st;						\
-	  goto finish;						\
-	}							\
-      else if (m2 == MATCH_ERROR)				\
-	goto error_handling;					\
-      else							\
-	undo_new_statement ();				  	\
+#define matcho(keyword, subr, st)					\
+    do {								\
+      match m2;								\
+      if (!flag_openmp)							\
+	;								\
+      else if (spec_only && gfc_match (keyword) == MATCH_YES)		\
+	goto do_spec_only;						\
+      else if ((m2 = match_word (keyword, subr, &old_locus, true,	\
+				 false)) == MATCH_YES)			\
+	{								\
+	  ret = st;							\
+	  goto finish;							\
+	}								\
+      else if (m2 == MATCH_ERROR)					\
+	goto error_handling;						\
+      else								\
+	undo_new_statement ();				  		\
     } while (0)
 
 /* Like match, but set a flag simd_matched if keyword matched.  */
@@ -947,21 +975,21 @@ check_omp_allocate_stmt (locus *loc)
     } while (0)
 
 /* Like match, but don't match anything if not -fopenmp.  */
-#define matchdo(keyword, subr, st)				\
-    do {							\
-      match m2;							\
-      if (!flag_openmp)						\
-	;							\
-      else if ((m2 = match_word (keyword, subr, &old_locus))	\
-	       == MATCH_YES)					\
-	{							\
-	  ret = st;						\
-	  goto finish;						\
-	}							\
-      else if (m2 == MATCH_ERROR)				\
-	goto error_handling;					\
-      else							\
-	undo_new_statement ();				  	\
+#define matchdo(keyword, subr, st)					\
+    do {								\
+      match m2;								\
+      if (!flag_openmp)							\
+	;								\
+      else if ((m2 = match_word (keyword, subr, &old_locus, true,	\
+				 false)) == MATCH_YES)			\
+	{								\
+	  ret = st;							\
+	  goto finish;							\
+	}								\
+      else if (m2 == MATCH_ERROR)					\
+	goto error_handling;						\
+      else								\
+	undo_new_statement ();				  		\
     } while (0)
 
 static gfc_statement
@@ -1014,6 +1042,8 @@ decode_omp_directive (void)
       break;
 
     case 'd':
+      matchdo ("declare mapper", gfc_match_omp_declare_mapper,
+	       ST_OMP_DECLARE_MAPPER);
       matchds ("declare reduction", gfc_match_omp_declare_reduction,
 	       ST_OMP_DECLARE_REDUCTION);
       matchds ("declare simd", gfc_match_omp_declare_simd,
@@ -1328,17 +1358,20 @@ decode_omp_directive (void)
       break;
     }
 
-  /* All else has failed, so give up.  See if any of the matchers has
-     stored an error message of some sort.  Don't error out if
-     not -fopenmp and simd_matched is false, i.e. if a directive other
-     than one marked with match has been seen.  */
+  /* Directive not found.  Don't error out if not -fopenmp and
+     simd_matched is false, i.e. if a directive other than one marked
+     with match has been seen.  */
+  if (flag_openmp || simd_matched)
+    gfc_error_now ("Unclassifiable OpenMP directive at %C");
+  goto recover;
 
  error_handling:
-  if (flag_openmp || simd_matched)
-    {
-      if (!gfc_error_check ())
-	gfc_error_now ("Unclassifiable OpenMP directive at %C");
-    }
+  /* Directive found but failed with an error, possibly with
+     a stored an error message.  */
+  if ((flag_openmp || simd_matched) && gfc_error_check () == 0)
+    gfc_error_now ("Syntax error in statement at %C");
+
+ recover:
 
   /* If parsing a metadirective, let the caller deal with the cleanup.  */
   if (gfc_matching_omp_context_selector)
@@ -1464,6 +1497,11 @@ decode_omp_directive (void)
   gfc_current_locus = old_locus;
   return ST_GET_FCN_CHARACTERISTICS;
 }
+
+#undef matchs
+#undef matcho
+#undef matchds
+#undef matchdo
 
 gfc_statement
 match_omp_directive (void)
@@ -1993,7 +2031,7 @@ next_statement (void)
 #define case_omp_decl case ST_OMP_THREADPRIVATE: case ST_OMP_DECLARE_SIMD: \
   case ST_OMP_DECLARE_TARGET: case ST_OMP_DECLARE_REDUCTION: \
   case ST_OMP_DECLARE_VARIANT: case ST_OMP_ALLOCATE: case ST_OMP_ASSUMES: \
-  case ST_OMP_REQUIRES: case ST_OMP_GROUPPRIVATE: \
+  case ST_OMP_REQUIRES: case ST_OMP_GROUPPRIVATE: case ST_OMP_DECLARE_MAPPER: \
   case ST_OACC_ROUTINE: case ST_OACC_DECLARE
 
 /* OpenMP statements that are followed by a structured block.  */
@@ -2684,6 +2722,9 @@ gfc_ascii_statement (gfc_statement st, bool strip_sentinel)
       break;
     case ST_OMP_CRITICAL:
       p = "!$OMP CRITICAL";
+      break;
+    case ST_OMP_DECLARE_MAPPER:
+      p = "!$OMP DECLARE MAPPER";
       break;
     case ST_OMP_DECLARE_REDUCTION:
       p = "!$OMP DECLARE REDUCTION";
@@ -6853,6 +6894,28 @@ parse_executable (gfc_statement st)
 }
 
 
+/* Update statement function formal argument lists that reference OLD_SYM
+   to point to NEW_SYM instead.  This prevents use-after-free when
+   gfc_fixup_sibling_symbols replaces and frees a symbol that is also
+   used as a statement function dummy argument (PR95879).  */
+
+static void
+fixup_st_func_formals (gfc_symtree *st, gfc_symbol *old_sym,
+		       gfc_symbol *new_sym)
+{
+  if (st == NULL)
+    return;
+
+  fixup_st_func_formals (st->left, old_sym, new_sym);
+  fixup_st_func_formals (st->right, old_sym, new_sym);
+
+  if (st->n.sym && st->n.sym->attr.proc == PROC_ST_FUNCTION)
+    for (gfc_formal_arglist *fa = st->n.sym->formal; fa; fa = fa->next)
+      if (fa->sym == old_sym)
+	fa->sym = new_sym;
+}
+
+
 /* Fix the symbols for sibling functions.  These are incorrectly added to
    the child namespace as the parser didn't know about this procedure.  */
 
@@ -6907,6 +6970,11 @@ gfc_fixup_sibling_symbols (gfc_symbol *sym, gfc_namespace *siblings)
 	  sym->refs++;
 	  if (imported)
 	    sym->attr.imported = 1;
+
+	  /* Update statement function formal argument lists that still
+	     reference old_sym before releasing it (PR95879).  */
+	  fixup_st_func_formals (ns->sym_root, old_sym, sym);
+
 	  gfc_release_symbol (old_sym);
 	}
 
@@ -7365,6 +7433,32 @@ parse_module (void)
     {
       use_modules ();
       gfc_traverse_ns (gfc_current_ns, set_syms_host_assoc);
+
+      /* Link the submodule namespace to the parent (sub)module namespace so
+	 that internal subprograms of the ancestor module are accessible via
+	 host association (Fortran 2018, 14.6.1.3).  The parent namespace is
+	 already in gfc_global_ns_list when both units are compiled together.
+	 The submodule's fully-qualified name is "parent.child"; strip the
+	 child part to obtain the parent's name, then search the global list.  */
+      {
+	const char *submod_name = gfc_new_block->name;
+	const char *dot = strrchr (submod_name, '.');
+	if (dot != NULL)
+	  {
+	    size_t plen = (size_t) (dot - submod_name);
+	    char parent_name[GFC_MAX_SYMBOL_LEN + 1];
+	    gcc_assert (plen < sizeof (parent_name));
+	    memcpy (parent_name, submod_name, plen);
+	    parent_name[plen] = '\0';
+	    for (gfc_namespace *ns = gfc_global_ns_list; ns; ns = ns->sibling)
+	      if (ns->proc_name
+		  && strcmp (ns->proc_name->name, parent_name) == 0)
+		{
+		  gfc_current_ns->parent = ns;
+		  break;
+		}
+	  }
+      }
     }
 
   st = parse_spec (ST_NONE);
@@ -7523,6 +7617,11 @@ clean_up_modules (gfc_gsymbol *&gsym)
   if (gsym->ns)
     {
       gfc_current_ns = gsym->ns;
+      /* Disconnect any host-association parent link set for submodules
+	 (see parse_module): each module/submodule namespace in gfc_gsym_root
+	 is independently managed, so gfc_symbol_done_2 must not walk up to
+	 and double-free a sibling top-level namespace.  */
+      gfc_current_ns->parent = NULL;
       gfc_derived_types = gfc_current_ns->derived_types;
       gfc_done_2 ();
       gsym->ns = NULL;

@@ -40,23 +40,26 @@ RISCV_TUNE("sifive-5-series", generic, rocket_tune_info)
 RISCV_TUNE("sifive-7-series", sifive_7, sifive_7_tune_info)
 RISCV_TUNE("sifive-p400-series", sifive_p400, sifive_p400_tune_info)
 RISCV_TUNE("sifive-p600-series", sifive_p600, sifive_p600_tune_info)
-RISCV_TUNE("tt-ascalon-d8", tt_ascalon_d8, tt_ascalon_d8_tune_info)
+RISCV_TUNE("tt-ascalon-x", tt_ascalon_d8, tt_ascalon_d8_tune_info)
 RISCV_TUNE("thead-c906", generic, thead_c906_tune_info)
-RISCV_TUNE("xt-c908", generic, generic_ooo_tune_info)
+RISCV_TUNE("xt-c908", xt_c908, xt_c908_tune_info)
 RISCV_TUNE("xt-c908v", generic, generic_ooo_tune_info)
 RISCV_TUNE("xt-c910", generic, generic_ooo_tune_info)
 RISCV_TUNE("xt-c910v2", generic, generic_ooo_tune_info)
 RISCV_TUNE("xt-c920", generic, generic_ooo_tune_info)
 RISCV_TUNE("xt-c920v2", generic, generic_ooo_tune_info)
+RISCV_TUNE("xt-c9501fdvt", generic_ooo, xt_c9501_tune_info)
 RISCV_TUNE("xiangshan-nanhu", xiangshan, xiangshan_nanhu_tune_info)
 RISCV_TUNE("xiangshan-kunminghu", xiangshan, generic_ooo_tune_info)
 RISCV_TUNE("spacemit-x60", spacemit_x60, spacemit_x60_tune_info)
+RISCV_TUNE("arc-v-rhx-100-series", arcv_rhx100, arcv_rhx100_tune_info)
 RISCV_TUNE("generic-ooo", generic_ooo, generic_ooo_tune_info)
 RISCV_TUNE("size", generic, optimize_size_tune_info)
 RISCV_TUNE("mips-p8700", mips_p8700, mips_p8700_tune_info)
 RISCV_TUNE("andes-25-series", andes_25_series, andes_25_tune_info)
 RISCV_TUNE("andes-23-series", andes_23_series, andes_23_tune_info)
 RISCV_TUNE("andes-45-series", andes_45_series, andes_45_tune_info)
+RISCV_TUNE("arc-v-rmx-100-series", arcv_rmx100, arcv_rmx100_tune_info)
 
 #undef RISCV_TUNE
 
@@ -70,10 +73,22 @@ RISCV_TUNE("andes-45-series", andes_45_series, andes_45_tune_info)
    The ARCH is the default arch of the core, represented as a string,
    can be NULL if no default arch.
    The MICRO_ARCH is the name of the core for which scheduling decisions
-   will be made, represented as an identifier.  */
+   will be made, represented as an identifier.
+
+   If the core has an alternate name(s), an alias(es) can be created to map
+   an alternate name to the core's canonical name.  Before using #include
+   to read this file, define a macro:
+
+      RISCV_CORE_ALIAS(CANONICAL_NAME, ALIAS_NAME)
+
+   CANONICAL_NAME is the normal name of the core, represented as a string.
+   ALIAS_NAME is the alternate name for the core, represented as a string.  */
 
 #ifndef RISCV_CORE
 #define RISCV_CORE(CORE_NAME, ARCH, MICRO_ARCH)
+#endif
+#ifndef RISCV_CORE_ALIAS
+#define RISCV_CORE_ALIAS(CANONICAL_NAME, ALIAS_NAME)
 #endif
 
 RISCV_CORE("sifive-e20",      "rv32imc",    "rocket")
@@ -148,10 +163,20 @@ RISCV_CORE("xt-c920v2",       "rv64imafdcv_zicbom_zicbop_zicboz_zicntr_zicond_"
 			      "xtheadsync",
 			       "xt-c920v2")
 
-RISCV_CORE("tt-ascalon-d8",   "rva23s64_zfbfmin_zfh_zkr_zvbc_zvfbfmin_zvfbfwma_"
+RISCV_CORE("xt-c9501fdvt",    "rva23s64_zfbfmin_zfh_zicfilp_zicfiss_zkr_zmmul_"
+			      "zbc_zca_zcd_zabha_zacas_zama16b_zvbc_zvfbfmin_"
+			      "zvfbfwma_zvfh_zvkb_zvkg_zvkn_zvknc_zvkned_"
+			      "zvkng_zvknha_zvknhb_zvksc_zvksed_zvksg_zvksh_"
+			      "zvl256b_smaia_smcntrpmf_smcsrind_smepmp_smmpm_"
+			      "smnpm_smrnmi_ssaia_sscsrind_sspm_ssstrict_"
+			      "svadu_svvptc",
+			      "xt-c9501fdvt")
+
+RISCV_CORE("tt-ascalon-x",    "rva23s64_zfbfmin_zfh_zkr_zvbc_zvfbfmin_zvfbfwma_"
 			      "zvfh_zvkng_zvl256b_smaia_smmpm_smnpm_smrnmi_"
 			      "smstateen_ssaia_ssstrict_svadu",
-			      "tt-ascalon-d8")
+			      "tt-ascalon-x")
+RISCV_CORE_ALIAS("tt-ascalon-x", "tt-ascalon-d8")
 
 RISCV_CORE("xiangshan-nanhu",      "rv64imafdc_zba_zbb_zbc_zbs_"
 			      "zbkb_zbkc_zbkx_zknd_zkne_zknh_zksed_zksh_"
@@ -197,3 +222,4 @@ RISCV_CORE("spacemit-x60",    "rv64imafdcv_zba_zbb_zbc_zbs_zicboz_zicond_"
 			      "spacemit-x60")
 
 #undef RISCV_CORE
+#undef RISCV_CORE_ALIAS

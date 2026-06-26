@@ -89,9 +89,11 @@
 #include "cobol-system.h"
 #include "coretypes.h"
 #include "tree.h"
+#include "langhooks.h"
 #include "tree-iterator.h"
 #include "stringpool.h"
 #include "cgraph.h"
+#include "stor-layout.h"
 #include "toplev.h"
 #include "function.h"
 #include "fold-const.h"
@@ -263,6 +265,34 @@ gg_append_var_decl(tree var_decl)
     }
   }
 
+#define LOOK_FOR_MISSING_LABELS_not
+#ifdef LOOK_FOR_MISSING_LABELS
+static std::set<tree> missing_labels;
+static std::map<tree, int> missing_gotos;
+void
+dump_missing_labels()
+  {
+  for(auto g : missing_gotos)
+    {
+    auto l = missing_labels.find(g.first);
+    if( l == missing_labels.end() )
+      {
+      const char *name_text = label_decl_text_from_expr(g.first);
+      error_msg_direct( "%<GOTO_EXPR%> %qs (%p) "
+                        "at line %d has no matching label",
+                        name_text,
+                        reinterpret_cast<void *>(g.first),
+                        g.second);
+      }
+    }
+  }
+#else
+void
+dump_missing_labels()
+  {
+  }
+#endif
+
 void
 gg_append_statement(tree stmt)
   {
@@ -293,6 +323,49 @@ gg_append_statement(tree stmt)
   // ./libcpp/include/line-map.h
   // ./libcpp/location-example.txt
 
+#ifdef LOOK_FOR_MISSING_LABELS
+  const char *name_text = label_decl_text_from_expr(stmt);
+  if( TREE_CODE(stmt) == GOTO_EXPR )
+    {
+    // When dump_missing_labels reports a name, you can edit it in here and
+    // recompile, and then set a trap here to backtrace to whoever is creating
+    // the orphan goto in the first place.
+
+    if( strcmp(name_text, "") == 0 )
+      {
+      fprintf(stderr, "HULL_BREACH! Label %s!\n", name_text);
+      }
+
+    tree dest = GOTO_DESTINATION (stmt);
+
+    tree label_decl = NULL_TREE;
+    if (TREE_CODE (dest) == LABEL_DECL)
+      {
+      label_decl = dest; /* direct goto label */
+      }
+    else
+      {
+        /* computed goto or other expression-valued destination */
+      }
+    //fprintf(stderr,
+    //        "Laying down a GOTO_EXPR  %s %p at line %d\n",
+    //        name_text,
+    //        reinterpret_cast<void *>(label_decl),
+    //        cobol_location().first_line);
+    missing_gotos[label_decl] = cobol_location().first_line;
+    }
+  if( TREE_CODE(stmt) == LABEL_EXPR )
+    {
+    tree label_decl = LABEL_EXPR_LABEL(stmt);   /* This is a LABEL_DECL. */
+    //fprintf(stderr,
+    //        "Laying down a LABEL_EXPR %s %p at line %d\n",
+    //        name_text,
+    //        reinterpret_cast<void *>(label_decl),
+    //        cobol_location().first_line);
+    missing_labels.insert(label_decl);
+    }
+#endif
+
   gcc_assert(  gg_trans_unit.function_stack.size() );
 
   TREE_SIDE_EFFECTS(stmt) = 1;    // If an expression has no side effects,
@@ -318,6 +391,13 @@ gg_trunc(tree integer_type, tree floating_var)
 tree
 gg_cast(tree type, tree var)
   {
+#if 0
+  if(POINTER_TYPE_P(var) || TREE_CODE(var) == ADDR_EXPR)
+    {
+    fprintf(stderr, "HULL_BREACH ON DECK TEN!!\n");
+    }
+#endif
+
   return fold_convert(type, var);
   }
 
@@ -355,28 +435,48 @@ adjust_for_type(tree type)
 char *
 gg_show_type(tree type)
   {
+  tree original_type = type;
   if( !type )
     {
     cbl_internal_error("The given type is NULL, and that is just not fair");
     }
 
+  int code = TREE_CODE(type);
   if( DECL_P(type) )
     {
     type = TREE_TYPE(type);
+    code = TREE_CODE(type);
     }
-  if( !TYPE_P(type) )
+  if( !TYPE_P(type) && code != ARRAY_REF)
     {
-    cbl_internal_error("The given type is not a declaration or a TYPE");
+    cbl_internal_error("%s", "The given type is not a declaration or a TYPE or an ARRAY_REF");
     }
 
   static char ach[1100];
   static char ach2[1024];
   static char ach3[1024];
-  switch( TREE_CODE(type) )
+  switch( code )
     {
     case POINTER_TYPE:
       strcpy(ach2, gg_show_type(TREE_TYPE(type)));
       sprintf(ach, "POINTER to %s", ach2);
+      break;
+
+    case ARRAY_TYPE:
+      strcpy(ach2, gg_show_type(TREE_TYPE(type)));
+      sprintf(ach, "ARRAY");
+      break;
+
+    case VAR_DECL:
+      {
+      tree type_of_decl = TREE_TYPE(type);
+      strcpy(ach2, gg_show_type(type_of_decl));
+      sprintf(ach, "VAR_DECL %s", ach2);
+      break;
+      }
+
+    case ARRAY_REF:
+      sprintf(ach, "ARRAY_REF");
       break;
 
     case VOID_TYPE:
@@ -410,7 +510,22 @@ gg_show_type(tree type)
       break;
 
     default:
-      cbl_internal_error("Unknown type %d", TREE_CODE(type));
+      cbl_internal_error("Unknown type %d %d %d", INTEGER_TYPE, TREE_CODE(type), code);
+    }
+
+  if( DECL_P(original_type) && TREE_STATIC(original_type) )
+    {
+    strcat(ach, " static");
+    }
+
+  if( DECL_P(original_type) && TREE_READONLY(original_type) )
+    {
+    strcat(ach, " readonly");
+    }
+
+  if( DECL_P(original_type) && TYPE_VOLATILE(original_type) )
+    {
+    strcat(ach, " volatile");
     }
 
   return ach;
@@ -485,6 +600,111 @@ gg_assign(tree dest, const tree source)
   }
 
 tree
+gg_get_structure_type_decl(const char *type_name, ...)
+  {
+  tree record_type = make_node (RECORD_TYPE);
+
+  tree type_decl = build_decl(UNKNOWN_LOCATION,
+                              TYPE_DECL,
+                              get_identifier (type_name),
+                              record_type);
+  TYPE_NAME (record_type) = type_decl;
+  TYPE_STUB_DECL (record_type) = type_decl;
+  DECL_ARTIFICIAL (type_decl) = 1;
+
+  va_list ap;
+  va_start (ap, type_name);
+
+  tree first = NULL_TREE;
+  tree *link = &first;
+
+  for (;;)
+    {
+    tree arg_type = va_arg (ap, tree);
+    if (!arg_type)
+      {
+      break;
+      }
+
+    const char *member_name = va_arg (ap, const char *);
+
+    tree member_decl = build_decl (UNKNOWN_LOCATION,
+                                   FIELD_DECL,
+                                   get_identifier (member_name),
+                                   arg_type);
+
+    DECL_CONTEXT (member_decl) = record_type;
+    *link = member_decl;
+    link = &DECL_CHAIN (member_decl);
+    }
+  va_end (ap);
+
+  TYPE_FIELDS (record_type) = first;
+
+  layout_type (record_type);
+//  lang_hooks.decls.pushdecl (type_decl);
+
+  gcc_assert (TREE_CODE (record_type) == RECORD_TYPE);
+  gcc_assert (TYPE_NAME (record_type));
+  gcc_assert (TREE_CODE (TYPE_NAME (record_type)) == TYPE_DECL);
+  gcc_assert (TREE_TYPE (TYPE_NAME (record_type)) == record_type);
+
+  return record_type;
+  }
+
+void
+gg_structure_type_constructor(tree record_decl, ...)
+  {
+  // Given a record_decl and a NULL_TREE-terminated list of initial values, one
+  // for each member of the record_decl's type, this routine constructs and
+  // applies the constructor for it.
+
+  // Note that the NULL_TREE terminator is not actually accessed if the list
+  // of values equal to (or greater than) the number of elements in the
+  // record_type.  But it's there to allow an early termination.
+
+  // If the list is too short and is not terminated, then the behavior is
+  // unpredictable.
+  tree record_type = TREE_TYPE(record_decl);
+
+  int top_level_members = 0;
+  for(tree f = TYPE_FIELDS(record_type); f; f = TREE_CHAIN(f))
+    {
+    top_level_members += 1;
+    }
+
+  vec<constructor_elt, va_gc> *elts = NULL;
+  tree next_field = TYPE_FIELDS(record_type);
+
+  va_list ap;
+  va_start (ap, record_decl);
+
+  // We are going to create the constructors by walking the linked
+  // list of FIELD_DECLs.  We must do it in the same order as the
+  // structure creation code in create_cblc_field_t()
+
+  int index = 0;
+  while(index < top_level_members)
+    {
+    tree value = va_arg (ap, tree);
+    if( !value )
+      {
+      break;
+      }
+
+    CONSTRUCTOR_APPEND_ELT( elts,
+                            next_field,
+                            value );
+    next_field = DECL_CHAIN(next_field);
+    index += 1;
+    }
+  va_end (ap);
+
+  tree constr = build_constructor (record_type, elts);
+  DECL_INITIAL(record_decl) = constr;
+  }
+
+tree
 gg_find_field_in_struct(const tree base, const char *field_name)
   {
   // Finds and returns the field_decl for the named member.  'base' can be
@@ -531,303 +751,6 @@ gg_find_field_in_struct(const tree base, const char *field_name)
   return field_decl;
   }
 
-static tree
-gg_start_building_a_union(const char *type_name, tree type_context)
-  {
-  // type_context is current_function->function_decl for union local
-  // to a function.
-
-  // It is translation_unit_decl for unions common to all functions
-
-  // We want to return the type_decl for an empty union
-
-  // First, create the record_type whose values will eventually
-  // be the chain of of the struct's fields:
-
-  tree uniontype = make_node(UNION_TYPE);
-  TYPE_CONTEXT(uniontype) = type_context;
-  TYPE_SIZE_UNIT(uniontype) = integer_zero_node;
-  TYPE_SIZE(uniontype) = integer_zero_node;
-  TYPE_NAME(uniontype) = get_identifier(type_name);
-
-  TYPE_MODE_RAW(uniontype) = TYPE_MODE (intTI_type_node);
-
-  // We need a type_decl for the record_type:
-  tree typedecl = make_node(TYPE_DECL);
-
-  // The type of the type_decl is the record_type:
-  TREE_TYPE(typedecl) = uniontype;
-
-  SET_TYPE_ALIGN(uniontype, 16);
-
-  // The chain element of the record_type points back to the type_decl:
-  TREE_CHAIN(uniontype) = typedecl;
-
-  return typedecl;
-  }
-
-static tree
-gg_start_building_a_struct(const char *type_name, tree type_context)
-  {
-  // type_context is current_function->function_decl for structures local
-  // to a function.
-
-  // It is translation_unit_decl for structures common to all functions
-
-  // We want to return the type_decl for an empty struct
-
-  // First, create the record_type whose values will eventually
-  // be the chain of of the struct's fields:
-
-  tree recordtype = make_node(RECORD_TYPE);
-  TYPE_CONTEXT(recordtype) = type_context;
-  TYPE_SIZE_UNIT(recordtype) = integer_zero_node;
-  TYPE_SIZE(recordtype) = integer_zero_node;
-  TYPE_NAME(recordtype) = get_identifier(type_name);
-
-  TYPE_MODE_RAW(recordtype) = BLKmode;
-
-  // We need a type_decl for the record_type:
-  tree typedecl = make_node(TYPE_DECL);
-
-  // The type of the type_decl is the record_type:
-  TREE_TYPE(typedecl) = recordtype;
-
-  SET_TYPE_ALIGN(recordtype, 8);
-
-  // The chain element of the record_type points back to the type_decl:
-  TREE_CHAIN(recordtype) = typedecl;
-
-  return typedecl;
-  }
-
-static void
-gg_add_field_to_structure(const tree type_of_field, const char *name_of_field, tree struct_type_decl)
-  {
-  // We're given the struct_type_decl.
-  // Append the new field to that type_decl's record_type's chain:
-  tree struct_record_type = TREE_TYPE(struct_type_decl);
-
-  bool is_union = TREE_CODE((struct_record_type)) == UNION_TYPE;
-
-  tree id_of_field = get_identifier (name_of_field);
-
-  // Create the new field:
-  tree new_field_decl = build_decl(   gg_token_location(),
-                                      FIELD_DECL,
-                                      id_of_field,
-                                      type_of_field);
-
-  // Establish the machine mode for the field_decl:
-  SET_DECL_MODE(new_field_decl, TYPE_MODE(type_of_field));
-
-  // Establish the context of the new field as being the record_type
-  DECL_CONTEXT (new_field_decl) = struct_record_type;
-
-  // Establish the size of the new field as being the same as its prototype:
-  DECL_SIZE(new_field_decl) = TYPE_SIZE(type_of_field);            // This is in bits
-  DECL_SIZE_UNIT(new_field_decl) = TYPE_SIZE_UNIT(type_of_field);  // This is in bytes
-
-  // We need to establish the offset and bit offset of the new node.
-  // Empirically, this seems to be done on 16-bit boundaries, with DECL_FIELD_OFFSET
-  // in units of N*16 bytes, and FIELD_BIT_OFFSET being offsets in bits from the DECL_FIELD_OFFSET
-
-  // We calculate our desired offset in bits:
-
-  // Pick up the current size, in bytes, of the record_type:
-  long offset_in_bytes = TREE_INT_CST_LOW(TYPE_SIZE_UNIT(struct_record_type));
-
-  static const int MAGIC_NUMBER_SIXTEEN = 16 ;
-  static const int BITS_IN_A_BYTE = 8 ;
-
-  // We know the offset_in_bytes, which is the size, of the structure with
-  // its current members.
-
-  //long type_size  =  TREE_INT_CST_LOW(TYPE_SIZE_UNIT(type_of_field));
-  long type_align_in_bits  =  TYPE_ALIGN(type_of_field);
-  long type_align_in_bytes = type_align_in_bits/BITS_IN_A_BYTE;
-
-  // As per the Amd64 ABI, we need to set the structure's type alignment to be
-  // that of most strictly aligned component:
-  // This is the current restriction:
-  long struct_align_in_bits  =  TYPE_ALIGN(TREE_TYPE(struct_type_decl));
-  if( type_align_in_bits > struct_align_in_bits )
-    {
-    // The new one is the new champion
-    SET_TYPE_ALIGN(TREE_TYPE(struct_type_decl), type_align_in_bits );
-    }
-
-  // We know struct_type_decl is a record_type, so we can sneak through this comparison
-  if( type_of_field == TREE_TYPE(struct_type_decl) )
-    {
-    printf("   It is a record_type\n");
-    }
-
-  // Bump up the offset until we are aligned:
-  while( offset_in_bytes % type_align_in_bytes)
-    {
-    offset_in_bytes += 1;
-    }
-
-  if( is_union )
-    {
-    // Turn that into the bytes/bits offsets of the new field:
-    DECL_FIELD_OFFSET(new_field_decl) = build_int_cst_type (SIZE_T, 0);
-    DECL_FIELD_BIT_OFFSET(new_field_decl) = build_int_cst_type (bitsizetype, 0);
-
-    // The size of a union is the size of its largest member:
-    offset_in_bytes = std::max(offset_in_bytes, (long)TREE_INT_CST_LOW(DECL_SIZE_UNIT(new_field_decl)));
-    }
-  else
-    {
-    // Turn that into the bytes/bits offsets of the new field:
-    long field_offset = (offset_in_bytes/MAGIC_NUMBER_SIXTEEN)*MAGIC_NUMBER_SIXTEEN;
-    long field_bit_offset = (offset_in_bytes - field_offset) * BITS_IN_A_BYTE;
-    DECL_FIELD_OFFSET(new_field_decl) = build_int_cst_type (SIZE_T, field_offset);;
-    DECL_FIELD_BIT_OFFSET(new_field_decl) = build_int_cst_type (bitsizetype, field_bit_offset);
-
-    // This was done empirically to make our generated code match that of a C program
-    SET_DECL_OFFSET_ALIGN(new_field_decl, 128);
-
-    // And now we need to update the size of the record type:
-    offset_in_bytes += TREE_INT_CST_LOW(DECL_SIZE_UNIT(new_field_decl));
-    }
-
-  TYPE_SIZE_UNIT(struct_record_type) = build_int_cst_type (SIZE_T, offset_in_bytes);           // In bytes
-  TYPE_SIZE(struct_record_type) = build_int_cst_type (bitsizetype, offset_in_bytes*BITS_IN_A_BYTE); // In bits
-
-  if( !TYPE_FIELDS(struct_record_type) )
-    {
-    // This is the first variable of the chain:
-    TYPE_FIELDS(struct_record_type) = new_field_decl;
-    }
-  else
-    {
-    // We need to tack the new one onto an already existing chain:
-    chainon(TYPE_FIELDS(struct_record_type), new_field_decl);
-    }
-  }
-
-void
-gg_get_struct_type_decl(tree struct_type_decl, int count, va_list params)
-  {
-  while( count-- )
-    {
-    tree field_type = va_arg(params, tree);
-    const char *name = va_arg(params, const char *);
-    gg_add_field_to_structure(field_type, name, struct_type_decl);
-    }
-  // Note:  On 2022-02-18 I removed the call to gg_append_var_decl, which
-  // chains the type_decl on the function block.  I don't remember why I
-  // thought it was necessary.  It makes no difference for COBOL compilations.
-  //
-  // But I must have copied it from a C compilation example.
-  //
-  // I removed it so that I could create type_decls outside of a function.
-  // I know not what the long-term implications might be.
-  //
-  // You have been served notice.
-  //
-  // struct_type_decl is the type_decl for our structure.  We need to
-  // append it to the list of variables in order to use it:
-  // The following function call is misnamed.  It can take struct type_decls
-  //gg_append_var_decl(struct_type_decl);
-  }
-
-void
-gg_get_union_type_decl(tree union_type_decl, int count, va_list params)
-  {
-  while( count-- )
-    {
-    tree field_type = va_arg(params, tree);
-    const char *name = va_arg(params, const char *);
-    gg_add_field_to_structure(field_type, name, union_type_decl);
-    }
-  }
-
-tree
-gg_get_local_struct_type_decl(const char *type_name, int count, ...)
-  {
-  tree struct_type_decl = gg_start_building_a_struct(type_name, current_function->function_decl);
-
-  va_list params;
-  va_start(params, count);
-
-  gg_get_struct_type_decl(struct_type_decl, count, params);
-
-  va_end(params);
-
-  // To use the struct_type_decl, you'll need to execute
-  // the following to turn it into a var_decl:
-  //    tree var_decl = gg_define_variable( TREE_TYPE(struct_type_decl),
-  //                                        var_name,
-  //                                        vs_static);
-  return struct_type_decl;
-  }
-
-tree
-gg_get_filelevel_struct_type_decl(const char *type_name, int count, ...)
-  {
-  tree struct_type_decl = gg_start_building_a_struct(type_name, gg_trans_unit.trans_unit_decl);
-
-  va_list params;
-  va_start(params, count);
-
-  gg_get_struct_type_decl(struct_type_decl, count, params);
-
-  va_end(params);
-
-  // To use the struct_type_decl, you'll need to execute
-  // the following to turn it into a var_decl:
-  //    tree var_decl = gg_define_variable( TREE_TYPE(struct_type_decl),
-  //                                        var_name,
-  //                                        vs_static);
-  return struct_type_decl;
-  }
-
-tree
-gg_get_filelevel_union_type_decl(const char *type_name, int count, ...)
-  {
-  tree struct_type_decl = gg_start_building_a_union(type_name, gg_trans_unit.trans_unit_decl);
-
-  va_list params;
-  va_start(params, count);
-
-  gg_get_union_type_decl(struct_type_decl, count, params);
-
-  va_end(params);
-
-  // To use the struct_type_decl, you'll need to execute
-  // the following to turn it into a var_decl:
-  //    tree var_decl = gg_define_variable( TREE_TYPE(struct_type_decl),
-  //                                        var_name,
-  //                                        vs_static);
-  return struct_type_decl;
-  }
-
-tree
-gg_define_local_struct(const char *type_name, const char * var_name, int count, ...)
-  {
-  // Builds a structure, declares it as a static variable in the current function,
-  // and returns the var_decl for it.
-  tree struct_type_decl = gg_start_building_a_struct(type_name, current_function->function_decl);
-
-  va_list params;
-  va_start(params, count);
-
-  gg_get_struct_type_decl(struct_type_decl, count, params);
-
-  va_end(params);
-  // We now have a complete struct_type_decl, whose TREE_TYPE is the
-  // the type we need when declaring it.
-
-  // And with that done, we can actually define the storage:
-  tree var_decl = gg_define_variable( TREE_TYPE(struct_type_decl),
-                                      var_name,
-                                      vs_static);
-  return var_decl;
-  }
-
 tree
 gg_struct_field_ref(const tree base, const char *field)
   {
@@ -861,24 +784,6 @@ gg_struct_field_ref(const tree base, const char *field)
   }
 
 tree
-gg_assign_to_structure(tree var_decl_struct, const char *field, const tree source)
-  {
-  // The C equivalent:  "struct.field = source"
-  tree component_ref = gg_struct_field_ref(var_decl_struct,field);
-  gg_assign(component_ref,source);
-  return component_ref;
-  }
-
-tree
-gg_assign_to_structure(tree var_decl_struct, const char *field, int N)
-  {
-  // The C equivalent:  "struct.field = N"
-  tree component_ref = gg_struct_field_ref(var_decl_struct,field);
-  gg_assign(component_ref,build_int_cst(integer_type_node, N));
-  return component_ref;
-  }
-
-static tree
 gg_create_assembler_name(const char *cobol_name)
   {
   char *psz = cobol_name_mangler(cobol_name);
@@ -1042,7 +947,7 @@ gg_define_from_declaration(tree var_decl)
     // it's time to actually define the storage with a decl_expression:
     tree stmt = build1_loc (gg_token_location(),
                             DECL_EXPR,
-                            TREE_TYPE(var_decl),
+                            void_type_node,
                             var_decl);
     gg_append_statement(stmt);
     }
@@ -1098,6 +1003,34 @@ gg_define_variable(tree type_decl, const char *name, gg_variable_scope_t vs_scop
     {
     gg_define_from_declaration(var_decl);
     }
+  return var_decl;
+  }
+
+tree
+gg_define_volatile_variable(tree type_decl,
+                            const char *name,
+                            gg_variable_scope_t vs_scope)
+  {
+  bool already_defined = false;
+
+  tree volatile_type = build_qualified_type(type_decl, TYPE_QUAL_VOLATILE);
+
+  tree var_decl = gg_declare_variable(volatile_type,
+                                      name,
+                                      NULL_TREE,
+                                      vs_scope,
+                                      &already_defined);
+
+  /* Helpful, especially while debugging the front end.  The volatile-qualified
+     type is the important part; these flags should agree with it. */
+  TREE_THIS_VOLATILE(var_decl) = 1;
+  TREE_SIDE_EFFECTS(var_decl) = 1;
+
+  if (!already_defined)
+    {
+    gg_define_from_declaration(var_decl);
+    }
+
   return var_decl;
   }
 
@@ -1440,7 +1373,10 @@ gg_define_array(tree type_decl, size_t size, gg_variable_scope_t scope)
   }
 
 extern tree
-gg_define_array(tree type_decl, const char *name, size_t size, gg_variable_scope_t scope)
+gg_define_array(tree type_decl,
+                const char *name,
+                size_t size,
+                gg_variable_scope_t scope)
   {
   tree array_type = build_array_type_nelts(type_decl, size);
   return gg_define_variable(array_type, name, scope);
@@ -1455,15 +1391,69 @@ gg_get_address_of(const tree var_decl)
 
   // In order to do that, this fellow's "addressable" bit has to be on, otherwise
   // the GIMPLE reducer creates a temporary variable, sets its value to var_decl's,
-  // and returns the pointer to the temp.  I suppose this has something to do with
-  // pass by reference and pass by value, but it makes my head hurt, and, frankly,
-  // I'll take the dangerous road.
+  // and returns the pointer to the temp.
+
+  tree type = TREE_TYPE (var_decl);
+  if( TREE_CODE (type) == ARRAY_TYPE )
+    {
+    cbl_internal_error("%s:%d: Must not call here with %s",
+                        __func__,
+                        __LINE__,
+                        "ARRAY_TYPE");
+    }
 
   TREE_ADDRESSABLE(var_decl) = 1;
   TREE_USED(var_decl) = 1;
-  return build1(  ADDR_EXPR,
-                  build_pointer_type (TREE_TYPE(var_decl)),
-                  var_decl);
+  return build_fold_addr_expr(var_decl);
+  }
+
+tree
+gg_pointer_to_array(tree expr)
+  {
+  tree type = TREE_TYPE (expr);
+
+  if (TREE_CODE (type) != ARRAY_TYPE)
+    {
+    cbl_internal_error("%s:%d: Must not call here with non-%s",
+                        __func__,
+                        __LINE__,
+                        "ARRAY_TYPE");
+    }
+
+  /* Arrays: produce &(expr[lower_bound]), i.e. pointer to first element,
+     not &expr, which would be pointer-to-array.  */
+  tree domain = TYPE_DOMAIN (type);
+  tree idx_type = domain ? TREE_TYPE (domain) : integer_type_node;
+  tree first_idx =
+      (domain && TYPE_MIN_VALUE (domain))
+          ? TYPE_MIN_VALUE (domain)
+          : build_int_cst (idx_type, 0);
+
+  tree elem_ref = build4 (ARRAY_REF,
+                          TREE_TYPE (type),   /* element type */
+                          expr,
+                          first_idx,
+                          NULL_TREE,
+                          NULL_TREE);
+
+  return build_fold_addr_expr (elem_ref);
+  }
+
+tree
+gg_get_address(const tree var_decl)
+  {
+  /* This takes care of the problem of finding the address of a scalar, or of
+     an ARRAY_TYPE.  I recommend using it carefully; there is something to be
+     said for knowing whether you are working with an array, or a scalar. */
+  tree type = TREE_TYPE (var_decl);
+  if( TREE_CODE (type) == ARRAY_TYPE )
+    {
+    return gg_pointer_to_array(var_decl);
+    }
+
+  TREE_ADDRESSABLE(var_decl) = 1;
+  TREE_USED(var_decl) = 1;
+  return build_fold_addr_expr(var_decl);
   }
 
 tree
@@ -1536,6 +1526,12 @@ gg_indirect(tree pointer, tree byte_offset)
   }
 
 tree
+gg_indirect_i(tree pointer, size_t offset)
+  {
+  return gg_indirect(pointer, build_int_cst_type(SIZE_T, offset));
+  }
+
+tree
 gg_array_value(tree pointer, tree offset)
   {
   // We arrange the function so that it can work on either an ARRAY_TYPE
@@ -1550,12 +1546,13 @@ gg_array_value(tree pointer, tree offset)
     }
   else
     {
-    return build4(ARRAY_REF,
+    tree retval =  build4(ARRAY_REF,
                   element_type,
                   pointer,
-                  offset,
+                  gg_cast(SIZE_T, offset),
                   NULL_TREE,
                   NULL_TREE);
+    return retval;
     }
   }
 
@@ -1745,6 +1742,62 @@ gg_bitwise_and(tree A, tree B)
   }
 
 tree
+gg_bswap (tree var)
+  {
+  location_t loc = UNKNOWN_LOCATION;
+  tree type = TREE_TYPE (var);
+  tree size = TYPE_SIZE_UNIT (type);
+
+  gcc_assert (tree_fits_uhwi_p (size));
+
+  unsigned HOST_WIDE_INT size_in_bytes = tree_to_uhwi (size);
+
+  enum built_in_function fncode;
+  tree unsigned_type;
+
+  switch (size_in_bytes)
+    {
+    case 1:
+      return var;
+
+    case 2:
+      fncode = BUILT_IN_BSWAP16;
+      unsigned_type = uint16_type_node;
+      break;
+
+    case 4:
+      {
+      fncode = BUILT_IN_BSWAP32;
+      unsigned_type = uint32_type_node;
+      break;
+      }
+
+    case 8:
+      fncode = BUILT_IN_BSWAP64;
+      unsigned_type = uint64_type_node;
+      break;
+
+    case 16:
+      fncode = BUILT_IN_BSWAP128;
+      unsigned_type = unsigned_intTI_type_node;  /* or your UINT128 type */
+      break;
+
+    default:
+      gcc_unreachable ();
+    }
+
+  tree arg = fold_convert_loc (loc, unsigned_type, var);
+
+  tree swapped =
+    build_call_expr_loc (loc,
+                         builtin_decl_explicit (fncode),
+                         1,
+                         arg);
+
+  return fold_convert_loc (loc, type, swapped);
+  }
+
+tree
 gg_build_relational_expression(tree operand_a,
                                enum relop_t op,
                                tree operand_b)
@@ -1828,6 +1881,9 @@ gg_build_logical_expression(tree operand_a,
   return logical_expression;
   }
 
+static int label_identifier = 1;
+#define LABEL_ROOT "_label%d"
+
 void
 gg_create_goto_pair(tree *goto_expr,
                     tree *label_expr,
@@ -1837,9 +1893,19 @@ gg_create_goto_pair(tree *goto_expr,
   // We are going to create a pair of expressions for our
   // caller.  They are a matched set of goto/label expressions,
   // to be included in a statement list
+  char *psz;
+  if(name && *name)
+    {
+    psz = xstrdup(name);
+    }
+  else
+    {
+    psz = xasprintf(LABEL_ROOT, label_identifier++);
+    }
+
   tree label_decl = build_decl(   UNKNOWN_LOCATION,
                                   LABEL_DECL,
-                                  gg_create_assembler_name(name),
+                                  gg_create_assembler_name(psz),
                                   void_type_node);
   DECL_CONTEXT(label_decl) = current_function->function_decl;
   TREE_USED(label_decl) = 1;
@@ -1851,6 +1917,7 @@ gg_create_goto_pair(tree *goto_expr,
   *goto_expr  = build1(GOTO_EXPR, void_type_node, label_decl);
   *label_expr = build1(LABEL_EXPR, void_type_node, label_decl);
   *label_addr = gg_get_address_of(label_decl);
+  free(psz);
   }
 
 void
@@ -1859,9 +1926,11 @@ gg_create_goto_pair(tree *goto_expr, tree *label_expr, tree *label_addr)
   // We are going to create a pair of expressions for our
   // caller.  They are a matched set of goto/label expressions,
   // to be included in a statement list
+  char *psz;
+  psz = xasprintf(LABEL_ROOT, label_identifier++);
   tree label_decl = build_decl(   UNKNOWN_LOCATION,
                                   LABEL_DECL,
-                                  NULL_TREE,
+                                  gg_create_assembler_name(psz),
                                   void_type_node);
   DECL_CONTEXT(label_decl) = current_function->function_decl;
   TREE_USED(label_decl) = 1;
@@ -1869,6 +1938,7 @@ gg_create_goto_pair(tree *goto_expr, tree *label_expr, tree *label_addr)
   *goto_expr  = build1(GOTO_EXPR, void_type_node, label_decl);
   *label_expr = build1(LABEL_EXPR, void_type_node, label_decl);
   *label_addr = gg_get_address_of(label_decl);
+  free(psz);
   }
 
 void
@@ -1880,9 +1950,11 @@ gg_create_goto_pair(tree *goto_expr,
   // We are going to create a pair of expressions for our
   // caller.  They are a matched set of goto/label expressions,
   // to be included in a statement list
+  char *psz;
+  psz = xasprintf(LABEL_ROOT, label_identifier++);
   *label_decl = build_decl( UNKNOWN_LOCATION,
                             LABEL_DECL,
-                            NULL_TREE,
+                            gg_create_assembler_name(psz),
                             void_type_node);
   DECL_CONTEXT(*label_decl) = current_function->function_decl;
   TREE_USED(*label_decl) = 1;
@@ -1890,6 +1962,7 @@ gg_create_goto_pair(tree *goto_expr,
   *goto_expr  = build1(GOTO_EXPR, void_type_node, *label_decl);
   *label_expr = build1(LABEL_EXPR, void_type_node, *label_decl);
   *label_addr = gg_get_address_of(*label_decl);
+  free(psz);
   }
 
 void
@@ -1898,15 +1971,18 @@ gg_create_goto_pair(tree *goto_expr, tree *label_expr)
   // We are going to create a pair of expressions for our
   // caller.  They are a matched set of goto/label expressions,
   // to be included in a statement list
+  char *psz;
+  psz = xasprintf(LABEL_ROOT, label_identifier++);
   tree label_decl = build_decl(   UNKNOWN_LOCATION,
                                   LABEL_DECL,
-                                  NULL_TREE,
+                                  gg_create_assembler_name(psz),
                                   void_type_node);
   DECL_CONTEXT(label_decl) = current_function->function_decl;
   TREE_USED(label_decl) = 1;
 
   *goto_expr = build1(GOTO_EXPR, void_type_node, label_decl);
   *label_expr = build1(LABEL_EXPR, void_type_node, label_decl);
+  free(psz);
   }
 
 void
@@ -1915,23 +1991,41 @@ gg_create_goto_pair(tree *goto_expr, tree *label_expr, const char *name)
   // We are going to create a pair of named expressions for our
   // caller.  They are a matched set of goto/label expressions,
   // to be included in a statement list
+  char *psz;
+  if(name && *name)
+    {
+    psz = xstrdup(name);
+    }
+  else
+    {
+    psz = xasprintf(LABEL_ROOT, label_identifier++);
+    }
   tree label_decl = build_decl(   UNKNOWN_LOCATION,
                                   LABEL_DECL,
-                                  gg_create_assembler_name(name),
+                                  gg_create_assembler_name(psz),
                                   void_type_node);
   DECL_CONTEXT(label_decl) = current_function->function_decl;
   TREE_USED(label_decl) = 1;
 
   *goto_expr = build1(GOTO_EXPR, void_type_node, label_decl);
   *label_expr = build1(LABEL_EXPR, void_type_node, label_decl);
+  free(psz);
   }
 
-// Used for implementing SECTIONS and PARAGRAPHS.  When you have a
-// void *pointer = &&label, gg_goto is the same as
-//  goto *pointer
 void
 gg_goto(tree var_decl_pointer)
   {
+  // This routine takes a label_decl_node, and creates a GOTO expression to it.
+  // Currently it is unused, and one should be very wary of using it.  I used
+  // to use it for implementing things like computed gotos, and pseudo-returns
+  // from PERFORMs.  The trouble is that it leads to explosions in the Control
+  // Flow Graph, because the middle end basically has to assume that a
+  // JMP *PTR could reference any of all the symbols in the program.  So, when
+  // I did that, when any PERFORM returned through a JMP *PTR, it led to
+  // O(M*N) behavior, where M was the number of performs and N was the number
+  // of paragraph and section procedures.
+
+  // To speed things up, I learned how to create switch statements.
   tree go_to = build1_loc(gg_token_location(),
                           GOTO_EXPR,
                           void_type_node,
@@ -2283,7 +2377,7 @@ gg_memset(tree dest, const tree value, tree size)
 tree
 gg_memchr(tree buf, tree ch, tree length)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       pvoid_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_MEMCHR),
@@ -2359,7 +2453,7 @@ gg_strcpy(tree dest, tree src)
 tree
 gg_strcmp(tree A, tree B)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       integer_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_STRCMP),
@@ -2391,7 +2485,7 @@ gg_close(tree int_A)
 tree
 gg_strncmp(tree char_star_A, tree char_star_B, tree size_t_N)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       integer_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_STRNCMP),
@@ -2470,7 +2564,7 @@ chain_parameter_to_function(tree function_decl, const tree param_type,  const ch
 
     Cases 3. and 4. turn out to require the same flags.  Here are the combinations of
     flags that are required for each flavor of function_decl.  This was empirically
-    determind by compiling a C++ program with sample code for each type.
+    determined by compiling a C++ program with sample code for each type.
 
                             | addressable | used | nothrow | static | external | public | no_instrument
 main                        |             |      |         |   X    |          |   X    |    X
@@ -2885,16 +2979,19 @@ gg_finalize_function()
   gg_trans_unit.function_stack.pop_back();
   }
 
+void scm_dump_generic_nodes(const char *filename, tree root);
+
 void
 gg_leaving_the_source_code_file()
   {
-  for(  std::vector<tree>::const_iterator it=finalized_function_decls.begin();
-        it != finalized_function_decls.end();
-        it++ )
+  typedef std::vector<tree>::value_type func_type;
+  for( const func_type& func : finalized_function_decls )
     {
     //This makes the function visible on the source code module level.
-    cgraph_node::finalize_function(*it, true);
+    cgraph_node::finalize_function(func, true);
     }
+
+  dump_missing_labels();
   }
 
 void
@@ -3197,7 +3294,7 @@ gg_abort()
 tree
 gg_strlen(tree psz)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       size_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_STRLEN),
@@ -3209,7 +3306,7 @@ gg_strlen(tree psz)
 tree
 gg_strdup(tree psz)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       build_pointer_type(char_type_node),
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_STRDUP),
@@ -3223,7 +3320,7 @@ gg_strdup(tree psz)
 tree
 gg_malloc(tree size)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       pvoid_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_MALLOC),
@@ -3235,7 +3332,7 @@ gg_malloc(tree size)
 tree
 gg_realloc(tree base, tree size)
   {
-  tree the_call = fold_convert(
+  tree the_call = gg_cast(
       pvoid_type_node,
       build_call_expr_loc(gg_token_location(),
                           builtin_decl_explicit (BUILT_IN_REALLOC),
@@ -3266,6 +3363,19 @@ gg_free(tree pointer)
                           1,
                           pointer);
   gg_append_statement(the_call);
+  }
+
+tree
+gg_memcmp(const tree s1, const tree s2, tree n)
+  {
+  tree the_call =
+      build_call_expr_loc(gg_token_location(),
+                          builtin_decl_explicit (BUILT_IN_MEMCMP),
+                          3,
+                          s1,
+                          s2,
+                          n);
+  return the_call;
   }
 
 void
@@ -3444,4 +3554,62 @@ gg_token_location()
     retval = current_token_location();
     }
   return retval;
+  }
+
+const char *
+label_decl_text_from_expr(tree expr)
+  {
+  // This extracts the LABEL_DECL text from GOTO_EXPR and LABEL_EXPR
+  tree label_decl = NULL_TREE;
+
+  if(expr == NULL_TREE)
+    {
+    return "missing";
+    }
+
+  switch(TREE_CODE (expr))
+    {
+    case LABEL_DECL:
+      label_decl = expr;
+      break;
+
+    case LABEL_EXPR:
+      label_decl = LABEL_EXPR_LABEL(expr);
+      break;
+
+    case GOTO_EXPR:
+      {
+      tree dest = GOTO_DESTINATION(expr);
+
+      if (dest != NULL_TREE && TREE_CODE (dest) == LABEL_DECL)
+        {
+        label_decl = dest;
+        }
+      else if (dest != NULL_TREE
+               && TREE_CODE(dest) == ADDR_EXPR
+               && TREE_OPERAND(dest, 0) != NULL_TREE
+               && TREE_CODE(TREE_OPERAND(dest, 0)) == LABEL_DECL)
+        {
+        label_decl = TREE_OPERAND(dest, 0);
+        }
+      break;
+      }
+
+    default:
+      return "missing";
+    }
+
+  if( label_decl == NULL_TREE || TREE_CODE (label_decl) != LABEL_DECL )
+    {
+    return "missing";
+    }
+
+  tree name = DECL_NAME (label_decl);
+  if( name == NULL_TREE || TREE_CODE (name) != IDENTIFIER_NODE )
+    {
+    return "missing";
+    }
+
+  const char *text = IDENTIFIER_POINTER(name);
+  return text ? text : "missing";
   }

@@ -1,3 +1,52 @@
+2026-06-16  Jakub Jelinek  <jakub@redhat.com>
+
+	* include/cpplib.h (enum c_lang): Add CLK_GNUCXX29 and CLK_CXX29.
+	* init.cc (lang_defaults): Add CLK_GNUCXX29 and CLK_CXX29 row.
+	(cpp_init_builtins): Change __cplusplus value for C++26 from 202400L
+	to 202603L and set __cplusplus value for C++29 to 202700L.
+
+2026-06-14  Ben Boeckel  <ben.boeckel@kitware.com>
+
+	* init.cc (cpp_finish): Remove unnecessary `struct` keyword.
+
+2026-06-14  Ben Boeckel  <ben.boeckel@kitware.com>
+
+	* mkdeps.cc (fdeps_add_target): Fix indentation.
+
+2026-05-30  Dhruv Chawla  <dhruvc@nvidia.com>
+
+	* files.cc (_cpp_stack_translated_file): Fix typos.
+	(_cpp_get_file_path): Likewise.
+	* include/cpplib.h (PREV_FALLTHROUGH): Likewise.
+	(struct cpp_options): Likewise.
+	* include/line-map.h (enum lc_reason): Likewise.
+	* internal.h (struct cpp_buffer): Likewise.
+	* lex.cc (lex_raw_string): Likewise.
+	(cpp_directive_only_process): Likewise.
+	* line-map.cc (linemap_add): Likewise.
+	(linemap_module_restore): Likewise.
+	(rich_location::get_last_fixit_hint): Likewise.
+	* macro.cc (_cpp_builtin_macro_text): Likewise.
+	(arg_token_ptr_at): Likewise.
+	(replace_args): Likewise.
+	(reached_end_of_context): Likewise.
+	(cpp_get_token_1): Likewise.
+	(create_iso_definition): Likewise.
+	(get_deferred_or_lazy_macro): Likewise.
+	* traditional.cc (check_output_buffer): Likewise.
+
+2026-04-21  Marek Polacek  <polacek@redhat.com>
+
+	PR preprocessor/124930
+	* charset.cc (_cpp_destroy_iconv): Correct two calls to
+	iconv_close.
+
+2026-03-19  Nathaniel Shead  <nathanieloshead@gmail.com>
+
+	PR c++/124466
+	* line-map.cc (linemap_location_from_module_p): Resolve loc in
+	case it's a macro location.
+
 2026-03-13  Jakub Jelinek  <jakub@redhat.com>
 
 	PR preprocessor/105412

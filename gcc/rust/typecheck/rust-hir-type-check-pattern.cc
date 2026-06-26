@@ -19,9 +19,10 @@
 #include "rust-hir-type-check-pattern.h"
 #include "rust-hir-pattern.h"
 #include "rust-hir-type-check-expr.h"
+#include "rust-rib.h"
 #include "rust-token.h"
 #include "rust-type-util.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 #include "rust-tyty.h"
 #include "tree.h"
 
@@ -48,18 +49,19 @@ TypeCheckPattern::Resolve (HIR::Pattern &pattern, TyTy::BaseType *parent)
 void
 TypeCheckPattern::visit (HIR::PathInExpression &pattern)
 {
-  // Pattern must be enum variants, sturcts, constants, or associated constansts
+  // Pattern must be enum variants, structs, constants, or associated constansts
   TyTy::BaseType *pattern_ty = TypeCheckExpr::Resolve (pattern);
 
   NodeId ref_node_id = UNKNOWN_NODEID;
   bool maybe_item = false;
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
-  if (auto id = nr_ctx.lookup (pattern.get_mappings ().get_nodeid ()))
+  if (auto nslookup = nr_ctx.lookup (pattern.get_mappings ().get_nodeid (),
+				     Resolver2_0::Namespace::Values,
+				     Resolver2_0::Namespace::Types))
     {
-      ref_node_id = *id;
+      ref_node_id = nslookup->id;
       maybe_item = true;
     }
 

@@ -122,9 +122,9 @@ int8_t ssat8_range (int16_t a, int8_t range)
 F7_WEAK
 f7_double_t __floatundidf (uint64_t x)
 {
-  f7_t xx;
-  f7_set_u64 (&xx, x);
-  return f7_get_double (&xx);
+  f7_t xx7, *xx = &xx7;
+  xx = f7_set_u64 (xx, x);
+  return f7_get_double (xx);
 }
 #endif // F7MOD_floatundidf_
 
@@ -133,11 +133,63 @@ f7_double_t __floatundidf (uint64_t x)
 F7_WEAK
 f7_double_t __floatdidf (int64_t x)
 {
-  f7_t xx;
-  f7_set_s64 (&xx, x);
-  return f7_get_double (&xx);
+  f7_t xx7, *xx = &xx7;
+  xx = f7_set_s64 (xx, x);
+  return f7_get_double (xx);
 }
 #endif // F7MOD_floatdidf_
+
+
+extern uint64_t d_to_ufx (f7_double_t, int8_t) F7ASM(f7_d_to_fx64_asm);
+extern int64_t  d_to_sfx (f7_double_t, int8_t) F7ASM(f7_d_to_fx64_asm);
+
+#ifdef F7MOD_fractdfda_
+F7_WEAK
+int64_t __fractdfda (f7_double_t d)
+{
+  return d_to_sfx (d, -__DA_FBIT__);
+}
+#endif // F7MOD_fractdfda_
+
+#ifdef F7MOD_fractdfuda_
+F7_WEAK
+uint64_t __fractdfuda (f7_double_t d)
+{
+  return d_to_ufx (d, __UDA_FBIT__);
+}
+#endif // F7MOD_fractdfuda_
+
+#ifdef F7MOD_fractdfta_
+F7_WEAK
+int64_t __fractdfta (f7_double_t d)
+{
+  return d_to_sfx (d, -__TA_FBIT__);
+}
+#endif // F7MOD_fractdfta_
+
+#ifdef F7MOD_fractdfuta_
+F7_WEAK
+uint64_t __fractdfuta (f7_double_t d)
+{
+  return d_to_ufx (d, __UTA_FBIT__);
+}
+#endif // F7MOD_fractdfuta_
+
+#ifdef F7MOD_fractdfdq_
+F7_WEAK
+int64_t __fractdfdq (f7_double_t d)
+{
+  return d_to_sfx (d, -__DQ_FBIT__);
+}
+#endif // F7MOD_fractdfdq_
+
+#ifdef F7MOD_fractdfudq_
+F7_WEAK
+uint64_t __fractdfudq (f7_double_t d)
+{
+  return d_to_ufx (d, __UDQ_FBIT__);
+}
+#endif // F7MOD_fractdfudq_
 
 
 #ifdef F7MOD_init_
@@ -344,7 +396,7 @@ float f7_get_float (const f7_t *aa)
 
   __asm ("cbr %T0%t2, 1 << (7 & %2)"  "\n\t"
 	 "or  %C0, %A1"		      "\n\t"
-	 "or  %D0, %B1"
+	 "or  %D0, %B1 ; [[len=3]]"
 	 : "+d" (mant)
 	 : "r" (expo16), "n" (FLT_DIG_MANT));
 
@@ -410,7 +462,8 @@ uint64_t clr_r18 (void)
 {
   extern void __clr_8 (void);
   register uint64_t r18 __asm ("r18");
-  __asm ("%~call %x[f]" : "=r" (r18) : [f] "i" (__clr_8));
+  __asm ("%~call %x[f] ; [[len=%~call]]"
+	 : "=r" (r18) : [f] "i" (__clr_8));
   return r18;
 }
 
@@ -459,7 +512,7 @@ f7_double_t f7_get_double (const f7_t *aa)
   // dex = Overflow ? 1 : 0.
   __asm ("bst %T[mant]%T[bitno]"  "\n\t"
 	 "clr %0"		  "\n\t"
-	 "bld %0,0"
+	 "bld %0,0 ; [[len=3]]"
 	 : "=r" (dex), [mant] "+r" (r18)
 	 : [bitno] "n" (64 - 8));
 
@@ -504,7 +557,7 @@ f7_double_t f7_get_double (const f7_t *aa)
   r18 = mant;
   __asm ("cbr %T0%t2, 1 << (7 & %2)"  "\n\t"
 	 "or  %r0+6, %A1"	      "\n\t"
-	 "or  %r0+7, %B1"
+	 "or  %r0+7, %B1 ; [[len=3]]"
 	 : "+r" (r18)
 	 : "r" (expo16), "n" (DBL_DIG_MANT));
 
@@ -672,7 +725,7 @@ int8_t cmp_u8 (uint8_t a_class, uint8_t b_class, bool sign_a)
 	 "sbci %[c], -1"      "\n\t"
 	 "sbrc %[s], 0"	      "\n\t"
 	 "neg  %[c]"	      "\n\t"
-	 "1:"
+	 "1: ; [[len=6]]"
 	 : [c] "=d" (c)
 	 : [a] "0" (a_class), [b] "r" (b_class), [s] "r" (sign_a));
   return c;
@@ -944,7 +997,7 @@ void f7_fdim (f7_t *cc, const f7_t *aa, const f7_t *bb)
 #ifdef F7MOD_addsub_
 static void return_with_sign (f7_t *cc, const f7_t *aa, int8_t c_sign)
 {
-  __asm (";;; return with sign");
+  __asm (";;; return with sign ; [[len=0]]");
   f7_copy (cc, aa);
   if (c_sign != -1)
     f7_set_sign (cc, c_sign);
@@ -958,7 +1011,7 @@ void f7_addsub (f7_t *cc, const f7_t *aa, const f7_t *bb, bool neg_b)
   // From this point on, no more access aa->flags or bb->flags
   // to avoid early-clobber when writing cc->flags.
 
-  // Hande NaNs.
+  // Handle NaNs.
   if (f7_class_nan (a_class | b_class))
     return f7_set_nan (cc);
 
@@ -1034,7 +1087,7 @@ void f7_madd_msub (f7_t *cc, const f7_t *aa, const f7_t *bb, const f7_t *dd,
   uint8_t x_sign = f7_signbit (xx);
   int16_t x_expo = xx->expo;
   f7_addsub (xx, xx, dd, neg_d);
-  // Now add LSB.  If cancellation occured in the add / sub, then we have the
+  // Now add LSB.  If cancellation occurred in the add / sub, then we have the
   // chance of extra 8 bits of precision.  Turn LSByte into f7_t.
   f7_clr (cc);
   cc->expo = sub_ssat16 (x_expo, F7_MANT_BITS);

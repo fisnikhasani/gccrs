@@ -801,7 +801,7 @@ mark_not_eliminable (rtx x, machine_mode mem_mode)
 	    curr_sp_change += offset;
 	}
       else if (REG_P (XEXP (x, 0))
-	       && REGNO (XEXP (x, 0)) >= FIRST_PSEUDO_REGISTER)
+	       && REGNO (XEXP (x, 0)) < FIRST_PSEUDO_REGISTER)
 	{
 	  /* If we modify the source of an elimination rule, disable
 	     it.  Do the same if it is the destination and not the
@@ -1132,6 +1132,7 @@ static int
 spill_pseudos (HARD_REG_SET set, int *spilled_pseudos)
 {
   int i, n;
+  unsigned int j;
   bitmap_head to_process;
   rtx_insn *insn;
 
@@ -1140,9 +1141,10 @@ spill_pseudos (HARD_REG_SET set, int *spilled_pseudos)
   if (lra_dump_file != NULL)
     {
       fprintf (lra_dump_file, "	   Spilling non-eliminable hard regs:");
-      for (i = 0; i < FIRST_PSEUDO_REGISTER; i++)
-	if (TEST_HARD_REG_BIT (set, i))
-	  fprintf (lra_dump_file, " %d", i);
+      j = 0;
+      hard_reg_set_iterator hrsi;
+      EXECUTE_IF_SET_IN_HARD_REG_SET (set, 0, j, hrsi)
+	fprintf (lra_dump_file, " %d", j);
       fprintf (lra_dump_file, "\n");
     }
   bitmap_initialize (&to_process, &reg_obstack);
@@ -1327,7 +1329,7 @@ init_elim_table (void)
 
   /* Build the FROM and TO REG rtx's.  Note that code in gen_rtx_REG
      will cause, e.g., gen_rtx_REG (Pmode, STACK_POINTER_REGNUM) to
-     equal stack_pointer_rtx.  We depend on this. Threfore we switch
+     equal stack_pointer_rtx.  We depend on this. Therefore we switch
      off that we are in LRA temporarily.  */
   lra_in_progress = false;
   for (ep = reg_eliminate; ep < &reg_eliminate[NUM_ELIMINABLE_REGS]; ep++)
@@ -1544,8 +1546,19 @@ lra_eliminate (bool final_p, bool first_p)
   EXECUTE_IF_SET_IN_BITMAP (&insns_with_changed_offsets, 0, uid, bi)
     /* A dead insn can be deleted in process_insn_for_elimination.  */
     if (lra_insn_recog_data[uid] != NULL)
-      process_insn_for_elimination (lra_insn_recog_data[uid]->insn,
-				    final_p, first_p);
+      {
+	rtx_insn *insn = lra_insn_recog_data[uid]->insn;
+	start_sequence ();
+	process_insn_for_elimination (insn, final_p, first_p);
+	rtx_insn *first = get_insns ();
+	end_sequence ();
+	if (first != NULL)
+	  {
+	    lra_assert (!final_p);
+	    lra_process_new_insns (insn, first, NULL,
+				   "Inserting elimination insn", true);
+	  }
+      }
   bitmap_clear (&insns_with_changed_offsets);
 
 lra_eliminate_done:

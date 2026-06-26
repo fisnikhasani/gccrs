@@ -392,7 +392,7 @@ condition_uid (struct function *fn, basic_block b)
    Masking and short circuiting are deeply connected - masking occurs when
    control flow reaches a state that is also reachable with short circuiting.
    In fact, masking corresponds to short circuiting for the reversed
-   expression.  This means we can find the limits, the last term in preceeding
+   expression.  This means we can find the limits, the last term in preceding
    subexpressions, by following the edges that short circuit to the same
    outcome.  The algorithm treats the CFG as a reduced order binary decision
    diagram (see Randall E. Bryant's Graph Based Algorithms for Boolean
@@ -455,7 +455,7 @@ condition_uid (struct function *fn, basic_block b)
    We only have to consider the pairs of top, bot where top is the the closest
    (highest-index'd) candidate that still satisfies top < bot in the
    topological order, as this will be the immediate left operand.  The nodes of
-   the other left operands will also be found when going through the righmost
+   the other left operands will also be found when going through the rightmost
    term, and a lower-index'd top would just find subsets.  This has a
    significant performance impact, 15-20x faster for the worst cases of (x && y
    && ..) with no nesting.
@@ -818,7 +818,7 @@ cov_length (const struct condcov *cov)
   return cov->m_index.length () - 1;
 }
 
-/* The subgraph, exluding intermediates, for the nth Boolean expression.  */
+/* The subgraph, excluding intermediates, for the nth Boolean expression.  */
 array_slice<basic_block>
 cov_blocks (struct condcov *cov, size_t n)
 {
@@ -1856,6 +1856,8 @@ tree_profiling (void)
 {
   struct cgraph_node *node;
 
+  coverage_init_file ();
+
   /* Verify whether we can utilize atomic update operations.  */
   bool can_support_atomic = targetm.have_libatomic;
   unsigned HOST_WIDE_INT gcov_type_size
@@ -1930,7 +1932,7 @@ tree_profiling (void)
 	continue;
       /* Do not instrument extern inline functions when testing coverage.
 	 While this is not perfectly consistent (early inlined extern inlines
-	 will get acocunted), testsuite expects that.  */
+	 will get accounted), testsuite expects that.  */
       if (DECL_EXTERNAL (node->decl)
 	  && flag_test_coverage)
 	continue;
@@ -2071,6 +2073,7 @@ tree_profiling (void)
 
   del_node_map ();
   end_branch_prob ();
+  coverage_finish_file ();
   return 0;
 }
 

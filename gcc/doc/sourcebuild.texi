@@ -876,9 +876,9 @@ included, in this file you should guard declarations using these types
 inside appropriate @code{#ifdef RTX_CODE} or @code{#ifdef TREE_CODE}
 conditional code segments.
 
-If the backend uses shared data structures that require @code{GTY} markers 
+If the backend uses shared data structures that require @code{GTY} markers
 for garbage collection (@pxref{Type Information}), you must declare those
-in @file{@var{machine}.h} rather than @file{@var{machine}-protos.h}.  
+in @file{@var{machine}.h} rather than @file{@var{machine}-protos.h}.
 Any definitions required for building libgcc must also go in
 @file{@var{machine}.h}.
 
@@ -1505,6 +1505,25 @@ with which the test will be compiled, including the multilib options.
 By convention, keywords ending in @code{_nocache} can also include options
 specified for the particular test in an earlier @code{dg-options} or
 @code{dg-add-options} directive.
+
+@subsubsection Object file format
+
+This identifies the object file format emitted by the compiler. Matching
+assembler output often depends on content that differs between file formats.
+
+@table @code
+
+@item elf
+Target uses the ELF file format (note that ELFv2 is matched specifically for
+the powerpc platform, below).
+
+@item macho
+Target uses the Mach-O file format (currently applies only to Darwin / macOS).
+
+@item pe
+Target uses the PE/COFF file format (e.g. for Windows).
+
+@end table
 
 @subsubsection Endianness
 
@@ -2351,6 +2370,11 @@ ARM target supporting @code{-mbranch-protection=standard}.
 @item arm_pacbti_hw
 Test system supports for executing non nop pacbti instructions.
 
+@item arm_mixed_fp
+On Arm targets, true when the target uses hardware instructions for
+single-precision floatint-point values, but software emulation for
+double-precision values.
+
 @end table
 
 @subsubsection AArch64-specific attributes
@@ -2936,6 +2960,9 @@ Target can compile using @code{pthread.h} with no errors or warnings.
 @item pthread_h
 Target has @code{pthread.h}.
 
+@item sleep
+Target supports @code{sleep}.
+
 @item sockets
 Target can compile using @code{sys/socket.h} with no errors or warnings.
 
@@ -3386,6 +3413,12 @@ locally when using pic/PIC passes in the testsuite.
 Add the target-specific flags needed to use
 @code{check-function-bodies} from @code{dg-final}.
 
+These options are also added automatically by:
+
+@smallexample
+/* @{ dg-final @{ check-function-bodies @dots{} @} @dots{} @} */
+@end smallexample
+
 @item float@var{n}
 Add the target-specific flags needed to use the @code{_Float@var{n}} type.
 
@@ -3609,7 +3642,7 @@ assembler output, excluding LTO sections.
 
 @item scan-assembler-bound @var{regex} @var{cmp} @var{num} [@{ target/xfail @var{selector} @}]
 Passes if @var{regex} is matched @var{cmp} @var{num} times in the test's
-assembler output, excluding LTO sections. @var{cmp} is a comparitor.
+assembler output, excluding LTO sections. @var{cmp} is a comparator.
 
 @item scan-assembler-dem @var{regex} [@{ target/xfail @var{selector} @}]
 Passes if @var{regex} matches text in the test's demangled assembler output,
@@ -3727,6 +3760,38 @@ A line containing just:
 stands for zero or more unmatched lines; the whitespace after
 @var{prefix} is again not significant.
 
+@code{check-function-bodies} automatically adds the same options as:
+
+@smallexample
+/* @{ dg-add-options check_function_bodies @} */
+@end smallexample
+
+For this reason, @code{check-function-bodies} must come after the final
+@code{dg-options} directive.
+
+@end table
+
+@subsubsection Scan object metadata with readelf
+
+These commands inspect the linked test output file with @command{readelf}.
+They are mainly intended for LTO tests.
+
+These commands take a single @var{regex} and test whether it is present
+in (or absent from, for @samp{-not}) the corresponding @command{readelf}
+output.
+
+@table @code
+@item object-readelf-attributes @var{regex} [@{ target/xfail @var{selector} @}]
+Runs @command{readelf -A} and checks that @var{regex} matches.
+
+@item object-readelf-attributes-not @var{regex} [@{ target/xfail @var{selector} @}]
+Runs @command{readelf -A} and checks that @var{regex} does not match.
+
+@item object-readelf-notes @var{regex} [@{ target/xfail @var{selector} @}]
+Runs @command{readelf -n} and checks that @var{regex} matches.
+
+@item object-readelf-notes-not @var{regex} [@{ target/xfail @var{selector} @}]
+Runs @command{readelf -n} and checks that @var{regex} does not match.
 @end table
 
 @subsubsection Scan optimization dump files

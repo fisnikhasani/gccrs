@@ -1,4 +1,4 @@
-/* Process declarations and variables for -*- C++ -*- compiler.
+/* Process declarations and variables for the C++ compiler.
    Copyright (C) 1988-2026 Free Software Foundation, Inc.
    Contributed by Michael Tiemann (tiemann@cygnus.com)
 
@@ -1023,6 +1023,10 @@ wrapup_namespace_globals ()
 
 	  if (VAR_P (decl)
 	      && DECL_EXTERNAL (decl)
+	      /* We mark consteval-only variables DECL_EXTERNAL, but
+		  extern constexpr inline std::meta::info i{};
+		 is a definition (the extern is redundant).  */
+	      && !DECL_INITIAL (decl)
 	      && DECL_INLINE_VAR_P (decl)
 	      && DECL_ODR_USED (decl))
 	    error_at (DECL_SOURCE_LOCATION (decl),
@@ -4193,6 +4197,7 @@ identify_goto (tree decl, location_t loc, const location_t *locus,
 {
   if (computed)
     diag_kind = diagnostics::kind::warning;
+  auto_diagnostic_group d;
   bool complained
     = emit_diagnostic (diag_kind, loc, 0,
 		       decl ? G_("jump to label %qD")
@@ -5584,6 +5589,11 @@ cxx_init_decl_processing (void)
 
   c_common_nodes_and_builtins ();
 
+  /* Call the target stack_protect_guard hook if the stack protection
+     guard is declared as a global symbol.  */
+  if (targetm.stack_protect_guard_symbol_p ())
+    pushdecl (targetm.stack_protect_guard ());
+
   tree bool_ftype = build_function_type_list (boolean_type_node, NULL_TREE);
   tree decl
     = add_builtin_function ("__builtin_is_constant_evaluated",
@@ -5627,6 +5637,20 @@ cxx_init_decl_processing (void)
 				   CP_BUILT_IN_EH_PTR_ADJUST_REF,
 				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
       set_call_expr_flags (decl, ECF_NOTHROW | ECF_LEAF);
+
+      /* Similar case to __builtin_source_location above.  The concrete
+	 return type is std::exception_ptr, but we can't form the type
+	 at this point, so it is deduced later.  */
+      decl = add_builtin_function ("__builtin_current_exception",
+				   auto_ftype, CP_BUILT_IN_CURRENT_EXCEPTION,
+				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
+      set_call_expr_flags (decl, ECF_NOTHROW | ECF_LEAF);
+
+      tree int_ftype = build_function_type_list (integer_type_node, NULL_TREE);
+      decl = add_builtin_function ("__builtin_uncaught_exceptions",
+				   int_ftype, CP_BUILT_IN_UNCAUGHT_EXCEPTIONS,
+				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
+      set_call_expr_flags (decl, ECF_PURE | ECF_NOTHROW | ECF_LEAF);
     }
 
   decl
@@ -5883,18 +5907,15 @@ cp_make_fname_decl (location_t loc, tree id, int type_dep)
       if (!release_name)
 	{
 	  cpp_string cstr = { 0, 0 }, strname;
-	  size_t len = strlen (name) + 3; /* Two for '"'s.  One for NULL.  */
-	  char *namep = XNEWVEC (char, len);
-	  snprintf (namep, len, "\"%s\"", name);
-	  strname.text = (unsigned char *) namep;
-	  strname.len = len - 1;
-	  if (cpp_interpret_string (parse_in, &strname, 1, &cstr, CPP_STRING))
+	  strname.text
+	    = const_cast <unsigned char *> ((const unsigned char *) name);
+	  strname.len = strlen (name) + 1;
+	  if (cpp_translate_string (parse_in, &strname, &cstr, CPP_STRING,
+				    false))
 	    {
 	      name = (const char *) cstr.text;
 	      release_name = true;
 	    }
-
-	  XDELETEVEC (namep);
 	}
 
       size_t length = strlen (name);
@@ -6186,7 +6207,7 @@ fixup_anonymous_aggr (tree t)
   vec_safe_truncate (vec, store);
 
   /* Wipe RTTI info.  */
-  CLASSTYPE_TYPEINFO_VAR (t) = NULL_TREE;
+  SET_CLASSTYPE_TYPEINFO_VAR (t, NULL_TREE);
 
   /* Anonymous aggregates cannot have fields with ctors, dtors or complex
      assignment operators (because they cannot have these methods themselves).
@@ -7591,7 +7612,7 @@ reshape_init_array_1 (tree elt_type, tree max_index, reshape_iter *d,
       else
 	midx = tree_to_poly_uint64 (fold_convert (size_type_node, max_index));
 
-      /* For VLA vectors, we restict the number of elements in the constructor
+      /* For VLA vectors, we restrict the number of elements in the constructor
 	 to lower bound of the VLA elements.  */
       max_index_cst = constant_lower_bound (midx);
     }
@@ -8566,15 +8587,9 @@ check_initializer (tree decl, tree init, int flags, vec<tree, va_gc> **cleanups)
 
       if (((type_build_ctor_call (type) || CLASS_TYPE_P (type))
 	   && !(flags & LOOKUP_ALREADY_DIGESTED)
-	   && !(init && BRACE_ENCLOSED_INITIALIZER_P (init)
-		&& CP_AGGREGATE_TYPE_P (type)
-		&& (CLASS_TYPE_P (type)
-		    /* The call to build_aggr_init below could end up
-		       calling build_vec_init, which may break when we
-		       are processing a template.  */
-		    || processing_template_decl
-		    || !TYPE_NEEDS_CONSTRUCTING (type)
-		    || type_has_extended_temps (type))))
+	   && !(init
+		&& BRACE_ENCLOSED_INITIALIZER_P (init)
+		&& CP_AGGREGATE_TYPE_P (type)))
 	  || (DECL_DECOMPOSITION_P (decl) && TREE_CODE (type) == ARRAY_TYPE))
 	{
 	  init_code = build_aggr_init_full_exprs (decl, init, flags);
@@ -8604,12 +8619,7 @@ check_initializer (tree decl, tree init, int flags, vec<tree, va_gc> **cleanups)
 	      /* In C++20, the call to build_aggr_init could have created
 		 an INIT_EXPR with a CONSTRUCTOR as the RHS to handle
 		 A(1, 2).  */
-	      tree rhs = TREE_OPERAND (init_code, 1);
-	      if (processing_template_decl && TREE_CODE (rhs) == TARGET_EXPR)
-		/* Avoid leaking TARGET_EXPR into template trees.  */
-		rhs = build_implicit_conv_flags (type, init, flags);
-	      init = rhs;
-
+	      init = TREE_OPERAND (init_code, 1);
 	      init_code = NULL_TREE;
 	      /* Don't call digest_init; it's unnecessary and will complain
 		 about aggregate initialization of non-aggregate classes.  */
@@ -9148,6 +9158,7 @@ omp_declare_variant_finalize_one (tree decl, tree attr)
 		  loc = EXPR_LOC_OR_LOC (variant,
 					 DECL_SOURCE_LOCATION (variant));
 		}
+	      auto_diagnostic_group d;
 	      error_at (loc, "argument %d of %qE must be of %<omp_interop_t%>",
 			args->length () + 1, variant);
 	      inform (EXPR_LOCATION (TREE_PURPOSE (append_args_list)),
@@ -9285,6 +9296,7 @@ omp_declare_variant_finalize_one (tree decl, tree attr)
 		 i++, varg = TREE_CHAIN (varg))
 	      if (!varg || !c_omp_interop_t_p (TREE_VALUE (varg)))
 		{
+		  auto_diagnostic_group d;
 		  error_at (DECL_SOURCE_LOCATION (variant),
 			    "argument %d of %qD must be of %<omp_interop_t%>",
 			    nbase_args + i + 1, variant);
@@ -9400,7 +9412,7 @@ omp_declare_variant_finalize (tree decl, tree attr)
     }
   /* This loop is like private_lookup_attribute, except that it works
      with tree * rather than tree, as we might want to remove the
-     attributes that are diagnosed as errorneous.  */
+     attributes that are diagnosed as erroneous.  */
   while (*list)
     {
       tree attr = get_attribute_name (*list);
@@ -9635,7 +9647,7 @@ cp_finish_decl (tree decl, tree init, bool init_const_expr_p,
 	      /* [basic.start.main]/3: A program that defines main as deleted
 		 is ill-formed.  */
 	      error ("%<::main%> cannot be deleted");
-	      DECL_INITIAL (decl) = NULL_TREE;
+	      DECL_INITIAL (decl) = error_mark_node;
 	    }
 	  else
 	    {
@@ -9869,10 +9881,7 @@ cp_finish_decl (tree decl, tree init, bool init_const_expr_p,
 	 require a guard variable, and since the mangled name of the
 	 guard variable will depend on the mangled name of this
 	 variable.  */
-      if (DECL_FUNCTION_SCOPE_P (decl)
-	  && TREE_STATIC (decl)
-	  && !DECL_ARTIFICIAL (decl)
-	  && !consteval_only_p (decl))
+      if (DECL_FUNCTION_SCOPE_P (decl) && TREE_STATIC (decl))
 	{
 	  /* The variable holding an anonymous union will have had its
 	     discriminator set in finish_anon_union, after which it's
@@ -9890,9 +9899,10 @@ cp_finish_decl (tree decl, tree init, bool init_const_expr_p,
 	      walk_tree (&init, notice_forced_label_r, NULL, NULL);
 	      add_local_decl (cfun, decl);
 	    }
-	  /* And make sure it's in the symbol table for
-	     c_parse_final_cleanups to find.  */
-	  varpool_node::get_create (decl);
+	  if (!consteval_only_p (decl))
+	    /* And make sure it's in the symbol table for
+	       c_parse_final_cleanups to find.  */
+	    varpool_node::get_create (decl);
 	}
 
       if (flag_openmp
@@ -10657,6 +10667,12 @@ cp_decomp_size (location_t loc, tree type, tsubst_flags_t complain)
 	return -1;
       else if (btype == NULL_TREE)
 	return 0;
+      if (btype != type)
+	{
+	  tree binfo = lookup_base (type, btype, ba_check, NULL, complain);
+	  if (binfo == NULL_TREE || binfo == error_mark_node)
+	    return -1;
+	}
       for (tree field = TYPE_FIELDS (btype); field; field = TREE_CHAIN (field))
 	if (TREE_CODE (field) != FIELD_DECL
 	    || DECL_ARTIFICIAL (field)
@@ -11011,7 +11027,8 @@ cp_finish_decomp (tree decl, cp_decomp *decomp, bool test_p)
 		  maybe_push_decl (t);
 		  /* Save the decltype away before reference collapse.  */
 		  hash_map_safe_put<hm_ggc> (decomp_type_table, t, eltype);
-		  eltype = cp_build_reference_type (eltype, !lvalue_p (init));
+		  if (glvalue_p (init))
+		    eltype = cp_build_reference_type (eltype, !lvalue_p (init));
 		  TREE_TYPE (t) = eltype;
 		  layout_decl (t, 0);
 		  DECL_HAS_VALUE_EXPR_P (t) = 0;
@@ -11056,7 +11073,8 @@ cp_finish_decomp (tree decl, cp_decomp *decomp, bool test_p)
 	    }
 	  /* Save the decltype away before reference collapse.  */
 	  hash_map_safe_put<hm_ggc> (decomp_type_table, v[i], eltype);
-	  eltype = cp_build_reference_type (eltype, !lvalue_p (init));
+	  if (glvalue_p (init))
+	    eltype = cp_build_reference_type (eltype, !lvalue_p (init));
 	  TREE_TYPE (v[i]) = eltype;
 	  layout_decl (v[i], 0);
 	  if (DECL_HAS_VALUE_EXPR_P (v[i]))
@@ -12204,7 +12222,28 @@ grokfndecl (tree ctype,
 
   DECL_ARGUMENTS (decl) = parms;
   for (t = parms; t; t = DECL_CHAIN (t))
-    DECL_CONTEXT (t) = decl;
+    {
+      DECL_CONTEXT (t) = decl;
+      if (flag_reflection
+	  && initialized == SD_INITIALIZED
+	  && DECL_ATTRIBUTES (t))
+	for (tree a = DECL_ATTRIBUTES (t);
+	     (a = lookup_annotation (a));
+	     a = TREE_CHAIN (a))
+	  {
+	    gcc_checking_assert (TREE_CODE (TREE_VALUE (a)) == TREE_LIST);
+	    /* Mark TREE_PURPOSE of the value that it is an annotation
+	       on an argument of a function definition (rather than
+	       annotation from function declaration).  For function parameter
+	       reflection all annotations are listed, while for variable_of
+	       only those marked here.  Annotation is marked as coming from
+	       function definition's argument if it has TREE_PURPOSE
+	       void_node or INTEGER_CST with signed type.  */
+	    tree val = TREE_VALUE (a);
+	    gcc_assert (TREE_PURPOSE (val) == NULL_TREE);
+	    TREE_PURPOSE (val) = void_node;
+	  }
+    }
 
   /* Propagate volatile out from type to decl.  */
   if (TYPE_VOLATILE (type))
@@ -15768,7 +15807,7 @@ grokdeclarator (const cp_declarator *declarator,
   id_loc = declarator ? declarator->id_loc : input_location;
 
   if (innermost_code != cdk_function
-    /* Don't check this if it can be the artifical decltype(auto)
+    /* Don't check this if it can be the artificial decltype(auto)
        we created when building a constraint in a compound-requirement:
        that the type-constraint is plain is going to be checked in
        cp_parser_compound_requirement.  */
@@ -15895,10 +15934,9 @@ grokdeclarator (const cp_declarator *declarator,
 	{
 	  if (flag_reflection
 	      && declarator->std_attributes != error_mark_node
-	      && lookup_attribute ("internal ", "annotation ",
-				   declarator->std_attributes)
+	      && lookup_annotation (declarator->std_attributes)
 	      && *attrlist != error_mark_node
-	      && lookup_attribute ("internal ", "annotation ", *attrlist))
+	      && lookup_annotation (*attrlist))
 	    /* If there are annotations in both lists, ensure
 	       declarator->std_attributes go after *attrlist.  See
 	       PR124399.  */
@@ -16106,6 +16144,10 @@ grokdeclarator (const cp_declarator *declarator,
 	/* Acknowledge that this was written:
 	     `using analias = atype;'.  */
 	TYPE_DECL_ALIAS_P (decl) = 1;
+
+      /* We use a flag so that dependent_opaque_alias_p doesn't have to
+	 recompute the answer every single time.  */
+      TYPE_DECL_OPAQUE_ALIAS_P (decl) = any_lambdas_p (type);
 
       return decl;
     }
@@ -16618,6 +16660,24 @@ grokdeclarator (const cp_declarator *declarator,
 
 	if (friendp)
 	  {
+	    if (flag_reflection && !funcdef_flag && decl)
+	      {
+		if (attrlist && lookup_annotation (*attrlist))
+		  {
+		    /* Remove the annotations to avoid spurious warning
+		       below.  */
+		    *attrlist = remove_attribute ("internal ", "annotation ",
+						  *attrlist);
+		    error_at (id_loc, "annotation applied to non-defining "
+				      "friend declaration %qD", decl);
+		  }
+		for (tree arg = DECL_ARGUMENTS (decl);
+		     arg; arg = DECL_CHAIN (arg))
+		  if (lookup_annotation (DECL_ATTRIBUTES (arg)))
+		    error_at (DECL_SOURCE_LOCATION (arg),
+			      "annotation applied to parameter %qD of "
+			      "non-defining friend declaration", arg);
+	      }
 	    /* Packages tend to use GNU attributes on friends, so we only
 	       warn for standard attributes.  */
 	    if (attrlist
@@ -18801,7 +18861,7 @@ copy_type_enum (tree dst, tree src)
 /* Begin compiling the definition of an enumeration type.
    NAME is its name,
 
-   if ENUMTYPE is not NULL_TREE then the type has alredy been found.
+   if ENUMTYPE is not NULL_TREE then the type has already been found.
 
    UNDERLYING_TYPE is the type that will be used as the storage for
    the enumeration type. This should be NULL_TREE if no storage type
@@ -19046,7 +19106,7 @@ finish_enum_value_list (tree enumtype)
 
 	  /* Update the minimum and maximum values, if appropriate.  */
 	  value = DECL_INITIAL (decl);
-	  if (TREE_CODE (value) != INTEGER_CST)
+	  if (!value || TREE_CODE (value) != INTEGER_CST)
 	    value = integer_zero_node;
 	  /* Figure out what the minimum and maximum values of the
 	     enumerators are.  */
@@ -19199,6 +19259,8 @@ finish_enum_value_list (tree enumtype)
         value = perform_implicit_conversion (underlying_type,
                                              DECL_INITIAL (decl),
                                              tf_warning_or_error);
+      if (!value)
+	value = integer_zero_node;
       /* Do not clobber shared ints.  But do share identical enumerators.  */
       value = fold_convert (enumtype, value);
 
@@ -20206,6 +20268,24 @@ store_parm_decls (tree current_function_parms)
      Put the enumerators in as well, at the front so that
      DECL_ARGUMENTS is not modified.  */
   current_binding_level->names = chainon (nonparms, DECL_ARGUMENTS (fndecl));
+
+  /* Register cleanups for parameters with trivial_abi attribute, the cleanup
+     of which is the callee's responsibility.  */
+  if (!processing_template_decl)
+    for (tree parm = DECL_ARGUMENTS (fndecl); parm; parm = DECL_CHAIN (parm))
+      {
+	if (TREE_CODE (parm) == PARM_DECL)
+	  {
+	    tree parm_type = TREE_TYPE (parm);
+	    if (has_trivial_abi_attribute (parm_type))
+	      {
+		tree cleanup
+		  = cxx_maybe_build_cleanup (parm, tf_warning_or_error);
+		if (cleanup && cleanup != error_mark_node)
+		  finish_decl_cleanup (parm, cleanup);
+	      }
+	  }
+      }
 
   if (use_eh_spec_block (current_function_decl))
     current_eh_spec_block = begin_eh_spec_block ();
@@ -21226,8 +21306,8 @@ require_deduced_type (tree decl, tsubst_flags_t complain)
   if (undeduced_auto_decl (decl))
     {
       if (TREE_CODE (decl) == FUNCTION_DECL
-	  && fndecl_built_in_p (decl, BUILT_IN_FRONTEND)
-	  && DECL_FE_FUNCTION_CODE (decl) == CP_BUILT_IN_SOURCE_LOCATION)
+	  && fndecl_built_in_p (decl, CP_BUILT_IN_SOURCE_LOCATION,
+				BUILT_IN_FRONTEND))
 	{
 	  /* Set the return type of __builtin_source_location.  */
 	  tree type = get_source_location_impl_type ();
@@ -21239,6 +21319,33 @@ require_deduced_type (tree decl, tsubst_flags_t complain)
 	  type = cp_build_qualified_type (type, TYPE_QUAL_CONST);
 	  type = build_pointer_type (type);
 	  apply_deduced_return_type (decl, type);
+	  return true;
+	}
+
+      if (TREE_CODE (decl) == FUNCTION_DECL
+	  && fndecl_built_in_p (decl, CP_BUILT_IN_CURRENT_EXCEPTION,
+				BUILT_IN_FRONTEND))
+	{
+	  /* Set the return type of __builtin_current_exception.  */
+	  tree name = get_identifier ("exception_ptr");
+	  tree eptr = lookup_qualified_name (std_node, name);
+	  tree fld;
+	  if (TREE_CODE (eptr) != TYPE_DECL
+	      || !CLASS_TYPE_P (TREE_TYPE (eptr))
+	      || !COMPLETE_TYPE_P (TREE_TYPE (eptr))
+	      || !(fld = next_aggregate_field (TYPE_FIELDS (TREE_TYPE (eptr))))
+	      || DECL_ARTIFICIAL (fld)
+	      || TREE_CODE (TREE_TYPE (fld)) != POINTER_TYPE
+	      || next_aggregate_field (DECL_CHAIN (fld))
+	      || !tree_int_cst_equal (TYPE_SIZE (TREE_TYPE (eptr)),
+				      TYPE_SIZE (TREE_TYPE (fld))))
+	    {
+	      error ("%qs used without %qs declaration",
+		     "__builtin_current_exception", "std::exception_ptr");
+	      return false;
+	    }
+
+	  apply_deduced_return_type (decl, TREE_TYPE (eptr));
 	  return true;
 	}
 

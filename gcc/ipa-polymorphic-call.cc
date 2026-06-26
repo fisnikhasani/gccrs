@@ -503,8 +503,10 @@ polymorphic_ctor_dtor_p (tree fn, bool check_clones)
 	return NULL_TREE;
     }
 
-  if (flags_from_decl_or_type (fn) & (ECF_PURE | ECF_CONST))
-    return NULL_TREE;
+  /* We used to check that the ctor/dtor is not pure/const.
+     However this may interact with pass ordering.  It is possible that the
+     store of vtable is optimized out in offline copy, but inline copies keep
+     it and then local-pure-const overwrites the flag.  See PR120098.  */
 
   return fn;
 }
@@ -2225,7 +2227,7 @@ ipa_polymorphic_call_context::combine_with (ipa_polymorphic_call_context ctx,
 	}
 
       /* If we do not know how the context is being used, we cannot
-	 clear MAYBE_IN_CONSTRUCTION because it may be offseted
+	 clear MAYBE_IN_CONSTRUCTION because it may be offsetted
 	 to other component of OUTER_TYPE later and we know nothing
 	 about it.  */
       if (otr_type && maybe_in_construction

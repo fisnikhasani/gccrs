@@ -103,7 +103,7 @@ static const io_tag
 	tag_err		= {"ERR", " err =", " %l", BT_UNKNOWN},
 	tag_end		= {"END", " end =", " %l", BT_UNKNOWN},
 	tag_eor		= {"EOR", " eor =", " %l", BT_UNKNOWN},
-	tag_id		= {"ID", " id =", " %v", BT_INTEGER},
+	tag_id		= {"ID", " id =", " %e", BT_INTEGER},
 	tag_pending	= {"PENDING", " pending =", " %v", BT_LOGICAL},
 	tag_newunit	= {"NEWUNIT", " newunit =", " %v", BT_INTEGER},
 	tag_s_iqstream	= {"STREAM", " stream =", " %v", BT_CHARACTER};
@@ -118,11 +118,11 @@ static gfc_dt *current_dt;
 enum format_token
 {
   FMT_NONE, FMT_UNKNOWN, FMT_SIGNED_INT, FMT_ZERO, FMT_POSINT, FMT_PERIOD,
-  FMT_COMMA, FMT_COLON, FMT_SLASH, FMT_DOLLAR, FMT_LPAREN,
-  FMT_RPAREN, FMT_X, FMT_SIGN, FMT_BLANK, FMT_CHAR, FMT_P, FMT_IBOZ, FMT_F,
-  FMT_E, FMT_EN, FMT_ES, FMT_G, FMT_L, FMT_A, FMT_D, FMT_H, FMT_END,
-  FMT_ERROR, FMT_DC, FMT_DP, FMT_T, FMT_TR, FMT_TL, FMT_STAR, FMT_RC,
-  FMT_RD, FMT_RN, FMT_RP, FMT_RU, FMT_RZ, FMT_DT
+  FMT_COMMA, FMT_COLON, FMT_SLASH, FMT_DOLLAR, FMT_LPAREN, FMT_RPAREN, FMT_X,
+  FMT_SIGN, FMT_BLANK, FMT_CHAR, FMT_P, FMT_IBOZ, FMT_F, FMT_E, FMT_EN, FMT_ES,
+  FMT_G, FMT_L, FMT_A, FMT_D, FMT_H, FMT_END, FMT_ERROR, FMT_DC, FMT_DP, FMT_T,
+  FMT_TR, FMT_TL, FMT_STAR, FMT_RC, FMT_RD, FMT_RN, FMT_RP, FMT_RU, FMT_RZ,
+  FMT_DT, FMT_EX, FMT_LPS, FMT_LPZ, FMT_LZ
 };
 
 /* Local variables for checking format strings.  The saved_token is
@@ -256,7 +256,7 @@ format_lex (void)
 	{
 	  c = next_char_not_space ();
 	  if (ISDIGIT (c))
-	    value = 10 * value + c - '0';
+	    value = 10 * value + (c - '0');
 	}
       while (ISDIGIT (c));
 
@@ -287,7 +287,7 @@ format_lex (void)
 	  c = next_char_not_space ();
 	  if (ISDIGIT (c))
 	    {
-	      value = 10 * value + c - '0';
+	      value = 10 * value + (c - '0');
 	      if (c != '0')
 		zflag = 0;
 	    }
@@ -422,6 +422,8 @@ format_lex (void)
 	token = FMT_EN;
       else if (c == 'S')
         token = FMT_ES;
+      else if (c == 'X')
+	token = FMT_EX;
       else
 	{
 	  token = FMT_E;
@@ -439,6 +441,37 @@ format_lex (void)
       break;
 
     case 'L':
+      c = next_char_not_space ();
+      switch (c)
+	{
+	case 'P':
+	  c = next_char_not_space ();
+	  switch (c)
+	  {
+	    case 'S':
+	      token = FMT_LPS;
+	      break;
+
+	    case 'Z':
+	      token = FMT_LPZ;
+	      break;
+
+	    default:
+	      token = FMT_UNKNOWN;
+	      unget_char ();
+	      break;
+	  }
+	  break;
+
+	case 'Z':
+	  token = FMT_LZ;
+	  break;
+
+	default:
+	  token = FMT_UNKNOWN;
+	  unget_char ();
+	  break;
+	}
       token = FMT_L;
       break;
 
@@ -746,6 +779,7 @@ format_item_1:
     case FMT_E:
     case FMT_EN:
     case FMT_ES:
+    case FMT_EX:
     case FMT_G:
     case FMT_L:
     case FMT_A:
@@ -879,6 +913,7 @@ data_desc:
 
     case FMT_D:
     case FMT_E:
+    case FMT_EX:
     case FMT_G:
     case FMT_EN:
     case FMT_ES:
@@ -1760,6 +1795,7 @@ resolve_tag_format (gfc_expr *e)
 	  return false;
 	}
 
+      gfc_value_used_expr (e, VALUE_USED);
       return true;
     }
 
@@ -1800,6 +1836,7 @@ resolve_tag_format (gfc_expr *e)
 	}
     }
 
+  gfc_value_used_expr (e, VALUE_USED);
   return true;
 }
 
@@ -1869,6 +1906,12 @@ resolve_tag (const io_tag *tag, gfc_expr *e)
 	return false;
     }
 
+  if (tag == &tag_convert)
+    {
+      if (!gfc_notify_std (GFC_STD_GNU, "CONVERT tag at %L", &e->where))
+	return false;
+    }
+
   /* NEWUNIT, IOSTAT, SIZE and IOMSG are variable definition contexts.  */
   if (tag == &tag_newunit || tag == &tag_iostat
       || tag == &tag_size || tag == &tag_iomsg)
@@ -1878,13 +1921,11 @@ resolve_tag (const io_tag *tag, gfc_expr *e)
       sprintf (context, _("%s tag"), tag->name);
       if (!gfc_check_vardef_context (e, false, false, false, context))
 	return false;
-    }
 
-  if (tag == &tag_convert)
-    {
-      if (!gfc_notify_std (GFC_STD_GNU, "CONVERT tag at %L", &e->where))
-	return false;
+      gfc_expr_set_at (e, &e->where, VALUE_VARDEF);
     }
+  else
+    gfc_value_used_expr (e, VALUE_USED);
 
   return true;
 }
@@ -3265,6 +3306,7 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
 {
   gfc_expr *e;
   io_kind k;
+  bool internal_unit;
 
   /* This is set in any case.  */
   gcc_assert (dt->dt_io_kind);
@@ -3313,6 +3355,7 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
       return false;
     }
 
+  internal_unit = false;
   if (gfc_resolve_expr (e)
       && (e->ts.type != BT_INTEGER
 	  && (e->ts.type != BT_CHARACTER || e->expr_type != EXPR_VARIABLE)))
@@ -3352,6 +3395,7 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
 
   if (e->ts.type == BT_CHARACTER)
     {
+      internal_unit = true;
       if (gfc_has_vector_index (e))
 	{
 	  gfc_error ("Internal unit with vector subscript at %L", &e->where);
@@ -3360,10 +3404,14 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
 
       /* If we are writing, make sure the internal unit can be changed.  */
       gcc_assert (k != M_PRINT);
-      if (k == M_WRITE
-	  && !gfc_check_vardef_context (e, false, false, false,
+      if (k == M_WRITE)
+	{
+	  if (!gfc_check_vardef_context (e, false, false, false,
 					_("internal unit in WRITE")))
-	return false;
+	    return false;
+
+	  gfc_expr_set_at (e, &e->where, VALUE_VARDEF);
+	}
     }
 
   if (e->rank && e->ts.type != BT_CHARACTER)
@@ -3379,6 +3427,9 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
 		 &e->where);
       return false;
     }
+
+  if (!internal_unit)
+    gfc_value_used_expr (e, VALUE_USED);
 
   /* If we are reading and have a namelist, check that all namelist symbols
      can appear in a variable definition context.  */
@@ -3404,6 +3455,7 @@ gfc_resolve_dt (gfc_code *dt_code, gfc_dt *dt, locus *loc)
 			     dt->namelist->name, loc, n->sym->name);
 		  return false;
 		}
+	      gfc_value_set_at (n->sym, NULL, VALUE_VARDEF);
 	    }
 
 	  t = dtio_procs_present (n->sym, k);
@@ -4565,7 +4617,7 @@ match_inquire_element (gfc_inquire *inquire)
   RETM m = match_vtag (&tag_convert, &inquire->convert);
   RETM m = match_out_tag (&tag_strm_out, &inquire->strm_pos);
   RETM m = match_vtag (&tag_pending, &inquire->pending);
-  RETM m = match_vtag (&tag_id, &inquire->id);
+  RETM m = match_etag (&tag_id, &inquire->id);
   RETM m = match_vtag (&tag_s_iqstream, &inquire->iqstream);
   RETM m = match_dec_vtag (&tag_v_share, &inquire->share);
   RETM m = match_dec_vtag (&tag_v_cc, &inquire->cc);
@@ -4741,6 +4793,7 @@ gfc_resolve_inquire (gfc_inquire *inquire)
       if (gfc_check_vardef_context ((expr), false, false, false, \
 				    context) == false) \
 	return false; \
+      gfc_expr_set_at (expr, &expr->where, VALUE_VARDEF);	\
     }
   INQUIRE_RESOLVE_TAG (&tag_iomsg, inquire->iomsg);
   INQUIRE_RESOLVE_TAG (&tag_iostat, inquire->iostat);

@@ -595,6 +595,10 @@ Wconditionally-supported
 C++ ObjC++ Var(warn_conditionally_supported) Warning
 Warn for conditionally-supported constructs.
 
+Wconstant-logical-operand
+C ObjC C++ ObjC++ Var(warn_constant_logical_operand) Warning LangEnabledBy(C ObjC C++ ObjC++,Wall)
+Warn for constant operands of logical operators other than 0 or 1.
+
 Wconversion
 C ObjC C++ ObjC++ Var(warn_conversion) Warning
 Warn for implicit type conversions that may change a value.
@@ -1438,10 +1442,6 @@ according to the level of -fstrict-flex-arrays.
 Wstrict-null-sentinel
 C++ ObjC++ Warning Var(warn_strict_null_sentinel)
 Warn about uncasted NULL used as sentinel.
-
-Wstrict-overflow=
-C ObjC C++ ObjC++ LangEnabledBy(C ObjC C++ ObjC++,Wall, 1, 0) IntegerRange(0, 5)
-;
 
 Wstrict-prototypes
 C ObjC Var(warn_strict_prototypes) Warning
@@ -2669,12 +2669,20 @@ C++ ObjC++
 Conform to the ISO 2023 C++ standard (published in 2024; experimental and incomplete support).
 
 std=c++2c
-C++ ObjC++ Alias(std=c++26)
-Conform to the ISO 2026 C++ draft standard (experimental and incomplete support).
+C++ ObjC++ Alias(std=c++26) Undocumented
+Deprecated in favor of -std=c++26.
 
 std=c++26
-C++ ObjC++ Undocumented
+C++ ObjC++
 Conform to the ISO 2026 C++ draft standard (experimental and incomplete support).
+
+std=c++2d
+C++ ObjC++ Alias(std=c++29) Undocumented
+Deprecated in favor of -std=c++29.
+
+std=c++29
+C++ ObjC++
+Conform to the ISO 2029 C++ draft standard (experimental and incomplete support).
 
 std=c11
 C ObjC
@@ -2771,12 +2779,20 @@ C++ ObjC++
 Conform to the ISO 2023 C++ standard with GNU extensions (published in 2024; experimental and incomplete support).
 
 std=gnu++2c
-C++ ObjC++ Alias(std=gnu++26)
-Conform to the ISO 2026 C++ draft standard with GNU extensions (experimental and incomplete support).
+C++ ObjC++ Alias(std=gnu++26) Undocumented
+Deprecated in favor of -std=gnu++26.
 
 std=gnu++26
-C++ ObjC++ Undocumented
+C++ ObjC++
 Conform to the ISO 2026 C++ draft standard with GNU extensions (experimental and incomplete support).
+
+std=gnu++2d
+C++ ObjC++ Alias(std=gnu++29) Undocumented
+Deprecated in favor of -std=gnu++29.
+
+std=gnu++29
+C++ ObjC++
+Conform to the ISO 2029 C++ draft standard with GNU extensions (experimental and incomplete support).
 
 std=gnu11
 C ObjC

@@ -338,11 +338,11 @@ package body Ch6 is
          --  declarations and bodies can occur. The Pf_Pbod case is for
          --  subunits.
 
-         if Pf_Flags /= Pf_Decl_Gins_Pbod_Rnam_Stub_Pexp
+         if Pf_Flags /= Pf_Decl_Gins_Pbod_Rnam_Stub_Expf
               and then
-            Pf_Flags /= Pf_Decl_Pbod_Pexp
+            Pf_Flags /= Pf_Decl_Pbod_Expf
               and then
-            Pf_Flags /= Pf_Pbod_Pexp
+            Pf_Flags /= Pf_Pbod_Expf
          then
             Error_Msg_SC ("overriding indicator not allowed here!");
 
@@ -644,6 +644,9 @@ package body Ch6 is
                Absdec_Node :=
                  New_Node (N_Abstract_Subprogram_Declaration, Token_Ptr);
                Set_Specification (Absdec_Node, Specification_Node);
+               Rewrite_Entity_If_Direct_Attribute_Def
+                 (Name_Node, Specification_Node);
+
                Pop_Scope_Stack; -- discard unneeded entry
                Scan; -- past ABSTRACT
                P_Aspect_Specifications (Absdec_Node, Semicolon => True);
@@ -882,7 +885,7 @@ package body Ch6 is
                then
                   --  Check expression function allowed here
 
-                  if not Pf_Flags.Pexp then
+                  if not Pf_Flags.Expf then
                      Error_Msg_SC ("expression function not allowed here!");
                   end if;
 

@@ -105,7 +105,7 @@ Mappings::Mappings ()
   builtinMarker
     = new HIR::ImplBlock (node, {}, {}, nullptr, nullptr, HIR::WhereClause ({}),
 			  BoundPolarity::RegularBound,
-			  HIR::Visibility (HIR::Visibility::VisType::PUBLIC),
+			  HIR::Visibility (HIR::Visibility::VisType::Public),
 			  {}, {}, UNDEF_LOCATION);
 }
 
@@ -1166,6 +1166,18 @@ Mappings::insert_glob_container (NodeId id, AST::GlobContainer *container)
     glob_containers[id] = get_ast_crate_by_node_id_raw (id);
   else
     glob_containers[id] = container;
+}
+
+void
+Mappings::insert_module_id (NodeId id)
+{
+  module_ids.insert (id);
+}
+
+bool
+Mappings::is_module (NodeId id)
+{
+  return module_ids.find (id) != module_ids.end ();
 }
 
 tl::optional<AST::GlobContainer *>

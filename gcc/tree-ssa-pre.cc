@@ -37,7 +37,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-iterator.h"
 #include "gimple-fold.h"
 #include "tree-eh.h"
-#include "gimplify.h"
 #include "tree-cfg.h"
 #include "tree-into-ssa.h"
 #include "tree-dfa.h"
@@ -455,7 +454,7 @@ get_or_alloc_expr_for_nary (vn_nary_op_t nary, unsigned value_id,
 /* Given an REFERENCE, get or create a pre_expr to represent it.  Assign
    VALUE_ID to it or allocate a new value-id if it is zero.  Record
    LOC as the original location of the expression.  If MOVE_OPERANDS
-   is true then ownership of REFERENCE->operands is transfered, otherwise
+   is true then ownership of REFERENCE->operands is transferred, otherwise
    a copy is made if necessary.  */
 
 static pre_expr
@@ -836,25 +835,57 @@ prefer (pre_expr a, pre_expr b)
 {
   if (a->kind == REFERENCE && b->kind == REFERENCE)
     {
-      auto &oprsa = PRE_EXPR_REFERENCE (a)->operands;
-      auto &oprsb = PRE_EXPR_REFERENCE (b)->operands;
+      auto refa = PRE_EXPR_REFERENCE (a);
+      auto refb = PRE_EXPR_REFERENCE (b);
+      auto &oprsa = refa->operands;
+      auto &oprsb = refb->operands;
+      pre_expr palias = NULL;
+      if (refa->set == refb->set
+	  && refa->base_set == refb->base_set)
+	;
+      else if ((refb->set == refa->set
+		|| alias_set_subset_of (refb->set, refa->set))
+	       && (refb->base_set == refa->base_set
+		   || alias_set_subset_of (refb->base_set, refa->base_set)))
+	palias = a;
+      else if ((refa->set == refb->set
+		|| alias_set_subset_of (refa->set, refb->set))
+	       && (refa->base_set == refb->base_set
+		   || alias_set_subset_of (refa->base_set, refb->base_set)))
+	palias = b;
+      else
+	/* We have to chose an expression representation that can stand
+	   in for all others - there can be none, in which case we have
+	   to drop this PRE/hoisting opportunity.
+	   ???  Previously we've arranged for alias-set zero being used
+	   as fallback, but we do not really want to allocate a new expression
+	   here unless it proves to be absolutely necessary.  */
+	return NULL;
+      pre_expr p = palias;
       if (oprsa.length () > 1 && oprsb.length () > 1)
 	{
 	  vn_reference_op_t vroa = &oprsa[oprsa.length () - 2];
 	  vn_reference_op_t vrob = &oprsb[oprsb.length () - 2];
 	  if (vroa->opcode == MEM_REF && vrob->opcode == MEM_REF)
 	    {
-	      pre_expr palign = NULL, psize = NULL;
 	      /* We have to canonicalize to the more conservative alignment.
 		 gcc.dg/torture/pr65270-?.c.*/
+	      pre_expr palign = NULL;
 	      if (TYPE_ALIGN (vroa->type) < TYPE_ALIGN (vrob->type))
 		palign = a;
 	      else if (TYPE_ALIGN (vroa->type) > TYPE_ALIGN (vrob->type))
 		palign = b;
+	      if (palign)
+		{
+		  if (p && p != palign)
+		    return NULL;
+		  p = palign;
+		}
 	      /* We have to canonicalize to the more conservative (smaller)
 		 innermost object access size.  gcc.dg/torture/pr110799.c.  */
 	      if (TYPE_SIZE (vroa->type) != TYPE_SIZE (vrob->type))
 		{
+		  pre_expr psize = NULL;
 		  if (!TYPE_SIZE (vroa->type))
 		    psize = a;
 		  else if (!TYPE_SIZE (vrob->type))
@@ -870,15 +901,19 @@ prefer (pre_expr a, pre_expr b)
 			psize = b;
 		    }
 		  /* ???  What about non-constant sizes?  */
+		  if (psize)
+		    {
+		      if (p && p != psize)
+			return NULL;
+		      p = psize;
+		    }
 		}
-	      if (palign && psize)
-		return NULL;
-	      /* Note we cannot leave it undecided because when having
-		 more than two expressions we have to keep doing
-		 pariwise reduction.  */
-	      return palign ? palign : (psize ? psize : b);
 	    }
 	}
+      /* Note we cannot leave it undecided because when having
+	 more than two expressions we have to keep doing
+	 pariwise reduction.  */
+      return p ? p : b;
     }
   /* Always prefer an non-REFERENCE, avoiding the above mess.  */
   else if (a->kind == REFERENCE)
@@ -1017,7 +1052,7 @@ sorted_array_from_bitmap_set (bitmap_set_t set, bool for_insertion)
 	      }
 	    else
 	      {
-		/* If neither works for pairwise chosing a conservative
+		/* If neither works for pairwise choosing a conservative
 		   alternative, drop all REFERENCE expressions for this value.
 		   REFERENCE are always toplevel, so no chain should be
 		   interrupted by pruning them.  */
@@ -1028,12 +1063,12 @@ sorted_array_from_bitmap_set (bitmap_set_t set, bool for_insertion)
 		    break;
 		for (k = j;; ++k)
 		  {
-		    if (k == result.length () - 1
-			|| result[k + 1]->value_id != result[i]->value_id)
-		      break;
 		    if (result[k]->kind == REFERENCE)
 		      bitmap_set_bit (exclusions,
 				      get_expression_id (result[k]));
+		    if (k == result.length () - 1
+			|| result[k + 1]->value_id != result[i]->value_id)
+		      break;
 		  }
 		i = k;
 	      }
@@ -1772,7 +1807,10 @@ phi_translate_1 (bitmap_set_t dest,
 	      }
 
 	    if (newref)
-	      new_val_id = newref->value_id;
+	      {
+		new_val_id = newref->value_id;
+		newvuse = newref->vuse;
+	      }
 	    else
 	      {
 		if (changed || !same_valid)
@@ -1981,7 +2019,7 @@ value_dies_in_block_x (pre_expr expr, basic_block block)
   /* A memory expression {e, VUSE} dies in the block if there is a
      statement that may clobber e.  If, starting statement walk from the
      top of the basic block, a statement uses VUSE there can be no kill
-     inbetween that use and the original statement that loaded {e, VUSE},
+     in between that use and the original statement that loaded {e, VUSE},
      so we can stop walking.  */
   ref.base = NULL_TREE;
   for (gsi = gsi_start_bb (block); !gsi_end_p (gsi); gsi_next (&gsi))
@@ -2371,7 +2409,7 @@ compute_antic_aux (basic_block block, bool block_has_abnormal_pred_edge)
   bitmap_ior_into (&ANTIC_IN (block)->values, &S->values);
   bitmap_ior_into (&ANTIC_IN (block)->expressions, &S->expressions);
 
-  /* clean (ANTIC_IN (block)) is defered to after the iteration converged
+  /* clean (ANTIC_IN (block)) is deferred to after the iteration converged
      because it can cause non-convergence, see for example PR81181.  */
 
   if (was_visited
@@ -4390,7 +4428,7 @@ compute_avail (function *fun)
 				      sizeof (vn_reference_s));
 		      memset (newref, 0, sizeof (vn_reference_s));
 		      newref->value_id = ref->value_id;
-		      newref->vuse = gimple_vuse (stmt);
+		      newref->vuse = ref->vuse;
 		      newref->operands = operands;
 		      newref->type = TREE_TYPE (rhs1);
 		      newref->set = set;

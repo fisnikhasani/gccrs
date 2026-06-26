@@ -27,6 +27,7 @@
 #include "tm_p.h"
 #include "memmodel.h"
 #include "insn-codes.h"
+#include "riscv-protos.h"
 #include "optabs.h"
 #include "recog.h"
 #include "expr.h"
@@ -90,7 +91,7 @@ public:
       }
     else
       {
-	/* Normalize same RATO (SEW/LMUL) into same vsetvl instruction.
+	/* Normalize same RATIO (SEW/LMUL) into same vsetvl instruction.
 
 	     - e8,mf8/e16,mf4/e32,mf2/e64,m1 --> e8mf8
 	     - e8,mf4/e16,mf2/e32,m1/e64,m2  --> e8mf4
@@ -116,6 +117,10 @@ public:
     /* MASK_ANY.  */
     e.add_input_operand (Pmode,
 			 gen_int_mode (get_prefer_mask_policy (), Pmode));
+
+    /* ALTFMT_NONE.  */
+    e.add_input_operand (Pmode, gen_int_mode (ALTFMT_NONE, Pmode));
+
     return e.generate_insn (code_for_vsetvl_no_side_effects (Pmode));
   }
 };

@@ -23,12 +23,12 @@
 
 #include "options.h"
 #include "rust-keyword-values.h"
+#include "rust-rib.h"
 
 namespace Rust {
 namespace Analysis {
 UnusedChecker::UnusedChecker ()
-  : nr_context (
-    Resolver2_0::ImmutableNameResolutionContext::get ().resolver ()),
+  : nr_context (Resolver2_0::FinalizedNameResolutionContext::get ()),
     mappings (Analysis::Mappings::get ()), unused_context (UnusedContext ())
 {}
 void
@@ -105,20 +105,25 @@ UnusedChecker::visit (HIR::IdentifierPattern &pattern)
 		     "variable %qs should have a snake case name",
 		     var_name.c_str ());
 }
+
 void
-
 UnusedChecker::visit (HIR::AssignmentExpr &expr)
-
 {
   const auto &lhs = expr.get_lhs ();
   auto var_name = lhs.to_string ();
   NodeId ast_node_id = lhs.get_mappings ().get_nodeid ();
-  NodeId def_id = nr_context.lookup (ast_node_id).value ();
-  HirId id = mappings.lookup_node_to_hir (def_id).value ();
-  if (unused_context.is_variable_assigned (id, lhs.get_mappings ().get_hirid ())
-      && var_name[0] != '_')
-    rust_warning_at (lhs.get_locus (), OPT_Wunused_variable,
-		     "unused assignment %qs", var_name.c_str ());
+  if (auto def_id
+      = nr_context.lookup (ast_node_id, Resolver2_0::Namespace::Values))
+    {
+      if (auto id = mappings.lookup_node_to_hir (*def_id))
+	{
+	  if (unused_context.is_variable_assigned (
+		*id, lhs.get_mappings ().get_hirid ())
+	      && var_name[0] != '_')
+	    rust_warning_at (lhs.get_locus (), OPT_Wunused_variable,
+			     "unused assignment %qs", var_name.c_str ());
+	}
+    }
 }
 
 void

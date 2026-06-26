@@ -21,12 +21,14 @@
 #include "rust-hir-full-decls.h"
 #include "rust-hir-pattern.h"
 #include "rust-hir-type-check-base.h"
+#include "rust-hir-type-check-intrinsic.h"
 #include "rust-hir-type-check-type.h"
 #include "rust-hir-type-check-expr.h"
 #include "rust-hir-type-check-pattern.h"
+#include "rust-rib.h"
 #include "rust-type-util.h"
 #include "rust-tyty.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 
 namespace Rust {
 namespace Resolver {
@@ -156,6 +158,11 @@ TypeCheckTopLevelExternItem::visit (HIR::ExternalFunctionItem &function)
     region_constraints);
 
   context->insert_type (function.get_mappings (), fnType);
+
+  if (parent.get_abi () == Rust::ABI::INTRINSIC
+      && IntrinsicChecker::check (fnType) == IntrinsicCheckResult::Invalid)
+    return;
+
   resolved = fnType;
 }
 
@@ -339,11 +346,11 @@ TypeCheckImplItem::visit (HIR::Function &function)
 			   param_tyty);
     }
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (function.get_mappings ().get_nodeid ());
+    = nr_ctx.to_canonical_path (function.get_mappings ().get_nodeid (),
+				Resolver2_0::Namespace::Types);
 
   RustIdent ident{canonical_path, function.get_locus ()};
   auto fnType = new TyTy::FnType (
@@ -400,10 +407,11 @@ TypeCheckImplItem::visit (HIR::ConstantItem &constant)
     }
 
   // special case when this is a generic constant
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
+  // TODO: Is Values the correct NS?
   CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (constant.get_mappings ().get_nodeid ());
+    = nr_ctx.to_canonical_path (constant.get_mappings ().get_nodeid (),
+				Resolver2_0::Namespace::Values);
   RustIdent ident{canonical_path, constant.get_locus ()};
   auto fnType = new TyTy::FnType (
     constant.get_mappings ().get_hirid (),
@@ -557,10 +565,23 @@ TypeCheckImplItemWithTrait::visit (HIR::TypeAlias &type)
     = resolved_trait_item.get_raw_item ()->get_hir_trait_item ();
   merge_attributes (type.get_outer_attrs (), *hir_trait_item);
 
+  // unwrap a ProjectionType that already wraps a concrete
+  if (auto *p = lookup->try_as<TyTy::ProjectionType> ())
+    if (!p->is_trait_position () && p->get () != nullptr
+	&& p->get ()->get_kind () != TyTy::TypeKind::PROJECTION)
+      lookup = p->get ();
+
+  // The impl alias is itself a projection so the substitution machinery has a
+  // handle to bind the impl's generic arguments to the alias body.
+  auto projection
+    = new TyTy::ProjectionType (type.get_mappings ().get_hirid (), lookup, tref,
+				raw_trait_item->get_mappings ().get_defid (),
+				substitutions, self);
+
   // check the types are compatible
   auto trait_item_type = resolved_trait_item.get_tyty_for_receiver (self);
   if (!types_compatable (TyTy::TyWithLocation (trait_item_type),
-			 TyTy::TyWithLocation (lookup), type.get_locus (),
+			 TyTy::TyWithLocation (projection), type.get_locus (),
 			 true /*emit_errors*/))
     {
       rich_location r (line_table, type.get_locus ());
@@ -571,15 +592,7 @@ TypeCheckImplItemWithTrait::visit (HIR::TypeAlias &type)
 		     trait_reference.get_name ().c_str ());
     }
 
-  // its actually a projection, since we need a way to actually bind the
-  // generic substitutions to the type itself
-  TyTy::ProjectionType *projection
-    = new TyTy::ProjectionType (type.get_mappings ().get_hirid (), lookup, tref,
-				raw_trait_item->get_mappings ().get_defid (),
-				substitutions);
-
   context->insert_type (type.get_mappings (), projection);
-  raw_trait_item->associated_type_set (projection);
 }
 
 void

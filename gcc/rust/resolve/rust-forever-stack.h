@@ -620,6 +620,20 @@ private:
   NodeId node_id;
 };
 
+/**
+ * Error enum for finding leaf definitions in the resolved_nodes map
+ */
+enum class LookupFinalizeError
+{
+  // Impossible - we did not find any definition corresponding to a Usage.
+  // This is an internal compiler error
+  NoDefinition,
+  // There was a loop in the map, such as an import resolving to another
+  // import which eventually resolved to the original import. Report the
+  // error and stop the pipeline
+  Loop,
+};
+
 template <Namespace N> class ForeverStack
 {
 public:
@@ -749,23 +763,6 @@ public:
   tl::optional<Rib::Definition> get_from_prelude (NodeId prelude,
 						  const Identifier &name);
 
-  /**
-   * Resolve a path to its definition in the current `ForeverStack`
-   *
-   * // TODO: Add documentation for `segments`
-   *
-   * @return a valid option with the Definition if the path is present in the
-   *         current map, an empty one otherwise.
-   */
-  tl::optional<Rib::Definition> resolve_path (
-    const ResolutionPath &path, ResolutionMode mode,
-    std::function<void (Usage, Definition)> insert_segment_resolution,
-    std::vector<Error> &collect_errors);
-  tl::optional<Rib::Definition> resolve_path (
-    const ResolutionPath &path, ResolutionMode mode,
-    std::function<void (Usage, Definition)> insert_segment_resolution,
-    std::vector<Error> &collect_errors, NodeId starting_point_id);
-
   // FIXME: Documentation
   tl::optional<Rib &> to_rib (NodeId rib_id);
   tl::optional<const Rib &> to_rib (NodeId rib_id) const;
@@ -778,7 +775,6 @@ public:
    */
   bool is_module_descendant (NodeId parent, NodeId child) const;
 
-private:
   /**
    * A link between two Nodes in our trie data structure. This class represents
    * the edges of the graph
@@ -826,17 +822,7 @@ private:
     tl::optional<Node &> parent; // `None` only if the node is a root
   };
 
-  /**
-   * Private overloads which allow specifying a starting point
-   */
-
   tl::optional<Rib::Definition> get (Node &start, const Identifier &name);
-
-  tl::optional<Rib::Definition> resolve_path (
-    const ResolutionPath &path, ResolutionMode mode,
-    std::function<void (Usage, Definition)> insert_segment_resolution,
-    std::vector<Error> &collect_errors,
-    std::reference_wrapper<Node> starting_point);
 
   /* Should we keep going upon seeing a Rib? */
   enum class KeepGoing
@@ -859,6 +845,7 @@ private:
 
   Node &cursor ();
   const Node &cursor () const;
+
   void update_cursor (Node &new_cursor);
 
   /* The forever stack's actual nodes */
@@ -889,21 +876,12 @@ private:
 
   Node &find_closest_module (Node &starting_point);
 
-  tl::optional<SegIterator> find_starting_point (
-    const std::vector<ResolutionPath::Segment> &segments,
-    std::reference_wrapper<Node> &starting_point,
-    std::function<void (Usage, Definition)> insert_segment_resolution,
-    std::vector<Error> &collect_errors);
-
-  tl::optional<Node &> resolve_segments (
-    Node &starting_point, const std::vector<ResolutionPath::Segment> &segments,
-    SegIterator iterator,
-    std::function<void (Usage, Definition)> insert_segment_resolution,
-    std::vector<Error> &collect_errors);
-
-  tl::optional<Rib::Definition> resolve_final_segment (Node &final_node,
-						       std::string &seg_name,
-						       bool is_lower_self);
+  tl::optional<SegIterator>
+  find_starting_point (const std::vector<ResolutionPath::Segment> &segments,
+		       std::reference_wrapper<Node> &starting_point,
+		       std::function<void (Usage, Definition, Namespace)>
+			 insert_segment_resolution,
+		       std::vector<Error> &collect_errors);
 
   /* Helper functions for forward resolution (to_canonical_path, to_rib...) */
   struct DfsResult
@@ -930,7 +908,6 @@ private:
   tl::optional<const Node &> dfs_node (const Node &starting_point,
 				       NodeId to_find) const;
 
-public:
   bool forward_declared (NodeId definition, NodeId usage)
   {
     if (peek ().kind != Rib::Kind::ForwardTypeParamBan)
@@ -944,6 +921,43 @@ public:
     return (definition_rib
 	    && definition_rib.value ().kind == Rib::Kind::ForwardTypeParamBan);
   }
+
+  void map_usage (Usage usage, Definition definition)
+  {
+    resolved_nodes.emplace (usage, definition);
+
+    // auto inserted = resolved_nodes.emplace (usage, definition);
+
+    // is that valid?
+    // FIXME: Yikes
+    // rust_assert (inserted.first->first.id == definition.id);
+  }
+
+  tl::optional<NodeId> lookup (NodeId usage) const
+  {
+    auto it = resolved_nodes.find (Usage (usage));
+
+    if (it == resolved_nodes.end ())
+      return tl::nullopt;
+
+    return it->second.id;
+  }
+
+  tl::expected<Definition, LookupFinalizeError>
+  find_leaf_definition (const NodeId &key) const;
+
+  // Flattening is not needed for now but should be used later?
+#if 0
+  /**
+   * Look at NameResolutionContext::flatten - This is the inner working function
+   * which works on one specific namespace, while NameResolutionContext::flatten
+   * calls flatten for every namespace
+   */
+  void flatten ();
+#endif
+
+  /* Map of "usage" nodes which have been resolved to a "definition" node */
+  std::map<Usage, Definition> resolved_nodes;
 };
 
 } // namespace Resolver2_0

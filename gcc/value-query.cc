@@ -68,6 +68,12 @@ range_query::range_of_stmt (vrange &r, gimple *stmt, tree name)
 
 // Default for updating range info is to do nothing.
 void
+range_query::update_range_info (tree)
+{
+}
+
+// Default for updating range info is to do nothing.
+void
 range_query::update_range_info (tree, const vrange &)
 {
 }
@@ -336,7 +342,7 @@ range_query::get_tree_range (vrange &r, tree expr, gimple *stmt,
   else
     type = TREE_TYPE (expr);
 
-  if (!value_range::supports_type_p (type))
+  if (!r.supports_type_p (type))
     {
       r.set_undefined ();
       return false;
@@ -382,14 +388,16 @@ range_query::get_tree_range (vrange &r, tree expr, gimple *stmt,
 
     case ADDR_EXPR:
       {
-	// Handle &var which can show up in phi arguments.
-	bool ov;
-	if (tree_single_nonzero_warnv_p (expr, &ov))
-	  {
-	    r.set_nonzero (type);
-	    return true;
-	  }
-	break;
+	// Handle &expr, and set points to.
+	if (tree_single_nonzero_p (expr))
+	 r.set_nonzero (type);
+	else
+	  r.set_varying (type);
+	// Set points to field.
+	gcc_checking_assert (is_a <prange> (r));
+	prange &ptr = as_a <prange> (r);
+	ptr.set_pt (expr, true);
+	return true;
       }
 
     default:

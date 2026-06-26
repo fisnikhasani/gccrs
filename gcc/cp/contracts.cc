@@ -65,7 +65,7 @@ along with GCC; see the file COPYING3.  If not see
 
   'pre' and 'post' function contract specifiers require most of the special
   handling, since they must be tracked across re-declarations of functions and
-  there are contraints on how such specifiers may change in these cases.
+  there are constraints on how such specifiers may change in these cases.
 
   The contracts specification identifies a "first declaration" of any given
   function - which is the first encountered when parsing a given TU.
@@ -482,8 +482,10 @@ finish_contract_condition (cp_expr condition)
 tree
 view_as_const (tree decl)
 {
-  if (!contract_const_wrapper_p (decl))
+  if (decl
+      && !CP_TYPE_CONST_P (TREE_TYPE (decl)))
     {
+      gcc_checking_assert (!contract_const_wrapper_p (decl));
       tree ctype = TREE_TYPE (decl);
       location_t loc =
 	  EXPR_P (decl) ? EXPR_LOCATION (decl) : DECL_SOURCE_LOCATION (decl);
@@ -558,6 +560,7 @@ check_param_in_postcondition (tree decl, location_t location)
       if (!dependent_type_p (TREE_TYPE (decl))
 	  && !CP_TYPE_CONST_P (TREE_TYPE (decl)))
 	{
+	  auto_diagnostic_group d;
 	  error_at (location,
 		    "a value parameter used in a postcondition must be const");
 	  inform (DECL_SOURCE_LOCATION (decl), "parameter declared here");
@@ -580,7 +583,7 @@ check_postconditions_in_redecl (tree olddecl, tree newdecl)
   tree t2 = FUNCTION_FIRST_USER_PARM (newdecl);
 
   for (; t1 && t1 != void_list_node;
-  t1 = TREE_CHAIN (t1), t2 = TREE_CHAIN (t2))
+       t1 = TREE_CHAIN (t1), t2 = TREE_CHAIN (t2))
     {
       if (parm_used_in_post_p (t1))
 	{
@@ -589,10 +592,12 @@ check_postconditions_in_redecl (tree olddecl, tree newdecl)
 	      && !CP_TYPE_CONST_P (TREE_TYPE (t2))
 	      && !TREE_READONLY (t2))
 	    {
+	      auto_diagnostic_group d;
 	      error_at (DECL_SOURCE_LOCATION (t2),
-	      "value parameter %qE used in a postcondition must be const", t2);
+			"value parameter %qE used in a postcondition must be "
+			"const", t2);
 	      inform (DECL_SOURCE_LOCATION (olddecl),
-	      "previous declaration here");
+		      "previous declaration here");
 	    }
 	}
     }
@@ -1229,7 +1234,7 @@ copy_contracts_list (tree contracts, tree fndecl,
   return new_contracts;
 }
 
-/* Returns a copy of FNDECL contracts. This is used when emiting a contract.
+/* Returns a copy of FNDECL contracts. This is used when emitting a contract.
  If we were to emit the original contract tree, any folding of the contract
  condition would affect the original contract too. The original contract
  tree needs to be preserved in case it is used to apply to a different
@@ -1348,6 +1353,18 @@ maybe_apply_function_contracts (tree fndecl)
     {
       fnbody = DECL_SAVED_TREE (fndecl);
       DECL_SAVED_TREE (fndecl) = push_stmt_list ();
+    }
+
+  /* If we have a lambda with captures, ensure that those captures are in-
+     scope for pre and post conditions.  */
+  if (LAMBDA_FUNCTION_P (fndecl)
+      && TREE_CODE (fnbody) == BIND_EXPR)
+    {
+      tree extract = BIND_EXPR_BODY (fnbody);
+      BIND_EXPR_BODY (fnbody) = NULL_TREE;
+      add_stmt (fnbody);
+      BIND_EXPR_BODY (fnbody) = push_stmt_list ();
+      fnbody = extract;
     }
 
   /* Now add the pre and post conditions to the existing function body.
@@ -1672,7 +1689,7 @@ check_redecl_contract (tree newdecl, tree olddecl)
 	   && contract_any_deferred_p (new_contracts)
 	   && DECL_UNIQUE_FRIEND_P (newdecl))
     {
-      /* Put the defered contracts on the olddecl so we parse it when
+      /* Put the deferred contracts on the olddecl so we parse it when
 	 we can.  */
       set_fn_contract_specifiers (olddecl, old_contracts);
     }
@@ -2136,7 +2153,7 @@ update_late_contract (tree contract, tree result, cp_expr condition)
   CONTRACT_CONDITION (contract) = condition;
 }
 
-/* Returns the precondition funtion for FNDECL, or null if not set.  */
+/* Returns the precondition function for FNDECL, or null if not set.  */
 
 tree
 get_precondition_function (tree fndecl)
@@ -2146,7 +2163,7 @@ get_precondition_function (tree fndecl)
   return result ? *result : NULL_TREE;
 }
 
-/* Returns the postcondition funtion for FNDECL, or null if not set.  */
+/* Returns the postcondition function for FNDECL, or null if not set.  */
 
 tree
 get_postcondition_function (tree fndecl)

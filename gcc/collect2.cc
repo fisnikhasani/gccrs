@@ -1008,7 +1008,7 @@ main (int argc, char **argv)
     /* Now pick up any flags we want early from COLLECT_GCC_OPTIONS
        The LTO options are passed here as are other options that might
        be unsuitable for ld (e.g. -save-temps).  */
-    p = getenv ("COLLECT_GCC_OPTIONS");
+    p = read_collect_gcc_options ();
     while (p && *p)
       {
 	const char *q = extract_string (&p);
@@ -1206,7 +1206,7 @@ main (int argc, char **argv)
      AIX support needs to know if -shared has been specified before
      parsing commandline arguments.  */
 
-  p = getenv ("COLLECT_GCC_OPTIONS");
+  p = read_collect_gcc_options ();
   while (p && *p)
     {
       const char *q = extract_string (&p);
@@ -1315,9 +1315,9 @@ main (int argc, char **argv)
 
 		  FILE *stream;
                   char buf[MAXPATHLEN + 2];
-		  /* Number of additionnal object files.  */
+		  /* Number of additional object files.  */
 		  int add_nbr = 0;
-		  /* Maximum of additionnal object files before vector
+		  /* Maximum of additional object files before vector
 		     expansion.  */
 		  int add_max = 0;
 		  const char *list_filename = arg + 2;
@@ -1599,7 +1599,7 @@ main (int argc, char **argv)
       fprintf (stderr, "o_file              = %s\n",
 	       (o_file ? o_file : "not found"));
 
-      ptr = getenv ("COLLECT_GCC_OPTIONS");
+      ptr = read_collect_gcc_options ();
       if (ptr)
 	fprintf (stderr, "COLLECT_GCC_OPTIONS = %s\n", ptr);
 
@@ -2803,7 +2803,7 @@ scan_prog_file (const char *prog_name, scanpass which_pass,
 		      switch (is_ctor_dtor (name))
 			{
 #if TARGET_AIX_VERSION
-		      /* Add AIX shared library initalisers/finalisers
+		      /* Add AIX shared library initialisers/finalisers
 			 to the constructors/destructors list of the
 			 current module.  */
 			case SYM_AIXI:

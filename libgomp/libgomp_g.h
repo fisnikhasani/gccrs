@@ -33,6 +33,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* atomic.c */
+
+extern void GOMP_atomic_start (void);
+extern void GOMP_atomic_end (void);
+
 /* barrier.c */
 
 extern void GOMP_barrier (void);
@@ -44,8 +49,6 @@ extern void GOMP_critical_start (void);
 extern void GOMP_critical_end (void);
 extern void GOMP_critical_name_start (void **);
 extern void GOMP_critical_name_end (void **);
-extern void GOMP_atomic_start (void);
-extern void GOMP_atomic_end (void);
 
 /* loop.c */
 
@@ -357,11 +360,14 @@ extern void GOMP_target_enter_exit_data (int, size_t, void **, size_t *,
 					 void **);
 extern void GOMP_teams (unsigned int, unsigned int);
 extern bool GOMP_teams4 (unsigned int, unsigned int, unsigned int, bool);
-extern void *GOMP_target_map_indirect_ptr (void *);
 struct interop_obj_t;
 extern void GOMP_interop (int, int, struct interop_obj_t ***, const int *,
 			  const char **, int, struct interop_obj_t **, int,
 			  struct interop_obj_t ***, unsigned, void **);
+
+/* target-indirect.c */
+
+extern void *GOMP_target_map_indirect_ptr (void *);
 
 /* teams.c */
 

@@ -184,6 +184,14 @@
 (define_register_constraint "vm" "TARGET_VECTOR ? VM_REGS : NO_REGS"
   "A vector mask register (if available).")
 
+;; Dependent (dynamic) constraint:
+;; "The source group must overlap the highest-numbered part of the
+;; "destination group", i.e. this operand depends on operand 0.
+(define_register_constraint "Wtt" "TARGET_VECTOR ? V_REGS : NO_REGS"
+  "Vector widening overlap"
+  "riscv_widen_overlap_ok (regno, mode, ref_regno, ref_mode)"
+  "0")
+
 ;; This constraint is used to match instruction "csrr %0, vlenb" which is generated in "mov<mode>".
 ;; VLENB is a run-time constant which represent the vector register length in bytes.
 ;; BYTES_PER_RISCV_VECTOR represent runtime invariant of vector register length in bytes.
@@ -194,7 +202,7 @@
        (match_test "known_eq (rtx_to_poly_int64 (op), BYTES_PER_RISCV_VECTOR)")))
 
 (define_constraint "vu"
-  "A undefined vector value."
+  "An undefined vector value."
   (and (match_code "unspec")
        (match_test "XINT (op, 1) == UNSPEC_VUNDEF")))
 

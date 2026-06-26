@@ -218,6 +218,20 @@
 #error Foo
 #endif
 
+#pragma GCC target "+nothing+sve2+sme2p2"
+#ifndef __ARM_FEATURE_SME
+#error Foo
+#endif
+#ifndef __ARM_FEATURE_SME2
+#error Foo
+#endif
+#ifndef __ARM_FEATURE_SME2p1
+#error Foo
+#endif
+#ifndef __ARM_FEATURE_SME2p2
+#error Foo
+#endif
+
 #pragma GCC target "branch-protection=standard"
 #ifndef __ARM_FEATURE_BTI_DEFAULT
 #error Foo
@@ -367,5 +381,10 @@
 
 #pragma GCC target "arch=armv8-a+faminmax"
 #ifndef __ARM_FEATURE_FAMINMAX
+#error Foo
+#endif
+
+#pragma GCC target "arch=armv8-a+sve2+ssve-fexpa"
+#ifndef __ARM_FEATURE_SSVE_FEXPA
 #error Foo
 #endif

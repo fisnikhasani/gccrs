@@ -64,7 +64,7 @@
 #define __cpp_impl_coroutine 201902L		// { dg-error "'__cpp_impl_coroutine' redefined" "" { target c++20 } }
 #define __cpp_impl_destroying_delete 201806L	// { dg-error "'__cpp_impl_destroying_delete' redefined" "" { target c++20 } }
 #define __cpp_impl_three_way_comparison 201907L	// { dg-error "'__cpp_impl_three_way_comparison' redefined" "" { target c++20 } }
-#define __cpp_impl_reflection 202506L		// { dg-error "'__cpp_impl_reflection' redefined" "" { target c++26 } }
+#define __cpp_impl_reflection 202603L		// { dg-error "'__cpp_impl_reflection' redefined" "" { target c++26 } }
 #define __cpp_implicit_move 202207L		// { dg-error "'__cpp_implicit_move' redefined" "" { target c++23 } }
 #define __cpp_inheriting_constructors 201511L	// { dg-error "'__cpp_inheriting_constructors' redefined" "" { target c++20 } }
 #define __cpp_init_captures 201803L		// { dg-error "'__cpp_init_captures' redefined" "" { target c++14 } }
@@ -95,7 +95,7 @@
 #define __cpp_template_parameters 202502L
 #define __cpp_template_template_args 201611L	// { dg-error "'__cpp_template_template_args' redefined" "" { target c++20 } }
 #define __cpp_threadsafe_static_init 200806L	// { dg-error "'__cpp_threadsafe_static_init' redefined" "" { target c++20 } }
-#define __cpp_trivial_union 202502L
+#define __cpp_trivial_union 202502L		// { dg-error "'__cpp_trivial_union' redefined" "" { target c++26 } }
 #define __cpp_unicode_characters 200704L	// { dg-error "'__cpp_unicode_characters' redefined" "" { target c++17 } }
 #define __cpp_unicode_literals 200710L		// { dg-error "'__cpp_unicode_literals' redefined" "" { target c++20 } }
 #define __cpp_user_defined_literals 200809L	// { dg-error "'__cpp_user_defined_literals' redefined" "" { target c++20 } }

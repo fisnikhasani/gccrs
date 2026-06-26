@@ -694,7 +694,7 @@ static int flag_long_names = 0;
 
 static int flag_hash_filenames = 0;
 
-/* Print verbose informations.  */
+/* Print verbose information.  */
 
 static int flag_verbose = 0;
 
@@ -1134,7 +1134,7 @@ print_usage (int error_p)
   fnotice (file, "  -t, --stdout                    Output to stdout instead of a file\n");
   fnotice (file, "  -u, --unconditional-branches    Show unconditional branch counts too\n");
   fnotice (file, "  -v, --version                   Print version number, then exit\n");
-  fnotice (file, "  -w, --verbose                   Print verbose informations\n");
+  fnotice (file, "  -w, --verbose                   Print verbose information\n");
   fnotice (file, "  -x, --hash-filenames            Hash long pathnames\n");
   fnotice (file, "\nObsolete options:\n");
   fnotice (file, "  -i, --json-format               Replaced with -j, --json-format\n");
@@ -1459,7 +1459,7 @@ strip_extention (string str)
   return str;
 }
 
-/* Calcualte md5sum for INPUT string and return it in hex string format.  */
+/* Calculate md5sum for INPUT string and return it in hex string format.  */
 
 static string
 get_md5sum (const char *input)
@@ -1545,7 +1545,7 @@ json_set_prime_path_coverage (json::object &function, function_info &info)
 	  if (i + 1 != path.size ())
 	    {
 	      const arc_info &arc = find_arc (block, path[i+1]);
-	      if (arc.false_value)
+	      if (arc.true_value)
 		edge_kind = "true";
 	      else if (arc.false_value)
 		edge_kind = "false";
@@ -2852,7 +2852,7 @@ solve_flow_graph (function_info *fn)
 
   /* If the graph has been correctly solved, every block will have a
      valid count.  */
-  for (unsigned i = 0; ix < fn->blocks.size (); i++)
+  for (unsigned i = 0; i < fn->blocks.size (); i++)
     if (!fn->blocks[i].count_valid)
       {
 	fnotice (stderr, "%s:graph is unsolvable for '%s'\n",

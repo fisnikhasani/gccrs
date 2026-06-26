@@ -22,8 +22,19 @@
 
 ; Please try to keep this file in ASCII collating order.
 
+; After modifying any *.opt file, including this one, also update the
+; documentation with: 
+;
+;    make regenerate-opt-urls
+;
+; and include the *.opt.urls changes in the patch.
+
 Language
 Cobol
+
+B
+Cobol
+; Documented in c.opt
 
 D
 Cobol Joined Separate
@@ -80,6 +91,10 @@ Cobol Joined Var(cobol_charset) RejectNegative
 fexec-national-charset=
 Cobol Joined Var(cobol_national_charset) RejectNegative
 Set the default execution character set for NATIONAL data items.
+
+ftrunc
+Cobol Var(cobol_trunc_bin, 1) Init(1)
+Truncate BINARY PIC 9(n) to n digits.
 
 ;; warnings
 
@@ -212,6 +227,11 @@ Warn if COBOL MOVE has no corresponding fields.
 Wnllanginfo-error
 Cobol Warning Var(nllanginfo_error, 1) Init(1)
 Warn if nlanglanginfo(3) fails.
+
+; IbmCdf
+Wibm-cdf
+Cobol Warning Var(cobol_ibmcdf, 1) Init(1)
+Warn if IBM-specific CDF directives are used.
 
 ; IbmLengthOf
 Wlength-of
@@ -375,21 +395,17 @@ preprocess
 Cobol Joined Separate Var(cobol_preprocess)
 Preprocess <source_filter> before compiling.
 
-iprefix
-Cobol Joined Separate
-; Documented in C
-
 include
 Cobol Joined Separate
 ; Documented in C
 
-isysroot
+idirafter
 Cobol Joined Separate
-; Documented in C
+; Documented in c.opt
 
-isystem
+imultilib
 Cobol Joined Separate
-; Documented in C
+; Documented in c.opt
 
 main
 Cobol

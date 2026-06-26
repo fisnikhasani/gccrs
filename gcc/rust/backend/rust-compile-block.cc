@@ -17,8 +17,9 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-compile-block.h"
-#include "rust-compile-stmt.h"
+#include "rust-compile-drop.h"
 #include "rust-compile-expr.h"
+#include "rust-compile-stmt.h"
 #include "rust-hir-expr.h"
 
 namespace Rust {
@@ -84,6 +85,7 @@ CompileBlock::visit (HIR::BlockExpr &expr)
 					 expr.get_locus ());
       ctx->add_statement (assignment);
     }
+  CompileDrop::emit_current_scope_drop_calls (ctx);
 
   ctx->pop_block ();
   translated = new_block;

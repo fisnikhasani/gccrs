@@ -64,7 +64,7 @@ int repeat_count( const char picture[] );
 
 size_t program_level();
 
-int ydfparse(void);
+static int ydfparse(void);
 
 FILE * copy_mode_start();
 
@@ -117,6 +117,13 @@ static const char * start_condition_str( int sc );
 static const char * start_condition_is();
 
 static bool nonspace( char ch ) { return !ISSPACE(ch); }
+
+cdf::parser cdf_parser;
+cdf::parser::symbol_type cdf_symbol_type;
+cdf::parser::context cdf_context(cdf_parser, cdf_symbol_type);
+
+cdf::parser::value_type ydflval;
+cdf::parser::location_type ydflloc;
 
 static int
 numstr_of( const char string[], radix_t radix = decimal_e ) {
@@ -206,8 +213,6 @@ null_trim( char name[] ) {
 /*
  * CDF management
  */
-static int final_token;
-
 static inline const char *
 boolalpha( bool tf ) { return tf? "True" : "False"; }
 
@@ -439,32 +444,12 @@ static input_file_status_t input_file_status;
 void input_file_status_notify() { input_file_status.notify(); }
 
 /*
- * parse.y and cdf.y each define a 4-integer struct to hold a token's location. 
- * parse.y uses   YYLTYPE  yylloc;
- * cdf.y   uses YDFLLTYPE ydflloc;
- * 
- * The structs have identical definitions with different types and of course
- * names.  We define "conversion" between them for convenience. 
- * 
- * Each parser expects its location value to be updated whenever it calls
- * yylex().  Therefore, here in the lexer we set both locations as each token
- * is scanned, so that both parsers see the same location.
- */
-static YDFLTYPE
-ydfltype_of( const YYLTYPE& loc ) {
-  YDFLTYPE output { 
-    loc.first_line,   loc.first_column,
-    loc.last_line,    loc.last_column };
-  return output;
-}
-
-/*
  * After the input filename and yylineno are set, update the location of the
  * scanned token.
  */
 static void
-update_location( const YYLTYPE *ploc = nullptr ) {
-  YYLTYPE loc = {
+update_location( const cbl_loc_t *ploc = nullptr ) {
+  cbl_loc_t loc = {
     yylloc.last_line, yylloc.last_column,
     yylineno,         yylloc.last_column + yyleng
   };
@@ -475,8 +460,7 @@ update_location( const YYLTYPE *ploc = nullptr ) {
     loc.last_column = (yytext + yyleng) - p;
   }
 
-  yylloc = loc;
-  ydflloc = ydfltype_of(yylloc);
+  ydflloc = yylloc = loc;
 
   dbgmsg("  SC: %s location (%d,%d) to (%d,%d)",
          start_condition_is(),
@@ -486,7 +470,7 @@ update_location( const YYLTYPE *ploc = nullptr ) {
 
 static void
 reset_location() {
-  static const YYLTYPE loc { yylineno, 1, yylineno, 1 };
+  static const cbl_loc_t loc { yylineno, 1, yylineno, 1 };
   update_location(&loc);
 }
 
@@ -536,9 +520,8 @@ update_location_col( const char str[], int correction = 0) {
 #define not_implemented(...) cbl_unimplemented_at(yylloc, __VA_ARGS__)
 
 #define YY_USER_INIT do {			\
-    static YYLTYPE ones = {1,1, 1,1};		\
-    yylloc = ones;                              \
-    ydflloc = ydfltype_of(yylloc);              \
+    static cbl_loc_t ones = {1,1, 1,1};		\
+    ydflloc = yylloc = ones;                    \
   } while(0)
 
 /*
@@ -808,7 +791,7 @@ class picture_t {
       : crdb(0), currency(0), dot(0), pluses(0), minuses(0), stars(0)
     {}
   } exclusions;
-  YYLTYPE loc;
+  cbl_loc_t loc;
   
   bool is_crdb() const { // input must be uppercase for CR/DB
     if( p[0] == 'C' || p[0] == 'D' ) {
@@ -856,7 +839,7 @@ class picture_t {
     if( !ch ) ch = *p;   // use current character unless overridden
     auto valid = followers.find(TOUPPER(ch));
     if( valid == followers.end() ) {
-      YYLTYPE loc(yylloc);
+      cbl_loc_t loc(yylloc);
       loc.first_column += int(p - begin);
       error_msg( loc, "PICTURE: strange character %qc, giving up", ch );
       return nullptr;
@@ -1113,9 +1096,14 @@ bool need_nume_set( bool tf ) {
 
 static int datetime_format_of( const char input[] );
 
-static int symbol_function_token( const char name[] ) {
-  const auto e = symbol_function( 0, name );
-  return e ? symbol_index(e) : 0;
+static int
+symbol_function_token( const char name[] ) {
+  const auto L = symbol_function_any( 0, name );
+  if( L ) {
+    auto e = symbol_elem_of(L);
+    return symbol_index(e);
+  }
+  return 0;
 }
 
 bool in_procedure_division(void );
@@ -1131,7 +1119,7 @@ symbol_exists( const char name[] ) {
 
   if( in_procedure_division() && cache.empty() ) {
     for( auto e = symbols_begin(PROGRAM) + 1;
-         PROGRAM == e->program && e < symbols_end(); e++ ) {
+         e < symbols_end() && PROGRAM == e->program; e++ ) {
       if( e->type == SymFile ) {
         cbl_file_t *f(cbl_file_of(e));
         cbl_name_t lname;
@@ -1166,6 +1154,16 @@ typed_name( const char name[] ) {
   int token = repository_function_tok(name);
   switch(token) {
   case 0:
+    if(false) // we don't know how to do this yet. 
+    { // Functions in the symbol table may be used without the FUNCTION keyword. 
+      cbl_label_t *L = symbol_function_any(0, name);
+      if( L ) {
+        auto args = prototype_args(L->name);
+        token = args.second && args.first.empty() ? FUNCTION_UDF_0 : FUNCTION_UDF;
+        yylval.number = symbol_function_token(name);
+        return token;
+      }
+    }
     break;
   case FUNCTION_UDF_0:
     yylval.number = symbol_function_token(name);
@@ -1279,55 +1277,47 @@ integer_of( const char input[], bool is_hex = false) {
  * whether to indicate a refmod to the parser with an LPAREN token, or not,
  * with a '(' token.  The input is known to have a first line that begins with
  * '('., includes ':', and ends with ')'.
+ *
+ * Single forward pass: track paren depth, require exactly one ':' at depth 1,
+ * skip quoted regions (doubled quote is escape).  Allows arithmetic and
+ * parentheses in the left part, e.g. ((LENGTH OF x/2) - (y/2)) : 1.
  */
 static bool
 is_refmod( const char input[], const char enput[] ) {
-  if( input == enput ) return false;
-  
-  switch(*input) {
-  case '(':
-    input = std::find( ++input, enput, ')');
-    if( input == enput ) return false;
-    return is_refmod(++input, enput);
-  case ':':
-    return is_refmod(++input, enput);
-  case ')':
-    if( ++input == enput ) return true;
-    return is_refmod(input, enput);
-  default:
-    if( ISSPACE(*input) ) {
-      input = std::find_if( ++input, enput,
-                         []( char ch ) {
-                           return ! ISSPACE(ch);
-                         } );
-      return is_refmod(input, enput);
-    }
-    break;
-  }
-  input = std::find_if( input, enput,
-                        [start = *input]( char ch ) {
-                          bool yes = false;
-                          if( ISDIGIT(start) ) {
-                            switch(ch) {
-                            case '+': case '-': case '*': case '/':
-                              yes = true; break;
-                            case '.': case ',':
-                              yes = true; break;
-                            default:
-                              yes = ISDIGIT(ch);
-                              break;
-                            }
-                          } else {
-                            assert(ISALNUM(start));
-                            switch(ch) {
-                            case '-':
-                              yes = true; break;
-                            default:
-                              yes = ISALNUM(ch);
-                              break;
-                            }
-                          }
-                          return !yes;
-                        } );
-  return is_refmod(input, enput);
+	if( input == enput || *input != '(' ) return false;
+	int depth = 0;
+	bool colon_at_depth1 = false;
+	const char *p = input;
+
+	while( p < enput ) {
+		char ch = *p++;
+		if( ch == '"' || ch == '\'' ) {
+			/* Skip quoted region; doubled quote is escape.  */
+			const char quote = ch;
+			while( p < enput ) {
+				ch = *p++;
+				if( ch == quote ) {
+					if( p < enput && *p == quote ) { p++; continue; }
+					break;
+				}
+			}
+			continue;
+		}
+		if( ch == '(' ) {
+			depth++;
+			continue;
+		}
+		if( ch == ')' ) {
+			depth--;
+			if( depth < 0 ) return false;
+			if( depth == 0 ) return colon_at_depth1;
+			continue;
+		}
+		if( ch == ':' && depth == 1 ) {
+			if( colon_at_depth1 ) return false;
+			colon_at_depth1 = true;
+			continue;
+		}
+	}
+	return false;
 }

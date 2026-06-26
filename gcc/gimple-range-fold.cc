@@ -651,6 +651,25 @@ gimple_range_adjustment (vrange &res, const gimple *stmt)
     }
 }
 
+// Provide context to the gimple fold callback.
+
+static struct
+{
+  gimple *m_stmt;
+  range_query *m_query;
+} x_fold_context;
+
+// Gimple fold callback.
+
+static tree
+pta_valueize (tree name)
+{
+  tree ret
+    = x_fold_context.m_query->value_of_expr (name, x_fold_context.m_stmt);
+
+  return ret ? ret : name;
+}
+
 // Calculate a range for statement S and return it in R. If NAME is provided it
 // represents the SSA_NAME on the LHS of the statement. It is only required
 // if there is more than one lhs/output.  If a range cannot
@@ -668,16 +687,14 @@ fold_using_range::fold_stmt (vrange &r, gimple *s, fur_source &src, tree name)
     name = gimple_get_lhs (s);
 
   // Process addresses and loads from static constructors.
-  if (gimple_code (s) == GIMPLE_ASSIGN)
-    {
-      if (gimple_assign_rhs_code (s) == ADDR_EXPR)
-	return range_of_address (as_a <prange> (r), s, src);
-      if (range_from_readonly_var (r, s))
-	return true;
-    }
+  if (gimple_code (s) == GIMPLE_ASSIGN && range_from_readonly_var (r, s))
+    return true;
 
   gimple_range_op_handler handler (s);
-  if (handler)
+  if (gimple_code (s) == GIMPLE_ASSIGN
+      && gimple_assign_rhs_code (s) == ADDR_EXPR)
+    res = range_of_address (as_a <prange> (r), s, src);
+  else if (handler)
     res = range_of_range_op (r, handler, src);
   else if (is_a<gphi *>(s))
     res = range_of_phi (r, as_a<gphi *> (s), src);
@@ -686,13 +703,22 @@ fold_using_range::fold_stmt (vrange &r, gimple *s, fur_source &src, tree name)
   else if (is_a<gassign *> (s) && gimple_assign_rhs_code (s) == COND_EXPR)
     res = range_of_cond_expr (r, as_a<gassign *> (s), src);
 
-  // If the result is varying, check for basic nonnegativeness.
-  // Specifically this helps for now with strict enum in cases like
-  // g++.dg/warn/pr33738.C.
-  bool so_p;
-  if (res && r.varying_p () && INTEGRAL_TYPE_P (r.type ())
-      && gimple_stmt_nonnegative_warnv_p (s, &so_p))
-    r.set_nonnegative (r.type ());
+  // If the result is varying, use the type's min/max if either is not
+  // the same as the full precision min/max. This helps with strict enum
+  // e.g. `g++.dg/warn/pr33738.C`.
+  if (res && r.varying_p () && INTEGRAL_TYPE_P (r.type ()))
+    {
+      irange &ir = as_a <irange> (r);
+      tree type = r.type ();
+      auto typemax = wi::to_wide (TYPE_MAX_VALUE (type));
+      auto typemin = wi::to_wide (TYPE_MIN_VALUE (type));
+      auto precisionmax = wi::max_value (TYPE_PRECISION (type),
+					 TYPE_SIGN (type));
+      auto precisionmin = wi::min_value (TYPE_PRECISION (type),
+					 TYPE_SIGN (type));
+      if (typemax != precisionmax || typemin != precisionmin)
+	ir.set (type, typemin, typemax);
+    }
 
   if (!res)
     {
@@ -713,6 +739,36 @@ fold_using_range::fold_stmt (vrange &r, gimple *s, fur_source &src, tree name)
     {
       gcc_checking_assert (range_compatible_p (r.type (), TREE_TYPE (name)));
       range_cast (r, TREE_TYPE (name));
+    }
+
+  // IF this is not a prange, we are done.
+  if (!is_a <prange> (r))
+    return true;
+
+  prange &p = as_a <prange> (r);
+  // Check to see if points_to should be set.
+  if (p.pt_unknown_p () && name && gimple_code (s) == GIMPLE_ASSIGN)
+    {
+      tree rhs = gimple_assign_rhs1 (s);
+      tree_code code = gimple_assign_rhs_code (s);
+      // If code is SSA_NAME, any points to would already be copied.
+      if (code != SSA_NAME && get_gimple_rhs_class (code) == GIMPLE_SINGLE_RHS
+	  && TREE_CODE (rhs) == ADDR_EXPR)
+	{
+	  p.set_pt (rhs, true);
+	}
+      // PR 125854 - Do not attempt to invoke the fold machinery unless this
+      // query is the same as the current query (which fold may invoke).
+      else if (src.query () == get_range_query (cfun))
+	{
+	  // If we couldn't find anything, try fold.
+	  x_fold_context = { s, src.query () };
+	  rhs = gimple_fold_stmt_to_constant_1 (s, pta_valueize, pta_valueize);
+	  if (rhs && TREE_CODE (rhs) == ADDR_EXPR)
+	    {
+	      p.set_pt (rhs, true);
+	    }
+	}
     }
   return true;
 }
@@ -844,7 +900,6 @@ fold_using_range::range_of_address (prange &r, gimple *stmt, fur_source &src)
   gcc_checking_assert (gimple_code (stmt) == GIMPLE_ASSIGN);
   gcc_checking_assert (gimple_assign_rhs_code (stmt) == ADDR_EXPR);
 
-  bool strict_overflow_p;
   tree expr = gimple_assign_rhs1 (stmt);
   poly_int64 bitsize, bitpos;
   tree offset;
@@ -912,7 +967,7 @@ fold_using_range::range_of_address (prange &r, gimple *stmt, fur_source &src)
     }
 
   // Handle "= &a".
-  if (tree_single_nonzero_warnv_p (expr, &strict_overflow_p))
+  if (tree_single_nonzero_p (expr))
     {
       r.set_nonzero (TREE_TYPE (gimple_assign_rhs1 (stmt)));
       return true;
@@ -958,8 +1013,7 @@ range_from_readonly_load (vrange &r, tree type, tree cst,
 
       if (POINTER_TYPE_P (type))
 	{
-	  bool strict_overflow_p;
-	  return tree_single_nonzero_warnv_p (cst, &strict_overflow_p);
+	  return tree_single_nonzero_p (cst);
 	}
 
       if (TREE_CODE (cst) != INTEGER_CST)
@@ -1167,7 +1221,7 @@ fold_using_range::range_of_phi (vrange &r, gphi *phi, fur_source &src)
 	  seen_arg = true;
 	  single_arg = arg;
 	}
-      else if (single_arg != arg)
+      else if (!vrp_operand_equal_p (single_arg, arg))
 	single_arg = NULL_TREE;
 
       // Once the value reaches varying, stop looking.
@@ -1205,14 +1259,26 @@ fold_using_range::range_of_phi (vrange &r, gphi *phi, fur_source &src)
 	  if (single_arg)
 	    src.register_relation (phi, VREL_EQ, phi_def, single_arg);
 	}
-      else if (src.get_operand (arg_range, single_arg)
-	       && arg_range.singleton_p ())
+      else if (src.get_operand (arg_range, single_arg))
 	{
+	  // Check if the single argument points to a specific object.
+	  if (is_a <prange> (arg_range))
+	    {
+	      prange &ptr = as_a <prange> (arg_range);
+	      // If it doesn't already point at something, set points to.
+	      if (ptr.pt_unknown_p () && TREE_CODE (single_arg) == ADDR_EXPR)
+		ptr.set_pt (single_arg, true);
+	      r = ptr;
+	      return true;
+	    }
 	  // Numerical arguments that are a constant can be returned as
 	  // the constant. This can help fold later cases where even this
 	  // constant might have been UNDEFINED via an unreachable edge.
-	  r = arg_range;
-	  return true;
+	  if (arg_range.singleton_p ())
+	    {
+	      r = arg_range;
+	      return true;
+	    }
 	}
     }
 
@@ -1260,9 +1326,8 @@ fold_using_range::range_of_call (vrange &r, gcall *call, fur_source &)
     return false;
 
   tree lhs = gimple_call_lhs (call);
-  bool strict_overflow_p;
 
-  if (gimple_stmt_nonnegative_warnv_p (call, &strict_overflow_p))
+  if (gimple_stmt_nonnegative_p (call))
     r.set_nonnegative (type);
   else if (gimple_call_nonnull_result_p (call)
 	   || gimple_call_nonnull_arg (call))
@@ -1566,7 +1631,7 @@ fold_using_range::relation_fold_and_or (irange& lhs_range, gimple *s,
     return;
 
   if (reverse_op2)
-    relation2 = relation_negate (relation2);
+    relation2 = relation_swap (relation2);
 
   // x && y is false if the relation intersection of the true cases is NULL.
   if (is_and && relation_intersect (relation1, relation2) == VREL_UNDEFINED)

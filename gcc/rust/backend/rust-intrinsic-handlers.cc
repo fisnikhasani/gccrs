@@ -80,7 +80,7 @@ check_for_basic_integer_type (const std::string &intrinsic_str,
     {
       rust_error_at (
 	locus,
-	"%s intrinsics can only be used with basic integer types (got %qs)",
+	"%s intrinsic can only be used with basic integer types (got %qs)",
 	intrinsic_str.c_str (), type->get_name ().c_str ());
     }
 
@@ -218,7 +218,7 @@ build_atomic_builtin_name (const std::string &prefix, location_t locus,
 
   auto type_size_str = allowed_types.find (type_name);
 
-  if (!check_for_basic_integer_type ("atomic", locus, operand_type))
+  if (!check_for_basic_integer_type ("atomic operation", locus, operand_type))
     return "";
 
   result += type_size_str->second;
@@ -255,7 +255,8 @@ unchecked_op (Context *ctx, TyTy::FnType *fntype, tree_code op)
   auto *monomorphized_type
     = fntype->get_substs ().at (0).get_param_ty ()->resolve ();
 
-  check_for_basic_integer_type ("unchecked operation", fntype->get_locus (),
+  auto call_locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
+  check_for_basic_integer_type ("unchecked operation", call_locus,
 				monomorphized_type);
 
   auto expr = build2 (op, TREE_TYPE (x), x, y);
@@ -660,9 +661,9 @@ atomic_store (Context *ctx, TyTy::FnType *fntype, int ordering)
   auto monomorphized_type
     = fntype->get_substs ()[0].get_param_ty ()->resolve ();
 
-  auto builtin_name
-    = build_atomic_builtin_name ("atomic_store_", fntype->get_locus (),
-				 monomorphized_type);
+  auto call_locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
+  auto builtin_name = build_atomic_builtin_name ("atomic_store_", call_locus,
+						 monomorphized_type);
   if (builtin_name.empty ())
     return error_mark_node;
 
@@ -777,8 +778,8 @@ ctlz_handler (Context *ctx, TyTy::FnType *fntype, bool nonzero)
   rust_assert (fntype->get_num_substitutions () == 1);
   auto *monomorphized_type
     = fntype->get_substs ().at (0).get_param_ty ()->resolve ();
-  if (!check_for_basic_integer_type ("ctlz", fntype->get_locus (),
-				     monomorphized_type))
+  auto call_locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
+  if (!check_for_basic_integer_type ("ctlz", call_locus, monomorphized_type))
     return error_mark_node;
 
   enter_intrinsic_block (ctx, fndecl);
@@ -893,24 +894,154 @@ ctlz_handler (Context *ctx, TyTy::FnType *fntype, bool nonzero)
   return fndecl;
 }
 
+// Shared inner implementation for cttz and cttz_nonzero.
+//
+// nonzero=false → cttz: cttz(0) is well-defined in Rust and must return
+//   bit_size, but __builtin_ctz*(0) is undefined behaviour in C, so an
+//   explicit arg==0 guard is emitted.
+//
+// nonzero=true → cttz_nonzero: the caller guarantees arg != 0 (passing 0
+//   is immediate UB in Rust), so the zero guard is omitted entirely.
+static tree
+cttz_handler (Context *ctx, TyTy::FnType *fntype, bool nonzero)
+{
+  rust_assert (fntype->get_params ().size () == 1);
+
+  tree lookup = NULL_TREE;
+  if (check_for_cached_intrinsic (ctx, fntype, &lookup))
+    return lookup;
+
+  auto fndecl = compile_intrinsic_function (ctx, fntype);
+
+  std::vector<Bvariable *> param_vars;
+  compile_fn_params (ctx, fntype, fndecl, &param_vars);
+
+  auto arg_param = param_vars.at (0);
+  if (!Backend::function_set_parameters (fndecl, param_vars))
+    return error_mark_node;
+
+  rust_assert (fntype->get_num_substitutions () == 1);
+  auto *monomorphized_type
+    = fntype->get_substs ().at (0).get_param_ty ()->resolve ();
+  auto call_locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
+  if (!check_for_basic_integer_type ("cttz", call_locus, monomorphized_type))
+    return error_mark_node;
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN cttz FN BODY BEGIN
+  auto locus = fntype->get_locus ();
+  auto arg_expr = Backend::var_expression (arg_param, locus);
+  tree arg_type = TREE_TYPE (arg_expr);
+  unsigned bit_size = TYPE_PRECISION (arg_type);
+
+  // Convert signed types to their same-width unsigned equivalent before
+  // widening.  For cttz this is not strictly required for correctness (sign
+  // extension fills high bits with 1s, which does not alter the trailing-zero
+  // count at the low end), but it avoids relying on signed-integer
+  // representations and keeps the approach consistent with ctlz.
+  tree unsigned_type
+    = !TYPE_UNSIGNED (arg_type) ? unsigned_type_for (arg_type) : arg_type;
+  tree unsigned_arg = fold_convert (unsigned_type, arg_expr);
+
+  // Pick the narrowest GCC ctz builtin whose operand type is wide enough to
+  // hold bit_size bits.  Unlike ctlz, no diff adjustment is needed: widening
+  // a value zero-extends it (fills the added high bits with 0s), which does
+  // not introduce new trailing zeros at the low end.
+  //
+  // Example: cttz(0b00001000_u8) = 3
+  //   Widened to u32: 0x00000008.  __builtin_ctz(0x00000008) = 3.
+  //
+  // TODO: 128-bit integers are not yet handled.
+  unsigned int_prec = TYPE_PRECISION (unsigned_type_node);
+  unsigned long_prec = TYPE_PRECISION (long_unsigned_type_node);
+  unsigned longlong_prec = TYPE_PRECISION (long_long_unsigned_type_node);
+
+  const char *builtin_name = nullptr;
+  tree cast_type = NULL_TREE;
+
+  if (bit_size <= int_prec)
+    {
+      // Fits in unsigned int: covers 8/16/32-bit integers on most targets.
+      builtin_name = "__builtin_ctz";
+      cast_type = unsigned_type_node;
+    }
+  else if (bit_size <= long_prec)
+    {
+      // Fits in unsigned long but not unsigned int.
+      builtin_name = "__builtin_ctzl";
+      cast_type = long_unsigned_type_node;
+    }
+  else if (bit_size <= longlong_prec)
+    {
+      // Fits in unsigned long long but not unsigned long.
+      builtin_name = "__builtin_ctzll";
+      cast_type = long_long_unsigned_type_node;
+    }
+  else
+    {
+      rust_sorry_at (locus, "cttz for %u-bit integers is not yet implemented",
+		     bit_size);
+      return error_mark_node;
+    }
+
+  tree call_arg = fold_convert (cast_type, unsigned_arg);
+
+  tree builtin_decl = error_mark_node;
+  BuiltinsContext::get ().lookup_simple_builtin (builtin_name, &builtin_decl);
+  rust_assert (builtin_decl != error_mark_node);
+
+  tree builtin_fn = build_fold_addr_expr_loc (locus, builtin_decl);
+  tree ctz_expr
+    = Backend::call_expression (builtin_fn, {call_arg}, nullptr, locus);
+
+  ctz_expr = fold_convert (uint32_type_node, ctz_expr);
+
+  tree final_expr;
+  if (!nonzero)
+    {
+      // cttz(0) must return bit_size per the Rust reference.
+      // We cannot pass 0 to __builtin_ctz* (UB), so emit:
+      //   arg == 0 ? bit_size : ctz_expr
+      tree zero = build_int_cst (arg_type, 0);
+      tree cmp = fold_build2 (EQ_EXPR, boolean_type_node, arg_expr, zero);
+      tree width_cst = build_int_cst (uint32_type_node, bit_size);
+      final_expr
+	= fold_build3 (COND_EXPR, uint32_type_node, cmp, width_cst, ctz_expr);
+    }
+  else
+    {
+      // cttz_nonzero: arg != 0 is guaranteed by the caller, no guard needed.
+      final_expr = ctz_expr;
+    }
+
+  tree result = fold_convert (TREE_TYPE (DECL_RESULT (fndecl)), final_expr);
+  auto return_stmt = Backend::return_statement (fndecl, result, locus);
+  ctx->add_statement (return_stmt);
+  // BUILTIN cttz FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+  return fndecl;
+}
+
 } // namespace inner
 
 const HandlerBuilder
 op_with_overflow (tree_code op)
 {
-  return [op] (Context *ctx, TyTy::FnType *fntype) {
+  return [op] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::op_with_overflow (ctx, fntype, op);
   };
 }
 
 tree
-rotate_left (Context *ctx, TyTy::FnType *fntype)
+rotate_left (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return handlers::rotate (ctx, fntype, LROTATE_EXPR);
 }
 
 tree
-rotate_right (Context *ctx, TyTy::FnType *fntype)
+rotate_right (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return handlers::rotate (ctx, fntype, RROTATE_EXPR);
 }
@@ -918,7 +1049,7 @@ rotate_right (Context *ctx, TyTy::FnType *fntype)
 const HandlerBuilder
 wrapping_op (tree_code op)
 {
-  return [op] (Context *ctx, TyTy::FnType *fntype) {
+  return [op] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::wrapping_op (ctx, fntype, op);
   };
 }
@@ -926,7 +1057,7 @@ wrapping_op (tree_code op)
 HandlerBuilder
 atomic_store (int ordering)
 {
-  return [ordering] (Context *ctx, TyTy::FnType *fntype) {
+  return [ordering] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::atomic_store (ctx, fntype, ordering);
   };
 }
@@ -934,7 +1065,7 @@ atomic_store (int ordering)
 HandlerBuilder
 atomic_load (int ordering)
 {
-  return [ordering] (Context *ctx, TyTy::FnType *fntype) {
+  return [ordering] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::atomic_load (ctx, fntype, ordering);
   };
 }
@@ -942,7 +1073,7 @@ atomic_load (int ordering)
 const HandlerBuilder
 unchecked_op (tree_code op)
 {
-  return [op] (Context *ctx, TyTy::FnType *fntype) {
+  return [op] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::unchecked_op (ctx, fntype, op);
   };
 }
@@ -950,7 +1081,7 @@ unchecked_op (tree_code op)
 const HandlerBuilder
 copy (bool overlaps)
 {
-  return [overlaps] (Context *ctx, TyTy::FnType *fntype) {
+  return [overlaps] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::copy (ctx, fntype, overlaps);
   };
 }
@@ -958,7 +1089,7 @@ copy (bool overlaps)
 const HandlerBuilder
 expect (bool likely)
 {
-  return [likely] (Context *ctx, TyTy::FnType *fntype) {
+  return [likely] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::expect (ctx, fntype, likely);
   };
 }
@@ -966,13 +1097,13 @@ expect (bool likely)
 const HandlerBuilder
 try_handler (bool is_new_api)
 {
-  return [is_new_api] (Context *ctx, TyTy::FnType *fntype) {
+  return [is_new_api] (Context *ctx, TyTy::FnType *fntype, location_t) {
     return inner::try_handler (ctx, fntype, is_new_api);
   };
 }
 
 tree
-sorry (Context *ctx, TyTy::FnType *fntype)
+sorry (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   rust_sorry_at (fntype->get_locus (), "intrinsic %qs is not yet implemented",
 		 fntype->get_identifier ().c_str ());
@@ -981,7 +1112,7 @@ sorry (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-assume (Context *ctx, TyTy::FnType *fntype)
+assume (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   // TODO: make sure this is actually helping the compiler optimize
 
@@ -1026,17 +1157,15 @@ assume (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-discriminant_value (Context *ctx, TyTy::FnType *fntype)
+discriminant_value (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   rust_assert (fntype->get_params ().size () == 1);
-  rust_assert (fntype->get_return_type ()->is<TyTy::PlaceholderType> ());
   rust_assert (fntype->has_substitutions ());
   rust_assert (fntype->get_num_type_params () == 1);
   auto &mapping = fntype->get_substs ().at (0);
   auto param_ty = mapping.get_param_ty ();
   rust_assert (param_ty->can_resolve ());
   auto resolved = param_ty->resolve ();
-  auto p = static_cast<TyTy::PlaceholderType *> (fntype->get_return_type ());
 
   TyTy::BaseType *return_type = nullptr;
   bool ok = ctx->get_tyctx ()->lookup_builtin ("isize", &return_type);
@@ -1047,12 +1176,11 @@ discriminant_value (Context *ctx, TyTy::FnType *fntype)
   if (is_adt)
     {
       const auto &adt = *static_cast<TyTy::ADTType *> (resolved);
-      return_type = adt.get_repr_options ().repr;
-      rust_assert (return_type != nullptr);
+      auto *repr = adt.get_repr_options ().repr;
+      if (repr != nullptr)
+	return_type = repr;
       is_enum = adt.is_enum ();
     }
-
-  p->set_associated_type (return_type->get_ref ());
 
   tree lookup = NULL_TREE;
   if (check_for_cached_intrinsic (ctx, fntype, &lookup))
@@ -1090,7 +1218,7 @@ discriminant_value (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-variant_count (Context *ctx, TyTy::FnType *fntype)
+variant_count (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   rust_assert (fntype->get_num_type_params () == 1);
   auto &mapping = fntype->get_substs ().at (0);
@@ -1141,7 +1269,7 @@ variant_count (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-move_val_init (Context *ctx, TyTy::FnType *fntype)
+move_val_init (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   rust_assert (fntype->get_params ().size () == 2);
 
@@ -1195,7 +1323,7 @@ move_val_init (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-uninit (Context *ctx, TyTy::FnType *fntype)
+uninit (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   // uninit has _zero_ parameters its parameter is the generic one
   rust_assert (fntype->get_params ().size () == 0);
@@ -1261,12 +1389,12 @@ uninit (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-prefetch_read_data (Context *ctx, TyTy::FnType *fntype)
+prefetch_read_data (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return prefetch_data (ctx, fntype, Prefetch::Read);
 }
 tree
-prefetch_write_data (Context *ctx, TyTy::FnType *fntype)
+prefetch_write_data (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return prefetch_data (ctx, fntype, Prefetch::Write);
 }
@@ -1374,7 +1502,7 @@ rotate (Context *ctx, TyTy::FnType *fntype, tree_code op)
 }
 
 tree
-transmute (Context *ctx, TyTy::FnType *fntype)
+transmute (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   // transmute intrinsic has one parameter
   rust_assert (fntype->get_params ().size () == 1);
@@ -1448,7 +1576,7 @@ transmute (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-sizeof_handler (Context *ctx, TyTy::FnType *fntype)
+sizeof_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   // size_of has _zero_ parameters its parameter is the generic one
   rust_assert (fntype->get_params ().size () == 0);
@@ -1481,8 +1609,47 @@ sizeof_handler (Context *ctx, TyTy::FnType *fntype)
   return fndecl;
 }
 
+/**
+ * pub fn min_align_of<T>() -> usize;
+ */
 tree
-offset (Context *ctx, TyTy::FnType *fntype)
+min_align_of_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  // min_align_of has _zero_ parameters its parameter is the generic one
+  rust_assert (fntype->get_params ().size () == 0);
+
+  tree lookup = NULL_TREE;
+  if (check_for_cached_intrinsic (ctx, fntype, &lookup))
+    return lookup;
+
+  auto fndecl = compile_intrinsic_function (ctx, fntype);
+
+  // get the template parameter type tree fn min_align_of<T>();
+  rust_assert (fntype->get_num_substitutions () == 1);
+  auto &param_mapping = fntype->get_substs ().at (0);
+  const auto param_tyty = param_mapping.get_param_ty ();
+  auto resolved_tyty = param_tyty->resolve ();
+  tree template_parameter_type
+    = TyTyResolveCompile::compile (ctx, resolved_tyty);
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN min_align_of FN BODY BEGIN
+  tree align_expr
+    = build_int_cst (size_type_node, TYPE_ALIGN_UNIT (template_parameter_type));
+
+  auto return_statement
+    = Backend::return_statement (fndecl, align_expr, UNDEF_LOCATION);
+  ctx->add_statement (return_statement);
+  // BUILTIN min_align_of FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+
+  return fndecl;
+}
+
+tree
+offset (Context *ctx, TyTy::FnType *fntype, location_t expr_locus)
 {
   // offset intrinsic has two params dst pointer and offset isize
   rust_assert (fntype->get_params ().size () == 2);
@@ -1503,8 +1670,7 @@ offset (Context *ctx, TyTy::FnType *fntype)
   // BUILTIN offset FN BODY BEGIN
   tree dst = Backend::var_expression (dst_param, UNDEF_LOCATION);
   tree size = Backend::var_expression (size_param, UNDEF_LOCATION);
-  tree pointer_offset_expr
-    = pointer_offset_expression (dst, size, BUILTINS_LOCATION);
+  tree pointer_offset_expr = pointer_offset_expression (dst, size, expr_locus);
   auto return_statement
     = Backend::return_statement (fndecl, pointer_offset_expr, UNDEF_LOCATION);
   ctx->add_statement (return_statement);
@@ -1519,7 +1685,7 @@ offset (Context *ctx, TyTy::FnType *fntype)
  * pub const fn bswap<T: Copy>(x: T) -> T;
  */
 tree
-bswap_handler (Context *ctx, TyTy::FnType *fntype)
+bswap_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   rust_assert (fntype->get_params ().size () == 1);
 
@@ -1542,8 +1708,8 @@ bswap_handler (Context *ctx, TyTy::FnType *fntype)
   auto *monomorphized_type
     = fntype->get_substs ().at (0).get_param_ty ()->resolve ();
 
-  check_for_basic_integer_type ("bswap", fntype->get_locus (),
-				monomorphized_type);
+  auto call_locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
+  check_for_basic_integer_type ("bswap", call_locus, monomorphized_type);
 
   tree template_parameter_type
     = TyTyResolveCompile::compile (ctx, monomorphized_type);
@@ -1676,15 +1842,27 @@ bswap_handler (Context *ctx, TyTy::FnType *fntype)
 }
 
 tree
-ctlz_handler (Context *ctx, TyTy::FnType *fntype)
+ctlz_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return inner::ctlz_handler (ctx, fntype, false);
 }
 
 tree
-ctlz_nonzero_handler (Context *ctx, TyTy::FnType *fntype)
+ctlz_nonzero_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return inner::ctlz_handler (ctx, fntype, true);
+}
+
+tree
+cttz_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  return inner::cttz_handler (ctx, fntype, false);
+}
+
+tree
+cttz_nonzero_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  return inner::cttz_handler (ctx, fntype, true);
 }
 
 } // namespace handlers

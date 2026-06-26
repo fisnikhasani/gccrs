@@ -17,14 +17,18 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-compile-pattern.h"
+#include "print-tree.h"
+#include "rust-compile-drop.h"
 #include "rust-compile-expr.h"
 #include "rust-compile-resolve-path.h"
-#include "rust-constexpr.h"
 #include "rust-compile-type.h"
-#include "print-tree.h"
+#include "rust-constexpr.h"
 #include "rust-diagnostics.h"
 #include "rust-hir-pattern-abstract.h"
 #include "rust-hir-pattern.h"
+#include "rust-hir-trait-reference.h"
+#include "rust-hir-type-bounds.h"
+#include "rust-lang-item.h"
 #include "rust-system.h"
 #include "rust-tyty.h"
 #include "tree.h"
@@ -1343,6 +1347,24 @@ CompilePatternLet::visit (HIR::IdentifierPattern &pattern)
       auto s = Backend::init_statement (fnctx.fndecl, var, init_expr);
       ctx->add_statement (s);
     }
+
+  TyTy::BaseType *drop_ty = ty;
+  if (pattern.get_is_ref ())
+    {
+      auto ref_ty = ty->try_as<TyTy::ReferenceType> ();
+      rust_assert (ref_ty != nullptr);
+      drop_ty = ref_ty->get_base ();
+    }
+
+  if (!CompileDrop::type_has_drop_impl (ctx, drop_ty))
+    return;
+
+  if (!pattern.has_subpattern () && !pattern.get_is_ref ())
+    ctx->note_simple_drop_candidate (pattern.get_mappings ().get_hirid (),
+				     pattern.get_locus ());
+  else
+    rust_sorry_at (pattern.get_locus (),
+		   "drop trait not supported for subpatterns and ref patterns");
 }
 
 void

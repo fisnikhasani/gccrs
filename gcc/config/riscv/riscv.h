@@ -60,24 +60,27 @@ extern const char *riscv_arch_help (int argc, const char **argv);
   { "riscv_arch_help", riscv_arch_help },
 
 /* Support for a compile-time default CPU, et cetera.  The rules are:
-   --with-arch and --with-cpu are ignored if -march or -mcpu is specified.
+   --with-cpu is ignored if -mcpu is specified.
+   --with-arch is ignored if -march or -mcpu is specified.
    --with-abi is ignored if -mabi is specified.
    --with-tune is ignored if -mtune or -mcpu is specified.
    --with-isa-spec is ignored if -misa-spec is specified.
    --with-tls is ignored if -mtls-dialect is specified.
+   --with-cmodel is ignored if -mcmodel is specified.
 
    Uses default values if -mcpu doesn't have a valid option.  */
 #define OPTION_DEFAULT_SPECS \
+  {"cpu", "%{!mcpu=*:-mcpu=%(VALUE)}" },				\
   {"tune", "%{!mtune=*:"						\
 	   "  %{!mcpu=*:-mtune=%(VALUE)}"				\
 	   "  %{mcpu=*:-mtune=%:riscv_default_mtune(%* %(VALUE))}}" },	\
-  {"cpu", "%{!march=*:%{!mcpu=*:%:riscv_expand_arch_from_cpu(%(VALUE))}}" }, \
   {"arch", "%{!march=*|march=unset:"					\
 	   "  %{!mcpu=*:-march=%(VALUE)}"				\
 	   "  %{mcpu=*:%:riscv_expand_arch_from_cpu(%* %(VALUE))}}" },	\
   {"abi", "%{!mabi=*:-mabi=%(VALUE)}" },				\
   {"isa_spec", "%{!misa-spec=*:-misa-spec=%(VALUE)}" },			\
   {"tls", "%{!mtls-dialect=*:-mtls-dialect=%(VALUE)}"},         	\
+  {"cmodel", "%{!mcmodel=*:-mcmodel=%(VALUE)}" },			\
 
 #ifdef IN_LIBGCC2
 #undef TARGET_64BIT
@@ -176,7 +179,8 @@ ARCH_UNSET_CLEANUP_SPECS \
 
 /* The `Q' extension is not yet supported.  */
 #define UNITS_PER_FP_REG (TARGET_DOUBLE_FLOAT ? 8 : 4)
-/* Size per vector register. For VLEN = 32, size = poly (4, 4). Otherwise, size = poly (8, 8). */
+/* Size per vector register.  For VLEN = 32, size = poly (4, 4).
+   Otherwise, size = poly (8, 8).  */
 #define UNITS_PER_V_REG (riscv_vector_chunks * riscv_bytes_per_vector_chunk)
 
 /* The largest type that can be passed in floating-point registers.  */
@@ -900,7 +904,7 @@ extern enum riscv_cc get_riscv_cc (const rtx use);
 
 #undef ASM_OUTPUT_OPCODE
 #define ASM_OUTPUT_OPCODE(STREAM, PTR)	\
-  (PTR) = riscv_asm_output_opcode(STREAM, PTR)
+  (PTR) = riscv_asm_output_opcode (STREAM, PTR)
 
 #define JUMP_TABLES_IN_TEXT_SECTION (riscv_cmodel == CM_LARGE)
 #define CASE_VECTOR_MODE SImode
@@ -1101,6 +1105,13 @@ extern enum riscv_cc get_riscv_cc (const rtx use);
   fprintf (STREAM, "\t.word\t%sL%d-%sL%d\n",				\
 	   LOCAL_LABEL_PREFIX, VALUE, LOCAL_LABEL_PREFIX, REL)
 
+/* For Zicfilp, labels that may be indirect jump targets need 4-byte
+   alignment so that the lpad instruction after them is properly aligned.  */
+#define LABEL_ALIGN(LABEL)						\
+  (TARGET_ZICFILP && LABEL_PRESERVE_P (LABEL)				\
+   ? ((align_labels.levels[0].log > 2) ? align_labels : align_flags (2)) \
+   : align_labels)
+
 /* This is how to output an assembler line
    that says to advance the location counter
    to a multiple of 2**LOG bytes.  */
@@ -1206,6 +1217,7 @@ extern bool riscv_user_wants_strict_align;
 extern unsigned riscv_stack_boundary;
 extern unsigned riscv_bytes_per_vector_chunk;
 extern poly_uint16 riscv_vector_chunks;
+extern bool riscv_registering_builtins;
 extern poly_int64 riscv_v_adjust_nunits (enum machine_mode, int);
 extern poly_int64 riscv_v_adjust_nunits (machine_mode, bool, int, int);
 extern poly_int64 riscv_v_adjust_precision (enum machine_mode, int);
@@ -1282,7 +1294,7 @@ extern void riscv_remove_unneeded_save_restore_calls (void);
 #define DWARF_REG_TO_UNWIND_COLUMN(REGNO) \
   ((REGNO == RISCV_DWARF_VLENB) ? (FIRST_PSEUDO_REGISTER + 1) : REGNO)
 
-/* Like s390, riscv also defined this macro for the vector comparision.  Then
+/* Like s390, riscv also defined this macro for the vector comparison.  Then
    the simplify-rtx relational_result will canonicalize the result to the
    CONST1_RTX for the simplification.  */
 #define VECTOR_STORE_FLAG_VALUE(MODE) CONSTM1_RTX (GET_MODE_INNER (MODE))
@@ -1326,7 +1338,7 @@ extern void riscv_remove_unneeded_save_restore_calls (void);
 		STACK_BOUNDARY / BITS_PER_UNIT)		   \
     : (crtl->outgoing_args_size + STACK_POINTER_OFFSET))
 
-/* According to the RISC-V C API, the arch string may contains ','. To avoid
+/* According to the RISC-V C API, the arch string may contain ','.  To avoid
    the conflict with the default separator, we choose '#' as the separator for
    the target attribute.  */
 #define TARGET_CLONES_ATTR_SEPARATOR '#'

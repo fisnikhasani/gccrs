@@ -1,3 +1,44 @@
+2026-05-30  Dhruv Chawla  <dhruvc@nvidia.com>
+
+	* Make-lang.in: Fix typos.
+	* lto-common.cc (read_cgraph_and_symbols): Likewise.
+	* lto-lang.cc (lto_post_options): Likewise.
+	* lto-partition.cc (add_symbol_to_partition_1): Likewise.
+	(partition_over_target_split): Likewise.
+	(lto_balanced_map): Likewise.
+	(rename_statics): Likewise.
+	* lto-symtab.cc (lto_cgraph_replace_node): Likewise.
+	(lto_varpool_replace_node): Likewise.
+	(lto_symtab_merge_symbols): Likewise.
+	* lto.cc (stream_out_partitions): Likewise.
+	(do_whole_program_analysis): Likewise.
+
+2026-04-22  Sam James  <sam@gentoo.org>
+
+	* lto-symtab.cc (lto_varpool_replace_node): Fix spelling of 'warning'.
+
+2026-04-09  Dhruv Chawla  <dhruvc@nvidia.com>
+
+	* Make-lang.in (create_fdas_for_lto1): Use $(AFDO_PROFILER) when passing
+	--profiler to create_gcov. Ensure that perf.data contains profile for
+	lto1. Make the console output more useful.
+
+2026-03-26  Michal Jires  <mjires@suse.cz>
+
+	* lto-partition.cc (enum map1to1_content): New.
+	(map_1_to_1): Use map1to1_content.
+	(lto_1_to_1_map): Likewise.
+	(create_asm_partitions): Likewise.
+	(lto_max_map): Likewise.
+	(lto_cache_map): Use create_asm_partitions.
+
+2026-03-18  Dhruv Chawla  <dhruvc@nvidia.com>
+
+	* Make-lang.in (lto1.fda): Add `--print-autofdo-gcov-version` to
+	profile_merger invocation.
+	(create_fdas_for_lto1): Add `--print-autofdo-gcov-version` to
+	create_gcov invocations.
+
 2026-02-13  Dhruv Chawla  <dhruvc@nvidia.com>
 
 	* Make-lang.in (lto1.fda): Likewise.

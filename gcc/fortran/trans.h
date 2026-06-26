@@ -457,7 +457,8 @@ tree gfc_get_vptr_from_expr (tree);
 tree gfc_copy_class_to_class (tree, tree, tree, bool);
 bool gfc_add_finalizer_call (stmtblock_t *, gfc_expr *, tree = NULL_TREE);
 bool gfc_add_comp_finalizer_call (stmtblock_t *, tree, gfc_component *, bool);
-void gfc_finalize_tree_expr (gfc_se *, gfc_symbol *, symbol_attribute, int);
+void gfc_finalize_tree_expr (gfc_se *, gfc_symbol *, const symbol_attribute &,
+			     int);
 bool gfc_assignment_finalizer_call (gfc_se *, gfc_expr *, bool);
 
 void gfc_class_array_data_assign (stmtblock_t *, tree, tree, bool);
@@ -826,6 +827,7 @@ tree gfc_omp_call_is_alloc (tree);
 bool gfc_omp_is_allocatable_or_ptr (const_tree);
 tree gfc_omp_check_optional_argument (tree, bool);
 tree gfc_omp_array_data (tree, bool);
+bool gfc_omp_array_data_privatize (tree);
 tree gfc_omp_array_size (tree, gimple_seq *);
 bool gfc_omp_privatize_by_reference (const_tree);
 enum omp_clause_default_kind gfc_omp_predetermined_sharing (tree);

@@ -48,8 +48,10 @@
 #define BOOL       boolean_type_node
 #define CHAR       char_type_node
 #define SCHAR      signed_char_type_node
+#define SCHAR_P    build_pointer_type(SCHAR)
 #define UCHAR      unsigned_char_type_node
 #define SHORT      short_integer_type_node
+#define SHORT_P    build_pointer_type(short_integer_type_node)
 #define USHORT     short_unsigned_type_node
 #define WCHAR      short_unsigned_type_node
 #define INT        integer_type_node
@@ -126,10 +128,14 @@ struct gg_function_t
 
     // This structure contains state variables for a single function.
 
+    bool initialized; // Starts off false; used for one-time initialization
+
     const char *our_unmangled_name;   // This is the original name
     const char *our_name;             // This is our mangled name
     tree        function_address;
     size_t our_symbol_table_index;
+    bool has_initial;     // The program-id has the INITIAL clause.
+    bool has_recursive;   // The program-id has the RECURSIVE clause.
 
     // The function_decl is fundamental to many, many things
     tree function_decl;
@@ -173,11 +179,8 @@ struct gg_function_t
     struct cbl_proc_t *current_section;
     struct cbl_proc_t *current_paragraph;
 
-    tree void_star_temp;    // At the end of every paragraph and section, we
-    //                      // we need a variable "void *temp" to hold a
-    //                      // label for one instruction.  Rather than clutter
-    //                      // up the code with temporaries, we use this one
-    //                      // instance instead.
+    // This carries an indirect pointer reference to RETURN-CODE
+    tree var_decl_return;
 
     tree first_time_through;
 
@@ -227,6 +230,44 @@ struct gg_function_t
     // decremented and a return is created.  When the counter is 1, the
     // EXIT program is treated as a CONTINUE.
     tree called_by_main_counter;
+
+    // We used to use indirect jumps to implement "pseudo-return" from PERFORM
+    // <proc> statements.  But that led to N-squared complexity in the Control
+    // Flow Graph, because the middle-end can't make assumptions about the
+    // target of the JMP *%rax; as far as the middle-end is concerned *any*
+    // label in the program could be a target.
+    //
+    // We are now reducing the complexity to linear by using a switch()
+    // statement on an identifier.  The following map collects the indexes
+    // used for the switch statement.
+
+    // In order to reduce the complexity of the Control Flow Graph, we build a
+    // an array of all paragraphs. For each such paragraph, we also build a
+    // vector of of the return locations of PERFORM statements that target it.
+    // Those tables are used to create one dispatching switch statement per
+    // paragraph.  Each switch statements has exactly one CASE for each PERFORM
+    // of the paragraph, each CASE contains a GOTO the return location of that
+    // PERFORM.
+    //
+    // The map uses the paragraph's proc_t * as a key.  The payload is the
+    // index into the vector of vectors.
+
+    std::vector<void *> list_of_procedures;
+
+    // The following is an SIZE_T variable node.  It is set by every PERFORM
+    // statement to establish where the end-of-paragraph dispatch switch picks
+    // a GOTO statement for the return.
+    tree pseudo_return_index;
+
+    // The ENTRY statement creates alternative entry point to a program-id. We
+    // implement that as a SWITCH_EXPR.  At the main entry point for a
+    // program-id, we check to see if an alternative entry point has been
+    // established.  If so, we jump to the SWITCH statement which dispatches
+    // execution to the alternate location.
+    tree entry_switch_goto;
+    tree entry_switch_label;
+    std::vector<tree> entry_goto_expressions;
+    bool alphabet_in_use;
     };
 
 struct cbl_translation_unit_t
@@ -299,16 +340,13 @@ extern tree gg_assign(tree dest, const tree source);
 
 // struct creation and field access
 // Create struct, and access a field in a struct
-extern tree gg_get_local_struct_type_decl(const char *type_name, int count, ...);
-extern tree gg_get_filelevel_struct_type_decl(const char *type_name, int count, ...);
-extern tree gg_get_filelevel_union_type_decl(const char *type_name, int count, ...);
-extern tree gg_define_local_struct(const char *type_name, const char * var_name, int count ,...);
+extern tree gg_get_structure_type_decl(const char *type_name, ...);
+extern void gg_structure_type_constructor(tree record_decl, ...);
+
 extern tree gg_find_field_in_struct(const tree var_decl, const char *field_name);
 extern tree gg_struct_field_ref(const tree struct_decl, const char *field);
-extern tree gg_assign_to_structure(tree var_decl_struct, const char *field, const tree source);
-extern tree gg_assign_to_structure(tree var_decl_struct, const char *field, int N);
 
-// Generalized variable declareres.  This don't create storage
+// Generalized variable declarer.  This doesn't create storage
 extern tree gg_declare_variable(tree type_decl,
                                 const char *name=NULL,
                                 tree initial_value=NULL_TREE,
@@ -327,6 +365,9 @@ extern tree gg_define_variable(tree type_decl,
                                const char *name,
                                gg_variable_scope_t vs_scope,
                                tree initial_value);
+extern tree gg_define_volatile_variable(tree type_decl,
+                                        const char *name,
+                                        gg_variable_scope_t vs_scope);
 // Utility definers:
 extern tree gg_define_bool();
 extern tree gg_define_char();
@@ -377,8 +418,12 @@ extern tree gg_define_uchar_star(const char *variable_name, gg_variable_scope_t 
 extern tree gg_define_uchar_star(tree var);
 extern tree gg_define_uchar_star(const char *variable_name, tree var);
 
-// address_of operator; equivalent of C "&buffer"
-extern tree gg_get_address_of(const tree var_decl);
+// address_of operator; equivalent of C "&var_decl"
+extern tree gg_get_address_of(const tree var_decl); // For scalars
+// equivalent of C "&array[0]"
+extern tree gg_pointer_to_array(tree array);        // For arrays
+extern tree gg_get_address(const tree var_decl);
+
 
 // Array creation and access:
 extern tree gg_define_array(tree type_decl, size_t size);
@@ -395,6 +440,7 @@ extern void gg_decrement(tree var);
 extern tree gg_negate(tree var);        // Two's complement negation
 extern tree gg_bitwise_not(tree var);   // Bitwise inversion
 extern tree gg_abs(tree var);           // Absolute value
+extern tree gg_bswap(tree var);         // end-for-end byte swap
 
 // And some binary operations:
 
@@ -438,6 +484,7 @@ extern tree gg_read(tree fd, tree buf, tree count);
 extern void gg_write(tree fd, tree buf, tree count);
 extern void gg_memset(tree dest, const tree value, tree size);
 extern tree gg_memchr(tree s, tree c, tree n);
+extern tree gg_memcmp(const tree dest, const tree src, tree size);
 extern void gg_memcpy(tree dest, const tree src, tree size);
 extern void gg_memmove(tree dest, const tree src, tree size);
 extern tree gg_memdup(tree data, tree length);
@@ -450,7 +497,7 @@ extern tree gg_strncmp(tree char_star_A, tree char_star_B, tree size_t_N);
 // Flow control inside a function
 extern void gg_return(tree operand = NULL_TREE);
 
-// These routines are the preample and postamble that bracket everything else
+// These routines are the preamble and postamble that bracket everything else
 extern tree gg_build_fn_decl(const char *funcname, tree fndecl_type);
 extern tree gg_peek_fn_decl(const char *funcname);
 extern tree gg_define_function( tree return_type,
@@ -521,6 +568,7 @@ extern tree gg_array_of_field_pointers( size_t N,
 extern tree gg_array_of_size_t( size_t N, size_t *values);
 extern tree gg_array_of_bytes( size_t N, unsigned char *values);
 extern tree gg_indirect(tree pointer, tree byte_offset = NULL_TREE);
+extern tree gg_indirect_i(tree pointer, size_t offset=0);
 extern tree gg_string_literal(const char *string);
 
 #define CURRENT_LINE_NUMBER (cobol_location().first_line)
@@ -541,4 +589,7 @@ extern void gg_insert_into_assemblerf(const char *format, ...) ATTRIBUTE_PRINTF_
 
 extern char *gg_show_type(tree type);
 extern void gg_leaving_the_source_code_file();
+extern tree gg_create_assembler_name(const char *cobol_name);
+extern const char * label_decl_text_from_expr(tree expr);
+
 #endif

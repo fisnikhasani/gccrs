@@ -18,6 +18,7 @@
 
 #include "rust-compile-expr.h"
 #include "rust-backend.h"
+#include "rust-compile-context.h"
 #include "rust-compile-type.h"
 #include "rust-compile-struct-field-expr.h"
 #include "rust-compile-pattern.h"
@@ -26,13 +27,16 @@
 #include "rust-compile-implitem.h"
 #include "rust-constexpr.h"
 #include "rust-compile-type.h"
+#include "rust-finalized-name-resolution-context.h"
 #include "rust-gcc.h"
 #include "rust-compile-asm.h"
 #include "fold-const.h"
 #include "realmpfr.h"
 #include "convert.h"
 #include "print-tree.h"
+#include "rust-hir-bound.h"
 #include "rust-hir-expr.h"
+#include "rust-rib.h"
 #include "rust-system.h"
 #include "rust-tree.h"
 #include "rust-tyty.h"
@@ -192,9 +196,9 @@ void
 CompileExpr::visit (HIR::CompoundAssignmentExpr &expr)
 {
   auto op = expr.get_expr_type ();
-  auto lhs = CompileExpr::Compile (expr.get_lhs (), ctx);
-  auto rhs = CompileExpr::Compile (expr.get_rhs (), ctx);
-
+  tree lhs = CompileExpr::Compile (expr.get_lhs (), ctx);
+  tree rhs = CompileExpr::Compile (expr.get_rhs (), ctx);
+  tree compound_assignment = NULL_TREE;
   // this might be an operator overload situation lets check
   TyTy::FnType *fntype;
   bool is_op_overload = ctx->get_tyctx ()->lookup_operator_overload (
@@ -203,38 +207,37 @@ CompileExpr::visit (HIR::CompoundAssignmentExpr &expr)
     {
       auto lang_item_type = LangItem::CompoundAssignmentOperatorToLangItem (
 	expr.get_expr_type ());
-      auto compound_assignment
+      compound_assignment
 	= resolve_operator_overload (lang_item_type, expr, lhs, rhs,
 				     expr.get_lhs (), expr.get_rhs ());
-      ctx->add_statement (compound_assignment);
-
-      return;
     }
-
-  if (ctx->in_fn () && !ctx->const_context_p ())
+  else if (ctx->in_fn () && !ctx->const_context_p ())
     {
-      auto tmp = NULL_TREE;
+      tree tmp = NULL_TREE;
       Bvariable *receiver
 	= Backend::temporary_variable (ctx->peek_fn ().fndecl, NULL_TREE,
 				       TREE_TYPE (lhs), lhs, true,
 				       expr.get_locus (), &tmp);
-      auto check
+      tree check
 	= Backend::arithmetic_or_logical_expression_checked (op, lhs, rhs,
 							     expr.get_locus (),
 							     receiver);
       ctx->add_statement (check);
-
-      translated
+      compound_assignment
 	= Backend::assignment_statement (lhs,
 					 receiver->get_tree (expr.get_locus ()),
 					 expr.get_locus ());
     }
   else
     {
-      translated
+      tree expr_tree
 	= Backend::arithmetic_or_logical_expression (op, lhs, rhs,
 						     expr.get_locus ());
+      compound_assignment
+	= Backend::assignment_statement (lhs, expr_tree, expr.get_locus ());
     }
+  ctx->add_statement (compound_assignment);
+  translated = unit_expression (expr.get_locus ());
 }
 
 void
@@ -360,6 +363,7 @@ CompileExpr::visit (HIR::IfExpr &expr)
 {
   auto stmt = CompileConditionalBlocks::compile (&expr, ctx, nullptr);
   ctx->add_statement (stmt);
+  translated = unit_expression (expr.get_locus ());
 }
 
 void
@@ -367,9 +371,7 @@ CompileExpr::visit (HIR::InlineAsm &expr)
 {
   CompileAsm asm_codegen (ctx);
   ctx->add_statement (asm_codegen.tree_codegen_asm (expr));
-  // translated = build_asm_expr (0, NULL_TREE, NULL_TREE, NULL_TREE, NULL_TREE,
-  //		       NULL_TREE, true, true);
-  // CompileAsm::asm_build_expr (expr);
+  translated = unit_expression (expr.get_locus ());
 }
 
 void
@@ -377,6 +379,7 @@ CompileExpr::visit (HIR::LlvmInlineAsm &expr)
 {
   CompileLlvmAsm asm_codegen (ctx);
   ctx->add_statement (asm_codegen.tree_codegen_asm (expr));
+  translated = unit_expression (expr.get_locus ());
 }
 
 void
@@ -437,12 +440,6 @@ CompileExpr::visit (HIR::IfExprConseqElse &expr)
 void
 CompileExpr::visit (HIR::BlockExpr &expr)
 {
-  if (expr.has_label ())
-    {
-      rust_error_at (expr.get_locus (), "labeled blocks are not supported");
-      return;
-    }
-
   TyTy::BaseType *block_tyty = nullptr;
   if (!ctx->get_tyctx ()->lookup_type (expr.get_mappings ().get_hirid (),
 				       &block_tyty))
@@ -455,18 +452,31 @@ CompileExpr::visit (HIR::BlockExpr &expr)
   fncontext fnctx = ctx->peek_fn ();
   tree enclosing_scope = ctx->peek_enclosing_scope ();
   tree block_type = TyTyResolveCompile::compile (ctx, block_tyty);
+  tree block_label = NULL_TREE;
 
   bool is_address_taken = false;
   tree ret_var_stmt = nullptr;
   tmp = Backend::temporary_variable (fnctx.fndecl, enclosing_scope, block_type,
 				     NULL, is_address_taken, expr.get_locus (),
 				     &ret_var_stmt);
+
   ctx->add_statement (ret_var_stmt);
+
+  if (expr.has_label ())
+    {
+      ctx->insert_var_decl (
+	expr.get_label ().get_lifetime ().get_mappings ().get_hirid (), tmp);
+      block_label = construct_block_label (expr);
+    }
 
   auto block_stmt = CompileBlock::compile (expr, ctx, tmp);
   rust_assert (TREE_CODE (block_stmt) == BIND_EXPR);
   ctx->add_statement (block_stmt);
 
+  if (block_label != NULL_TREE)
+    {
+      ctx->add_statement (block_label);
+    }
   translated = Backend::var_expression (tmp, expr.get_locus ());
 }
 
@@ -848,16 +858,31 @@ CompileExpr::visit (HIR::WhileLoopExpr &expr)
 
   tree loop_expr = Backend::loop_expression (loop_block, expr.get_locus ());
   ctx->add_statement (loop_expr);
+  translated = unit_expression (expr.get_locus ());
 }
 
 void
 CompileExpr::visit (HIR::BreakExpr &expr)
 {
+  if (expr.has_break_expr () && expr.has_label ())
+    {
+      HIR::Lifetime &label = expr.get_label ();
+      auto tvar = lookup_label_temp_var (label.get_mappings ().get_nodeid ());
+      tree value = CompileExpr::Compile (expr.get_expr (), ctx);
+      tree assign
+	= Backend::assignment_statement (tvar->get_tree (label.get_locus ()),
+					 value, label.get_locus ());
+      tree block_label = lookup_label (label.get_mappings ().get_nodeid ());
+      tree go_to = Backend::goto_statement (block_label, label.get_locus ());
+      ctx->add_statement (assign);
+      ctx->add_statement (go_to);
+      return;
+    }
   if (expr.has_break_expr ())
     {
       tree compiled_expr = CompileExpr::Compile (expr.get_expr (), ctx);
-
       translated = error_mark_node;
+
       if (!ctx->have_loop_context ())
 	return;
 
@@ -874,12 +899,12 @@ CompileExpr::visit (HIR::BreakExpr &expr)
 
   if (expr.has_label ())
     {
-      auto &nr_ctx
-	= Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+      auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
       NodeId resolved_node_id;
       if (auto id
-	  = nr_ctx.lookup (expr.get_label ().get_mappings ().get_nodeid ()))
+	  = nr_ctx.lookup (expr.get_label ().get_mappings ().get_nodeid (),
+			   Resolver2_0::Namespace::Labels))
 	{
 	  resolved_node_id = *id;
 	}
@@ -891,7 +916,6 @@ CompileExpr::visit (HIR::BreakExpr &expr)
 	    expr.get_label ().get_mappings ().as_string ().c_str ());
 	  return;
 	}
-
       tl::optional<HirId> hid
 	= ctx->get_mappings ().lookup_node_to_hir (resolved_node_id);
       if (!hid.has_value ())
@@ -931,12 +955,12 @@ CompileExpr::visit (HIR::ContinueExpr &expr)
   tree label = ctx->peek_loop_begin_label ();
   if (expr.has_label ())
     {
-      auto &nr_ctx
-	= Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+      auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
       NodeId resolved_node_id;
       if (auto id
-	  = nr_ctx.lookup (expr.get_label ().get_mappings ().get_nodeid ()))
+	  = nr_ctx.lookup (expr.get_label ().get_mappings ().get_nodeid (),
+			   Resolver2_0::Namespace::Labels))
 	{
 	  resolved_node_id = *id;
 	}
@@ -1099,6 +1123,7 @@ CompileExpr::visit (HIR::AssignmentExpr &expr)
     = Backend::assignment_statement (lvalue, rvalue, expr.get_locus ());
 
   ctx->add_statement (assignment);
+  translated = unit_expression (expr.get_locus ());
 }
 
 // Helper for CompileExpr::visit (HIR::MatchExpr).
@@ -2582,10 +2607,10 @@ CompileExpr::generate_closure_function (HIR::ClosureExpr &expr,
   if (is_block_expr)
     {
       auto body_mappings = function_body.get_mappings ();
-      auto &nr_ctx
-	= Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+      auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
-      auto candidate = nr_ctx.values.to_rib (body_mappings.get_nodeid ());
+      auto candidate
+	= nr_ctx.get_underlying ().values.to_rib (body_mappings.get_nodeid ());
 
       rust_assert (candidate.has_value ());
     }
@@ -2656,8 +2681,8 @@ CompileExpr::generate_closure_fntype (HIR::ClosureExpr &expr,
   const TyTy::TypeBoundPredicate &predicate
     = *closure_tyty.get_specified_bounds ().begin ();
 
-  // ensure the fn_once_output associated type is set
-  closure_tyty.setup_fn_once_output ();
+  // FnOnce::Output is normalized on demand by normalize_projection's closure
+  // special-case
 
   // the function signature is based on the trait bound that the closure
   // implements which is determined at the type resolution time
@@ -2755,6 +2780,59 @@ CompileExpr::generate_possible_fn_trait_call (HIR::CallExpr &expr,
     = Backend::call_expression (call_address, args, nullptr /* static chain ?*/,
 				expr.get_locus ());
   return true;
+}
+
+tree
+CompileExpr::construct_block_label (HIR::BlockExpr &expr)
+{
+  if (expr.has_label ())
+    {
+      fncontext fnctx = ctx->peek_fn ();
+      HIR::LoopLabel &label = expr.get_label ();
+      std::string label_name = label.get_lifetime ().get_name ();
+      HirId label_id = label.get_lifetime ().get_mappings ().get_hirid ();
+      tree label_decl
+	= Backend::label (fnctx.fndecl, label_name, label.get_locus ());
+      tree label_expr = Backend::label_definition_statement (label_decl);
+      ctx->insert_label_decl (label_id, label_decl);
+      return label_expr;
+    }
+  return NULL_TREE;
+}
+
+tree
+CompileExpr::lookup_label (NodeId to_be_resolved)
+{
+  HirId ref = resolve_nodeid (to_be_resolved, Resolver2_0::Namespace::Labels);
+  tree label = NULL_TREE;
+  rust_assert (ctx->lookup_label_decl (ref, &label)
+	       && "failed to lookup a label");
+  return label;
+}
+
+Bvariable *
+CompileExpr::lookup_label_temp_var (NodeId to_be_resolved)
+{
+  // TODO: Not sure that this temp var should have been inserted in the Labels
+  // namespace? Why not values?
+  HirId ref = resolve_nodeid (to_be_resolved, Resolver2_0::Namespace::Labels);
+  Bvariable *ltemp = nullptr;
+  rust_assert (ctx->lookup_var_decl (ref, &ltemp)
+	       && "failed to lookup a temp var");
+  return ltemp;
+}
+
+HirId
+CompileExpr::resolve_nodeid (NodeId to_be_resolved, Resolver2_0::Namespace ns)
+{
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
+
+  NodeId resolved_node_id;
+  resolved_node_id = nr_ctx.lookup (to_be_resolved, ns).value ();
+
+  HirId ref
+    = ctx->get_mappings ().lookup_node_to_hir (resolved_node_id).value ();
+  return ref;
 }
 
 } // namespace Compile

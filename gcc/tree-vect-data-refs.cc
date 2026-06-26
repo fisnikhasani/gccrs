@@ -218,7 +218,7 @@ vect_get_smallest_scalar_type (stmt_vec_info stmt_info, tree scalar_type)
 	    i = ~0U;
 	  else if (internal_store_fn_p (ifn))
 	    {
-	      /* For stores use the tyep of the stored value.  */
+	      /* For stores use the type of the stored value.  */
 	      i = internal_fn_stored_value_index (ifn);
 	      scalar_type = TREE_TYPE (gimple_call_arg (call, i));
 	      i = ~0U;
@@ -300,7 +300,7 @@ vect_preserves_scalar_order_p (dr_vec_info *dr_info_a, dr_vec_info *dr_info_b)
     return true;
 
   /* If there is a loop invariant read involved we might vectorize it in
-     the prologue, breaking scalar oder with respect to the in-loop store.  */
+     the prologue, breaking scalar order with respect to the in-loop store.  */
   if ((DR_IS_READ (dr_info_a->dr) && integer_zerop (DR_STEP (dr_info_a->dr)))
       || (DR_IS_READ (dr_info_b->dr) && integer_zerop (DR_STEP (dr_info_b->dr))))
     return false;
@@ -889,6 +889,13 @@ vect_analyze_early_break_dependences (loop_vec_info loop_vinfo)
 			     dest_bb->index);
 
   LOOP_VINFO_EARLY_BRK_DEST_BB (loop_vinfo) = dest_bb;
+  /* Check if loop has a side-effect (stores), force scalar epilogue.  */
+  for (auto dr : LOOP_VINFO_DATAREFS (loop_vinfo))
+    if (DR_IS_WRITE (dr))
+      {
+	LOOP_VINFO_EARLY_BRK_NEEDS_EPILOG (loop_vinfo) = true;
+	break;
+      }
 
   if (!LOOP_VINFO_EARLY_BRK_VUSES (loop_vinfo).is_empty ())
     {
@@ -966,12 +973,13 @@ vect_analyze_data_ref_dependences (loop_vec_info loop_vinfo,
 
 /* Function vect_slp_analyze_data_ref_dependence.
 
-   Return TRUE if there (might) exist a dependence between a memory-reference
-   DRA and a memory-reference DRB for VINFO.  When versioning for alias
-   may check a dependence at run-time, return FALSE.  Adjust *MAX_VF
-   according to the data dependence.  */
+   Classify the dependence between the memory-references DRA and DRB of DDR
+   for VINFO using the classical (affine) data-dependence test.  Return
+   chrec_known if they are provably independent, chrec_dont_know if the test
+   cannot analyze them (in which case the caller can still try to disambiguate
+   them with the alias oracle), and the dependence (NULL_TREE) otherwise.  */
 
-static bool
+static tree
 vect_slp_analyze_data_ref_dependence (vec_info *vinfo,
 				      struct data_dependence_relation *ddr)
 {
@@ -985,21 +993,21 @@ vect_slp_analyze_data_ref_dependence (vec_info *vinfo,
 
   /* Independent data accesses.  */
   if (DDR_ARE_DEPENDENT (ddr) == chrec_known)
-    return false;
+    return chrec_known;
 
   if (dra == drb)
-    return false;
+    return chrec_known;
 
   /* Read-read is OK.  */
   if (DR_IS_READ (dra) && DR_IS_READ (drb))
-    return false;
+    return chrec_known;
 
   /* If dra and drb are part of the same interleaving chain consider
      them independent.  */
   if (STMT_VINFO_GROUPED_ACCESS (dr_info_a->stmt)
       && (DR_GROUP_FIRST_ELEMENT (dr_info_a->stmt)
 	  == DR_GROUP_FIRST_ELEMENT (dr_info_b->stmt)))
-    return false;
+    return chrec_known;
 
   /* Unknown data dependence.  */
   if (DDR_ARE_DEPENDENT (ddr) == chrec_dont_know)
@@ -1014,7 +1022,7 @@ vect_slp_analyze_data_ref_dependence (vec_info *vinfo,
 		     "determined dependence between %T and %T\n",
 		     DR_REF (dra), DR_REF (drb));
 
-  return true;
+  return DDR_ARE_DEPENDENT (ddr);
 }
 
 
@@ -1045,29 +1053,35 @@ vect_slp_analyze_store_dependences (vec_info *vinfo, slp_tree node)
 	  if (! gimple_vuse (stmt))
 	    continue;
 
-	  /* If we couldn't record a (single) data reference for this
-	     stmt we have to resort to the alias oracle.  */
+	  /* If we couldn't record a (single) data reference for this stmt,
+	     or the classical dependence test cannot analyze it, we have to
+	     resort to the alias oracle.  */
 	  stmt_vec_info stmt_info = vinfo->lookup_stmt (stmt);
 	  data_reference *dr_b = STMT_VINFO_DATA_REF (stmt_info);
-	  if (!dr_b)
+	  if (dr_b)
 	    {
-	      /* We are moving a store - this means
-		 we cannot use TBAA for disambiguation.  */
-	      if (!ref_initialized_p)
-		ao_ref_init (&ref, DR_REF (dr_a));
-	      if (stmt_may_clobber_ref_p_1 (stmt, &ref, false)
-		  || ref_maybe_used_by_stmt_p (stmt, &ref, false))
+	      gcc_assert (!gimple_visited_p (stmt));
+
+	      ddr_p ddr = initialize_data_dependence_relation (dr_a,
+							       dr_b, vNULL);
+	      tree dep = vect_slp_analyze_data_ref_dependence (vinfo, ddr);
+	      free_dependence_relation (ddr);
+	      if (dep == chrec_known)
+		continue;
+	      if (dep != chrec_dont_know)
 		return false;
-	      continue;
+	      /* Unknown dependence - fall through to the alias oracle.  */
 	    }
 
-	  gcc_assert (!gimple_visited_p (stmt));
-
-	  ddr_p ddr = initialize_data_dependence_relation (dr_a,
-							   dr_b, vNULL);
-	  bool dependent = vect_slp_analyze_data_ref_dependence (vinfo, ddr);
-	  free_dependence_relation (ddr);
-	  if (dependent)
+	  /* We are moving a store - this means we cannot use TBAA for
+	     disambiguation.  */
+	  if (!ref_initialized_p)
+	    {
+	      ao_ref_init (&ref, DR_REF (dr_a));
+	      ref_initialized_p = true;
+	    }
+	  if (stmt_may_clobber_ref_p_1 (stmt, &ref, false)
+	      || ref_maybe_used_by_stmt_p (stmt, &ref, false))
 	    return false;
 	}
     }
@@ -1124,10 +1138,22 @@ vect_slp_analyze_load_dependences (vec_info *vinfo, slp_tree node,
 		  data_reference *store_dr = STMT_VINFO_DATA_REF (store_info);
 		  ddr_p ddr = initialize_data_dependence_relation
 				(dr_a, store_dr, vNULL);
-		  bool dependent
+		  tree dep
 		    = vect_slp_analyze_data_ref_dependence (vinfo, ddr);
 		  free_dependence_relation (ddr);
-		  if (dependent)
+		  if (dep == chrec_known)
+		    continue;
+		  if (dep != chrec_dont_know)
+		    return false;
+		  /* The classical dependence test cannot analyze this;
+		     resort to the alias oracle.  We are hoisting a load
+		     so TBAA may be used for disambiguation.  */
+		  if (!ref_initialized_p)
+		    {
+		      ao_ref_init (&ref, DR_REF (dr_a));
+		      ref_initialized_p = true;
+		    }
+		  if (stmt_may_clobber_ref_p_1 (store_info->stmt, &ref, true))
 		    return false;
 		}
 	      continue;
@@ -1138,7 +1164,10 @@ vect_slp_analyze_load_dependences (vec_info *vinfo, slp_tree node,
 	      /* We are hoisting a load - this means we can use TBAA for
 		 disambiguation.  */
 	      if (!ref_initialized_p)
-		ao_ref_init (&ref, DR_REF (dr_a));
+		{
+		  ao_ref_init (&ref, DR_REF (dr_a));
+		  ref_initialized_p = true;
+		}
 	      if (stmt_may_clobber_ref_p_1 (stmt_info->stmt, &ref, true))
 		{
 		  /* If we couldn't record a (single) data reference for this
@@ -1148,10 +1177,13 @@ vect_slp_analyze_load_dependences (vec_info *vinfo, slp_tree node,
 		    return false;
 		  ddr_p ddr = initialize_data_dependence_relation (dr_a,
 								   dr_b, vNULL);
-		  bool dependent
+		  tree dep
 		    = vect_slp_analyze_data_ref_dependence (vinfo, ddr);
 		  free_dependence_relation (ddr);
-		  if (dependent)
+		  /* The alias oracle above could not rule out a conflict;
+		     only a proven-independent (chrec_known) result lets us
+		     hoist the load past this store.  */
+		  if (dep != chrec_known)
 		    return false;
 		}
 	      /* No dependence.  */
@@ -1261,7 +1293,7 @@ vect_slp_analyze_instance_dependence (vec_info *vinfo, slp_instance instance)
 
 	  /* For now concern ourselves with write-after-read as we also
 	     only look for re-use of the store within the same SLP instance.
-	     We can still get a RAW here when the instance contais a PHI
+	     We can still get a RAW here when the instance contains a PHI
 	     with a backedge though, thus this test.  */
 	  if (! vect_stmt_dominates_stmt_p (STMT_VINFO_STMT (load_info),
 					    STMT_VINFO_STMT (store_info)))
@@ -2074,33 +2106,21 @@ vect_peeling_hash_get_lowest_cost (_vect_peel_info **slot,
 				   _vect_peel_extended_info *min)
 {
   vect_peel_info elem = *slot;
-  int dummy;
   unsigned int inside_cost = 0, outside_cost = 0;
   loop_vec_info loop_vinfo = dyn_cast <loop_vec_info> (min->vinfo);
-  stmt_vector_for_cost prologue_cost_vec, body_cost_vec,
-		       epilogue_cost_vec;
+  stmt_vector_for_cost prologue_cost_vec, body_cost_vec;
 
   prologue_cost_vec.create (2);
   body_cost_vec.create (2);
-  epilogue_cost_vec.create (2);
 
   vect_get_peeling_costs_all_drs (loop_vinfo, elem->dr_info, &inside_cost,
 				  &outside_cost, &body_cost_vec,
 				  &prologue_cost_vec, elem->npeel);
 
   body_cost_vec.release ();
-
-  outside_cost += vect_get_known_peeling_cost
-    (loop_vinfo, elem->npeel, &dummy,
-     &LOOP_VINFO_SCALAR_ITERATION_COST (loop_vinfo),
-     &prologue_cost_vec, &epilogue_cost_vec);
-
-  /* Prologue and epilogue costs are added to the target model later.
-     These costs depend only on the scalar iteration cost, the
-     number of peeling iterations finally chosen, and the number of
-     misaligned statements.  So discard the information found here.  */
   prologue_cost_vec.release ();
-  epilogue_cost_vec.release ();
+
+  outside_cost += vect_get_known_peeling_cost (loop_vinfo, elem->npeel);
 
   if (inside_cost < min->inside_cost
       || (inside_cost == min->inside_cost
@@ -2626,7 +2646,7 @@ vect_enhance_data_refs_alignment (loop_vec_info loop_vinfo)
       || !slpeel_can_duplicate_loop_p (loop, LOOP_VINFO_MAIN_EXIT (loop_vinfo),
 				       loop_preheader_edge (loop))
       || loop->inner
-      /* We don't currently maintaing the LCSSA for prologue peeled inversed
+      /* We don't currently maintain the LCSSA for prologue peeled inversed
 	 loops.  */
       || (LOOP_VINFO_EARLY_BREAKS_VECT_PEELED (loop_vinfo)
 	  && !LOOP_VINFO_NITERS_UNCOUNTED_P (loop_vinfo)))
@@ -2691,18 +2711,8 @@ vect_enhance_data_refs_alignment (loop_vec_info loop_vinfo)
 	  peel_for_unknown_alignment.outside_cost = load_outside_cost;
 	}
 
-      stmt_vector_for_cost prologue_cost_vec, epilogue_cost_vec;
-      prologue_cost_vec.create (2);
-      epilogue_cost_vec.create (2);
-
-      int dummy2;
-      peel_for_unknown_alignment.outside_cost += vect_get_known_peeling_cost
-	(loop_vinfo, estimated_npeels, &dummy2,
-	 &LOOP_VINFO_SCALAR_ITERATION_COST (loop_vinfo),
-	 &prologue_cost_vec, &epilogue_cost_vec);
-
-      prologue_cost_vec.release ();
-      epilogue_cost_vec.release ();
+      peel_for_unknown_alignment.outside_cost
+	+= vect_get_known_peeling_cost (loop_vinfo, estimated_npeels);
 
       peel_for_unknown_alignment.peel_info.count = dr0_same_align_drs + 1;
     }
@@ -2760,18 +2770,7 @@ vect_enhance_data_refs_alignment (loop_vec_info loop_vinfo)
 
       /* Add epilogue costs.  As we do not peel for alignment here, no prologue
 	 costs will be recorded.  */
-      stmt_vector_for_cost prologue_cost_vec, epilogue_cost_vec;
-      prologue_cost_vec.create (2);
-      epilogue_cost_vec.create (2);
-
-      int dummy2;
-      nopeel_outside_cost += vect_get_known_peeling_cost
-	(loop_vinfo, 0, &dummy2,
-	 &LOOP_VINFO_SCALAR_ITERATION_COST (loop_vinfo),
-	 &prologue_cost_vec, &epilogue_cost_vec);
-
-      prologue_cost_vec.release ();
-      epilogue_cost_vec.release ();
+      nopeel_outside_cost += vect_get_known_peeling_cost (loop_vinfo, 0);
 
       npeel = best_peel.peel_info.npeel;
       dr0_info = best_peel.peel_info.dr_info;
@@ -4753,6 +4752,11 @@ vect_gather_scatter_fn_p (vec_info *vinfo, bool read_p, bool masked_p,
 	  *ifn_out = configs[i].ifn;
 	  *offset_vectype_out = configs[i].offset_vectype;
 	  *supported_scale = configs[i].scale;
+	  /* Only set SUPPORTED_OFFSET_VECTYPE if this is a real
+	     conversion.  */
+	  if (!useless_type_conversion_p (offset_vectype,
+					  configs[i].offset_vectype))
+	    *supported_offset_vectype = configs[i].offset_vectype;
 	  if (elsvals)
 	    *elsvals = configs[i].elsvals;
 	  return true;
@@ -4850,7 +4854,7 @@ vect_check_gather_scatter (stmt_vec_info stmt_info, tree vectype,
 
 	  /* In pattern recog we simply used a ZERO else value that
 	     we need to correct here.  To that end just re-use the
-	     (already succesful) check if we support a gather IFN
+	     (already successful) check if we support a gather IFN
 	     and have it populate the else values.  */
 	  if (DR_IS_READ (dr) && internal_fn_mask_index (ifn) >= 0 && elsvals)
 	    supports_vec_gather_load_p (TYPE_MODE (vectype), elsvals);
@@ -5658,10 +5662,24 @@ vect_get_new_ssa_name (tree type, enum vect_var_kind var_kind, const char *name)
 static void
 vect_duplicate_ssa_name_ptr_info (tree name, dr_vec_info *dr_info)
 {
-  duplicate_ssa_name_ptr_info (name, DR_PTR_INFO (dr_info->dr));
-  /* DR_PTR_INFO is for a base SSA name, not including constant or
-     variable offsets in the ref so its alignment info does not apply.  */
-  mark_ptr_info_alignment_unknown (SSA_NAME_PTR_INFO (name));
+  if (DR_PTR_INFO (dr_info->dr))
+    {
+      duplicate_ssa_name_ptr_info (name, DR_PTR_INFO (dr_info->dr));
+      /* DR_PTR_INFO is for a base SSA name, not including constant or
+	 variable offsets in the ref so its alignment info does not apply.  */
+      mark_ptr_info_alignment_unknown (SSA_NAME_PTR_INFO (name));
+    }
+  else if (!SSA_NAME_PTR_INFO (name))
+    {
+      tree base = get_base_address (dr_info->dr->ref);
+      if (VAR_P (base)
+	  || TREE_CODE (base) == PARM_DECL
+	  || TREE_CODE (base) == RESULT_DECL)
+	{
+	  struct ptr_info_def *pi = get_ptr_info (name);
+	  pt_solution_set_var (&pi->pt, base);
+	}
+    }
 }
 
 /* Function vect_create_addr_base_for_vector_ref.
@@ -5752,8 +5770,7 @@ vect_create_addr_base_for_vector_ref (vec_info *vinfo, stmt_vec_info stmt_info,
   addr_base = force_gimple_operand (addr_base, &seq, true, dest);
   gimple_seq_add_seq (new_stmt_list, seq);
 
-  if (DR_PTR_INFO (dr)
-      && TREE_CODE (addr_base) == SSA_NAME
+  if (TREE_CODE (addr_base) == SSA_NAME
       /* We should only duplicate pointer info to newly created SSA names.  */
       && SSA_NAME_VAR (addr_base) == dest)
     {
@@ -6001,11 +6018,8 @@ vect_create_data_ref_ptr (vec_info *vinfo, stmt_vec_info stmt_info,
       incr = gsi_stmt (incr_gsi);
 
       /* Copy the points-to information if it exists. */
-      if (DR_PTR_INFO (dr))
-	{
-	  vect_duplicate_ssa_name_ptr_info (indx_before_incr, dr_info);
-	  vect_duplicate_ssa_name_ptr_info (indx_after_incr, dr_info);
-	}
+      vect_duplicate_ssa_name_ptr_info (indx_before_incr, dr_info);
+      vect_duplicate_ssa_name_ptr_info (indx_after_incr, dr_info);
       if (ptr_incr)
 	*ptr_incr = incr;
 
@@ -6030,11 +6044,8 @@ vect_create_data_ref_ptr (vec_info *vinfo, stmt_vec_info stmt_info,
       incr = gsi_stmt (incr_gsi);
 
       /* Copy the points-to information if it exists. */
-      if (DR_PTR_INFO (dr))
-	{
-	  vect_duplicate_ssa_name_ptr_info (indx_before_incr, dr_info);
-	  vect_duplicate_ssa_name_ptr_info (indx_after_incr, dr_info);
-	}
+      vect_duplicate_ssa_name_ptr_info (indx_before_incr, dr_info);
+      vect_duplicate_ssa_name_ptr_info (indx_after_incr, dr_info);
       if (ptr_incr)
 	*ptr_incr = incr;
 
@@ -6115,11 +6126,7 @@ bump_vector_ptr (vec_info *vinfo,
     }
 
   /* Copy the points-to information if it exists. */
-  if (DR_PTR_INFO (dr))
-    {
-      duplicate_ssa_name_ptr_info (new_dataref_ptr, DR_PTR_INFO (dr));
-      mark_ptr_info_alignment_unknown (SSA_NAME_PTR_INFO (new_dataref_ptr));
-    }
+  duplicate_ssa_name_ptr_info (new_dataref_ptr, DR_PTR_INFO (dr));
 
   if (!ptr_incr)
     return new_dataref_ptr;
@@ -6210,7 +6217,7 @@ vect_grouped_store_supported (tree vectype, unsigned HOST_WIDE_INT count)
       if (dump_enabled_p ())
 	dump_printf_loc (MSG_MISSED_OPTIMIZATION, vect_location,
 			 "the size of the group of accesses"
-			 " is not a power of 2 or not eqaul to 3\n");
+			 " is not a power of 2 or not equal to 3\n");
       return false;
     }
 

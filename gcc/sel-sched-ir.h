@@ -21,9 +21,6 @@ along with GCC; see the file COPYING3.  If not see
 #ifndef GCC_SEL_SCHED_IR_H
 #define GCC_SEL_SCHED_IR_H
 
-/* For state_t.  */
-/* For reg_note.  */
-
 /* tc_t is a short for target context.  This is a state of the target
    backend.  */
 typedef void *tc_t;
@@ -405,7 +402,7 @@ struct _list_iterator
   /* The list we're iterating.  */
   _list_t *lp;
 
-  /* True when this iterator supprts removing.  */
+  /* True when this iterator supports removing.  */
   bool can_remove_p;
 
   /* True when we've actually removed something.  */
@@ -1008,7 +1005,7 @@ struct succ_iterator
 /* A structure returning all successor's information.  */
 struct succs_info
 {
-  /* Flags that these succcessors were computed with.  */
+  /* Flags that these successors were computed with.  */
   short flags;
 
   /* Successors that correspond to the flags.  */
@@ -1210,7 +1207,7 @@ get_all_loop_exits (basic_block bb)
 /* Include all successors.  */
 #define SUCCS_ALL (SUCCS_NORMAL | SUCCS_BACK | SUCCS_OUT)
 
-/* We need to return a succ_iterator to avoid 'unitialized' warning
+/* We need to return a succ_iterator to avoid 'uninitialized' warning
    during bootstrap.  */
 inline succ_iterator
 _succ_iter_start (insn_t *succp, insn_t insn, int flags)

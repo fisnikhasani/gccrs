@@ -66,7 +66,7 @@
 
 
 /*
- * As of now, every diagnositc has one id, one message, one kind, and is
+ * As of now, every diagnostic has one id, one message, one kind, and is
  * associated with "one" dialect. The dialect could be ORed. If it is, that
  * means among the dialects it belongs to, it is always of the same kind.
  *
@@ -122,6 +122,7 @@ std::set<cbl_diag_t> cbl_diagnostics {
 
   { EcUnknownW, "-Wec-unknown", diagnostics::kind::warning },
 
+  { IbmCdf, "-Wibm-cdf", diagnostics::kind::error, dialect_ibm_e },
   { IbmEjectE, "-Wcobol-eject", diagnostics::kind::error, dialect_ibm_e },
   { IbmLengthOf, "-Wlength-of", diagnostics::kind::error, dialect_ibm_mf_gnu },
   { IbmEqualAssignE, "-Wequal-assign", diagnostics::kind::error, dialect_ibm_e },
@@ -250,6 +251,9 @@ cobol_warning_suppress( cbl_dialect_t dialect ) {
   for( auto diag : cbl_diagnostics ) {
     if( diag.dialect & dialect ) {
       switch(diag.id) {
+      case IbmCdf:
+        diag.kind = diagnostics::kind::warning;
+        break;
       case IbmSectionNegE:
       case IbmSectionRangeE:
       case IbmSectionSegmentW:
@@ -285,7 +289,7 @@ cbl_diagnostic_option( cbl_diag_id_t id ) {
  * the framework.
  */
 extern int yychar;
-extern YYLTYPE yylloc;
+extern cbl_loc_t yylloc;
 
 static const diagnostics::option_id option_zero;
 
@@ -326,10 +330,7 @@ bool cbl_message( cbl_loc_t loc, cbl_diag_id_t id, const char gmsgid[], ... ) {
 
       gcc_location_set(yylloc); // use lookahead location
     }
-    explicit temp_loc_t( const YYLTYPE& loc) : orig(current_token_location()) {
-      gcc_location_set(loc);
-    }
-    explicit temp_loc_t( const YDFLTYPE& loc) : orig(current_token_location()) {
+    explicit temp_loc_t( const cbl_loc_t& loc) : orig(current_token_location()) {
       gcc_location_set(loc);
     }
     ~temp_loc_t() {

@@ -28,18 +28,16 @@
 #if defined __nvptx_softstack__ && defined __nvptx_unisimt__
 
 #include "libgomp.h"
+#include "target-indirect.h"
 #include <stdlib.h>
 #include <string.h>
 
 #define UNLIKELY(x) (__builtin_expect ((x), 0))
 
-extern void *GOMP_INDIRECT_ADDR_MAP;
-
 struct gomp_thread *nvptx_thrs __attribute__((shared,nocommon));
 int __gomp_team_num __attribute__((shared,nocommon));
 
 static void gomp_thread_start (struct gomp_thread_pool *);
-extern void build_indirect_map (void);
 
 /* There should be some .shared space reserved for us.  There's no way to
    express this magic extern sizeless array in C so use asm.  */

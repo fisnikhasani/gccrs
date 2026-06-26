@@ -44,6 +44,8 @@ public:
   static constexpr auto &NO_STD = "no_std";
   static constexpr auto &LINK_SECTION = "link_section";
   static constexpr auto &NO_MANGLE = "no_mangle";
+  static constexpr auto &RUSTC_STD_INTERNAL_SYMBOL
+    = "rustc_std_internal_symbol";
   static constexpr auto &EXPORT_NAME = "export_name";
   static constexpr auto &REPR = "repr";
   static constexpr auto &RUSTC_BUILTIN_MACRO = "rustc_builtin_macro";
@@ -105,6 +107,9 @@ public:
 
   static constexpr auto &RUSTC_ARGS_REQUIRED_CONST
     = "rustc_args_required_const";
+
+  static constexpr auto &RUSTC_ALLOCATOR = "rustc_allocator";
+  static constexpr auto &RUSTC_ALLOCATOR_NOUNWIND = "rustc_allocator_nounwind";
 };
 } // namespace Values
 } // namespace Rust

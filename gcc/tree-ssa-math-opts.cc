@@ -102,8 +102,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "fold-const.h"
 #include "gimple-iterator.h"
 #include "gimple-fold.h"
-#include "gimplify.h"
-#include "gimplify-me.h"
 #include "stor-layout.h"
 #include "tree-cfg.h"
 #include "tree-dfa.h"
@@ -117,6 +115,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "domwalk.h"
 #include "tree-ssa-math-opts.h"
 #include "dbgcnt.h"
+#include "langhooks.h"
 #include "cfghooks.h"
 
 /* This structure represents one basic block that either computes a
@@ -1582,7 +1581,7 @@ powi_as_mults (gimple_stmt_iterator *gsi, location_t loc,
 /* ARG0 and N are the two arguments to a powi builtin in GSI with
    location info LOC.  If the arguments are appropriate, create an
    equivalent sequence of statements prior to GSI using an optimal
-   number of multiplications, and return an expession holding the
+   number of multiplications, and return an expression holding the
    result.  */
 
 static tree
@@ -1999,7 +1998,7 @@ expand_pow_as_sqrts (gimple_stmt_iterator *gsi, location_t loc,
 /* ARG0 and ARG1 are the two arguments to a pow builtin call in GSI
    with location info LOC.  If possible, create an equivalent and
    less expensive sequence of statements prior to GSI, and return an
-   expession holding the result.  */
+   expression holding the result.  */
 
 static tree
 gimple_expand_builtin_pow (gimple_stmt_iterator *gsi, location_t loc,
@@ -2098,7 +2097,7 @@ gimple_expand_builtin_pow (gimple_stmt_iterator *gsi, location_t loc,
 
 
   /* Attempt to expand the POW as a product of square root chains.
-     Expand the 0.25 case even when otpimising for size.  */
+     Expand the 0.25 case even when optimising for size.  */
   if (flag_unsafe_math_optimizations
       && sqrtfn
       && hw_sqrt_exists
@@ -2739,7 +2738,7 @@ convert_mult_to_widen (gimple *stmt, gimple_stmt_iterator *gsi)
     return false;
 
   /* if any one of rhs1 and rhs2 is subject to abnormal coalescing,
-     avoid the tranform. */
+     avoid the transform. */
   if ((TREE_CODE (rhs1) == SSA_NAME
        && SSA_NAME_OCCURS_IN_ABNORMAL_PHI (rhs1))
       || (TREE_CODE (rhs2) == SSA_NAME
@@ -2804,7 +2803,7 @@ convert_mult_to_widen (gimple *stmt, gimple_stmt_iterator *gsi)
 	}
     }
 
-  /* Ensure that the inputs to the handler are in the correct precison
+  /* Ensure that the inputs to the handler are in the correct precision
      for the opcode.  This will be the full mode size.  */
   actual_precision = GET_MODE_PRECISION (actual_mode);
   if (2 * actual_precision > TYPE_PRECISION (type))
@@ -3052,7 +3051,7 @@ convert_plusminus_to_widen (gimple_stmt_iterator *gsi, gimple *stmt,
   if (handler == CODE_FOR_nothing)
     return false;
 
-  /* Ensure that the inputs to the handler are in the correct precison
+  /* Ensure that the inputs to the handler are in the correct precision
      for the opcode.  This will be the full mode size.  */
   actual_precision = GET_MODE_PRECISION (actual_mode);
   if (actual_precision != TYPE_PRECISION (type1)
@@ -4126,6 +4125,7 @@ extern bool gimple_unsigned_integer_sat_add (tree, tree*, tree (*)(tree));
 extern bool gimple_unsigned_integer_sat_sub (tree, tree*, tree (*)(tree));
 extern bool gimple_unsigned_integer_sat_trunc (tree, tree*, tree (*)(tree));
 extern bool gimple_unsigned_integer_sat_mul (tree, tree*, tree (*)(tree));
+extern bool gimple_spaceship (tree, tree*, tree (*)(tree));
 
 extern bool gimple_signed_integer_sat_add (tree, tree*, tree (*)(tree));
 extern bool gimple_signed_integer_sat_sub (tree, tree*, tree (*)(tree));
@@ -4334,6 +4334,110 @@ match_saturation_mul (gimple_stmt_iterator *gsi, gphi *phi)
 							phi_result, ops[0],
 							ops[1]);
 }
+
+/* Try to match variants of spaceship operation:
+   <bb 2>
+   if (a_3(D) >= b_4(D)) -- CMP_1
+     goto <bb 3>;
+   else
+     goto <bb 4>;
+
+   <bb 3>
+   _1 = a_3(D) > b_4(D); -- CMP_2
+   _5 = (int) _1;
+
+   <bb 4>
+   # _2 = PHI <-1(2), _5(3)>
+   =>
+   _2 = .SPACESHIP (a_3(D), b_4(D), -1);
+
+   All possible canonical variants of the comparison operator in CMP_1 and
+   CMP_2 has been included in gimple_spaceship function.  */
+static bool
+match_spaceship (gimple_stmt_iterator *gsi, gphi *phi)
+{
+  if (gimple_phi_num_args (phi) != 2)
+    return false;
+  tree ops[2];
+  tree phi_result = gimple_phi_result (phi);
+
+  if (!gimple_spaceship (phi_result, ops, NULL))
+    return false;
+
+  /* Allow different modes as long as both are integral types.  */
+  if (!INTEGRAL_TYPE_P (TREE_TYPE (phi_result))
+      || !INTEGRAL_TYPE_P (TREE_TYPE (ops[0])))
+    return false;
+
+  tree ops_type = TREE_TYPE (ops[0]);
+  machine_mode ops_mode = TYPE_MODE (ops_type);
+  machine_mode promoted_mode = ops_mode;
+  tree promoted_type = ops_type;
+  bool is_unsigned = TYPE_UNSIGNED (ops_type);
+
+  /* Check if spaceship optab is available for the operand mode.
+     If not, try promoting to a wider mode that is supported.  */
+  if (optab_handler (spaceship_optab, ops_mode) == CODE_FOR_nothing)
+    {
+      /* Try promoting to wider modes (e.g., QI/HI -> SI -> DI).  */
+      machine_mode wider_mode;
+      FOR_EACH_WIDER_MODE_FROM (wider_mode, ops_mode)
+	{
+	  if (optab_handler (spaceship_optab, wider_mode)
+	      != CODE_FOR_nothing)
+	    {
+	      /* Check if we can get a type for this mode with matching
+		 signedness.  */
+	      promoted_type = lang_hooks.types.type_for_mode (wider_mode,
+							      is_unsigned);
+	      if (promoted_type != NULL_TREE && INTEGRAL_TYPE_P (promoted_type))
+		{
+		  promoted_mode = wider_mode;
+		  break;
+		}
+	    }
+	}
+
+      // If no suitable promoted mode found, give up.
+      if (promoted_mode == ops_mode)
+	return false;
+    }
+
+  /* If promotion is needed, insert conversion statements.
+     We must use GIMPLE assignments rather than fold_convert because
+     gimple_call arguments must be valid GIMPLE values (SSA names or
+     constants), not tree expressions.  */
+  ops[0] = gimple_convert (gsi, true, GSI_SAME_STMT, UNKNOWN_LOCATION,
+			   promoted_type, ops[0]);
+  ops[1] = gimple_convert (gsi, true, GSI_SAME_STMT, UNKNOWN_LOCATION,
+			   promoted_type, ops[1]);
+
+  tree spaceship_arg_3 = is_unsigned ? build_one_cst (integer_type_node)
+    : build_minus_one_cst (integer_type_node);
+
+  gcall *call = gimple_build_call_internal (IFN_SPACESHIP, 3, ops[0], ops[1],
+					    spaceship_arg_3);
+
+  /* SPACESHIP optab always returns signed int (SI mode).
+     Cast to phi_result's type if needed.  */
+  tree call_result_type = integer_type_node;
+  if (!types_compatible_p (TREE_TYPE (phi_result), call_result_type))
+    {
+      tree call_result = make_ssa_name (call_result_type);
+      gimple_call_set_lhs (call, call_result);
+      gsi_insert_before (gsi, call, GSI_SAME_STMT);
+      gassign *cast_stmt = gimple_build_assign (phi_result, NOP_EXPR,
+						call_result);
+      gsi_insert_before (gsi, cast_stmt, GSI_SAME_STMT);
+    }
+  else
+    {
+      gimple_call_set_lhs (call, phi_result);
+      gsi_insert_before (gsi, call, GSI_SAME_STMT);
+    }
+  return true;
+}
+
 
 /*
  * Try to match saturation unsigned sub.
@@ -6517,7 +6621,8 @@ math_opts_dom_walker::after_dom_children (basic_block bb)
       if (match_saturation_add (&gsi, phi)
 	  || match_saturation_sub (&gsi, phi)
 	  || match_saturation_trunc (&gsi, phi)
-	  || match_saturation_mul (&gsi, phi))
+	  || match_saturation_mul (&gsi, phi)
+	  || match_spaceship (&gsi, phi))
 	remove_phi_node (&psi, /* release_lhs_p */ false);
     }
 

@@ -44,6 +44,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "opts.h"
 #include "gcc-urlifier.h"
 #include "contracts.h" // build_contract_check ()
+#include "builtins.h"
 
 /* Keep track of forward references to immediate-escalating functions in
    case they become consteval.  This vector contains ADDR_EXPRs and
@@ -880,7 +881,29 @@ cp_gimplify_expr (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p)
 	      = build1 (NOP_EXPR, fnptrtype, CALL_EXPR_FN (*expr_p));
 	}
       if (!CALL_EXPR_FN (*expr_p))
-	/* Internal function call.  */;
+	/* Internal function call.  */
+	switch (CALL_EXPR_IFN (*expr_p))
+	  {
+	  case IFN_BSWAP:
+	  case IFN_BITREVERSE:
+	    if (ret == GS_OK)
+	      {
+		location_t loc = EXPR_LOCATION (*expr_p);
+		internal_fn ifn = CALL_EXPR_IFN (*expr_p);
+		tree arg = CALL_EXPR_ARG (*expr_p, 0);
+		tree r = fold_build_builtin_bswapg_bitreverseg (loc, ifn,
+								arg);
+		if (TREE_CODE (r) == CALL_EXPR
+		    && !CALL_EXPR_FN (r)
+		    && CALL_EXPR_IFN (r) == ifn)
+		  break;
+		*expr_p = r;
+		return ret;
+	      }
+	    break;
+	  default:
+	    break;
+	  }
       else if (CALL_EXPR_REVERSE_ARGS (*expr_p))
 	{
 	  /* This is a call to a (compound) assignment operator that used
@@ -979,6 +1002,32 @@ cp_gimplify_expr (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p)
 			  "__builtin_eh_ptr_adjust_ref");
 		*expr_p = void_node;
 		break;
+	      case CP_BUILT_IN_CURRENT_EXCEPTION:
+	      case CP_BUILT_IN_UNCAUGHT_EXCEPTIONS:
+		{
+		  const char *name
+		    = (DECL_FE_FUNCTION_CODE (decl)
+		       == CP_BUILT_IN_CURRENT_EXCEPTION
+		       ? "current_exception" : "uncaught_exceptions");
+		  tree newdecl = lookup_qualified_name (std_node, name);
+		  if (error_operand_p (newdecl))
+		    *expr_p = build_zero_cst (TREE_TYPE (*expr_p));
+		  else if (TREE_CODE (newdecl) != FUNCTION_DECL
+			   || !same_type_p (TREE_TYPE (TREE_TYPE (newdecl)),
+					    TREE_TYPE (TREE_TYPE (decl)))
+			   || (TYPE_ARG_TYPES (TREE_TYPE (newdecl))
+			       != void_list_node))
+		    {
+		      error_at (EXPR_LOCATION (*expr_p),
+				"unexpected %<std::%s%> declaration",
+				name);
+		      *expr_p = build_zero_cst (TREE_TYPE (*expr_p));
+		    }
+		  else
+		    *expr_p = build_call_expr_loc (EXPR_LOCATION (*expr_p),
+						   newdecl, 0);
+		  break;
+		}
 	      case CP_BUILT_IN_IS_STRING_LITERAL:
 		*expr_p
 		  = fold_builtin_is_string_literal (EXPR_LOCATION (*expr_p),
@@ -1691,7 +1740,8 @@ cp_fold_r (tree *stmt_p, int *walk_subtrees, void *data_)
       break;
 
     case TARGET_EXPR:
-      if (!flag_no_inline)
+      if (!flag_no_inline
+	  && (data->flags & ff_genericize))
 	if (tree &init = TARGET_EXPR_INITIAL (stmt))
 	  {
 	    tree folded = maybe_constant_init (init, TARGET_EXPR_SLOT (stmt),
@@ -1928,13 +1978,7 @@ cp_genericize_r (tree *stmt_p, int *walk_subtrees, void *data)
   if ((TREE_CODE (stmt) == VAR_DECL
        || TREE_CODE (stmt) == PARM_DECL
        || TREE_CODE (stmt) == RESULT_DECL)
-      && DECL_HAS_VALUE_EXPR_P (stmt)
-      /* Walk DECL_VALUE_EXPR mainly for benefit of xobj lambdas so that we
-	 adjust any invisiref object parm uses within the capture proxies.
-	 TODO: For GCC 17 do this walking unconditionally.  */
-      && current_function_decl
-      && DECL_XOBJ_MEMBER_FUNCTION_P (current_function_decl)
-      && LAMBDA_FUNCTION_P (current_function_decl))
+      && DECL_HAS_VALUE_EXPR_P (stmt))
     {
       tree ve = DECL_VALUE_EXPR (stmt);
       cp_walk_tree (&ve, cp_genericize_r, data, NULL);
@@ -3743,6 +3787,7 @@ cp_fold (tree x, fold_flags_t flags)
 	if ((OPTION_SET_P (flag_fold_simple_inlines)
 	     ? flag_fold_simple_inlines
 	     : !flag_no_inline)
+	    && !(flags & ff_only_non_odr)
 	    && call_expr_nargs (x) == 1
 	    && decl_in_std_namespace_p (callee)
 	    && DECL_NAME (callee) != NULL_TREE
@@ -3855,6 +3900,7 @@ cp_fold (tree x, fold_flags_t flags)
 	   Do constexpr expansion of expressions where the call itself is not
 	   constant, but the call followed by an INDIRECT_REF is.  */
 	if (callee && DECL_DECLARED_CONSTEXPR_P (callee)
+	    && !(flags & ff_only_non_odr)
 	    && (!flag_no_inline
 		|| lookup_attribute ("always_inline",
 				     DECL_ATTRIBUTES (callee))))

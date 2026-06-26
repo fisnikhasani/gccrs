@@ -20,7 +20,7 @@ along with GCC; see the file COPYING3.  If not see
 
 /* Comments in this file have a non-negligible chance of being wrong
    or at least inaccurate.  Due to (a) my misunderstanding, (b)
-   ambiguities that I have interpretted differently to original intent
+   ambiguities that I have interpreted differently to original intent
    (c) changes in the specification, (d) my poor wording, (e) source
    changes.  */
 
@@ -42,7 +42,7 @@ along with GCC; see the file COPYING3.  If not see
    Additionally each imported decl is mapped in the entity_map via its
    DECL_UID to the flat index in the entity_ary.  Thus we can locate
    the index for any imported decl by using this map and then
-   de-flattening the index via a binary seach of the module vector.
+   de-flattening the index via a binary search of the module vector.
    Cross-module references are by (remapped) module number and
    module-local index.
 
@@ -188,7 +188,7 @@ Classes used:
    The mapper object uses fileno IO to communicate with the server or
    program.   */
 
-/* In expermental (trunk) sources, MODULE_VERSION is a #define passed
+/* In experimental (trunk) sources, MODULE_VERSION is a #define passed
    in from the Makefile.  It records the modification date of the
    source directory -- that's the only way to stay sane.  In release
    sources, we (plan to) use the compiler's major.minor versioning.
@@ -323,7 +323,7 @@ version2string (unsigned version, verstr_t &out)
 /* Include files to note translation for.  */
 static vec<const char *, va_heap, vl_embed> *note_includes;
 
-/* Modules to note CMI pathames.  */
+/* Modules to note CMI pathnames.  */
 static vec<const char *, va_heap, vl_embed> *note_cmis;
 
 /* Traits to hash an arbitrary pointer.  Entries are not deletable,
@@ -1912,7 +1912,7 @@ elf_out::create_mapping (unsigned ext, bool extending)
     {
 #ifdef HAVE_POSIX_FALLOCATE
       int result = posix_fallocate (fd, offset, length);
-      if (result != EINVAL)
+      if (result != EINVAL && result != ENOTSUP)
 	return result == 0;
       /* Not supported by the underlying filesystem, fallback to ftruncate.  */
 #endif
@@ -2645,7 +2645,7 @@ public:
       /* If not ERROR_MARK, a rewrite candidate for this operator.  */
       tree_code rewrite = ERROR_MARK;
       /* Argument list for the call.  */
-      vec<tree, va_gc>* args = make_tree_vector ();
+      vec<tree, va_gc>* args = nullptr;
     };
     vec<dep_adl_info> dep_adl_entity_list;
 
@@ -2846,7 +2846,7 @@ pending_map_t *pending_table;
    completed.  */
 vec<tree, va_heap, vl_embed> *post_load_decls;
 
-/* Some entities are keyed to another entitity for ODR purposes.
+/* Some entities are keyed to another entity for ODR purposes.
    For example, at namespace scope, 'inline auto var = []{};', that
    lambda is keyed to 'var', and follows its ODRness.  */
 typedef hash_map<tree, auto_vec<tree>> keyed_map_t;
@@ -2970,6 +2970,8 @@ static char const *const merge_kind_name[MK_hwm] =
 struct merge_key {
   cp_ref_qualifier ref_q : 2;
   unsigned coro_disc : 2;  /* Discriminator for coroutine transforms.  */
+  unsigned iobj_p : 1;
+  unsigned xobj_p : 1;
   unsigned index;
 
   tree ret;  /* Return type, if appropriate.  */
@@ -2978,7 +2980,7 @@ struct merge_key {
   tree constraints;  /* Constraints.  */
 
   merge_key ()
-    :ref_q (REF_QUAL_NONE), coro_disc (0), index (0),
+    :ref_q (REF_QUAL_NONE), coro_disc (0), iobj_p (0), xobj_p (0), index (0),
      ret (NULL_TREE), args (NULL_TREE),
      constraints (NULL_TREE)
   {
@@ -4218,7 +4220,7 @@ static GTY(()) vec<tree, va_gc> *class_members;
    expecting them in the instantiation table no longer holds.  One of
    the constrained partial specializations will be there, but the
    others not so much.  It's not even an unconstrained partial
-   spacialization in the table :(  so any partial template declaration
+   specialization in the table :(  so any partial template declaration
    is added to this list too.  */
 static GTY(()) vec<tree, va_gc> *partial_specializations;
 
@@ -6108,7 +6110,7 @@ trees_out::lang_decl_bools (tree t, bits_out& bits)
   WB (lang->u.base.var_declared_inline_p);
   WB (lang->u.base.dependent_init_p);
 
-  /* When building a header unit, everthing is marked as purview, (so
+  /* When building a header unit, everything is marked as purview, (so
      we know which decls to write).  But when we import them we do not
      want to mark them as in module purview.  */
   WB (lang->u.base.module_purview_p && !header_module_p ());
@@ -6561,7 +6563,7 @@ trees_out::core_vals (tree t)
 			 && TREE_CODE_CLASS (code) != tcc_vl_exp);
 
   /* Then by CODE.  Special cases and/or 1:1 tree shape
-     correspondance. */
+     correspondence. */
   switch (code)
     {
     default:
@@ -6872,6 +6874,8 @@ trees_out::core_vals (tree t)
 
     case PTRMEM_CST:
       WT (((lang_tree_node *)t)->ptrmem.member);
+      if (state)
+	state->write_location (*this, ((lang_tree_node *)t)->ptrmem.locus);
       break;
 
     case STATIC_ASSERT:
@@ -6933,6 +6937,9 @@ trees_out::core_vals (tree t)
     case TRAIT_EXPR:
       WT (((lang_tree_node *)t)->trait_expression.type1);
       WT (((lang_tree_node *)t)->trait_expression.type2);
+      if (state)
+	state->write_location
+	  (*this, ((lang_tree_node *)t)->trait_expression.locus);
       if (streaming_p ())
 	WU (((lang_tree_node *)t)->trait_expression.kind);
       break;
@@ -7139,7 +7146,7 @@ trees_in::core_vals (tree t)
     }
 
   /* Then by CODE.  Special cases and/or 1:1 tree shape
-     correspondance. */
+     correspondence. */
   switch (code)
     {
     default:
@@ -7161,7 +7168,7 @@ trees_in::core_vals (tree t)
       break;
 
     case FIXED_CST:
-      /* Not suported in C++.  */
+      /* Not supported in C++.  */
       return false;
 
     case INTEGER_CST:
@@ -7443,7 +7450,8 @@ trees_in::core_vals (tree t)
       break;
 
     case PTRMEM_CST:
-      RT (((lang_tree_node *)t)->ptrmem.member);
+      RTU (((lang_tree_node *)t)->ptrmem.member);
+      ((lang_tree_node *)t)->ptrmem.locus = state->read_location (*this);
       break;
 
     case STATIC_ASSERT:
@@ -7493,6 +7501,8 @@ trees_in::core_vals (tree t)
     case TRAIT_EXPR:
       RT (((lang_tree_node *)t)->trait_expression.type1);
       RT (((lang_tree_node *)t)->trait_expression.type2);
+      ((lang_tree_node *)t)->trait_expression.locus
+	= state->read_location (*this);
       RUC (cp_trait_kind, ((lang_tree_node *)t)->trait_expression.kind);
       break;
 
@@ -9031,6 +9041,17 @@ trees_in::decl_value ()
 	  && decl_tls_wrapper_p (decl))
 	note_vague_linkage_fn (decl);
 
+      /* Apply relevant attributes.
+	 FIXME should probably use cplus_decl_attributes for this,
+	 but it's not yet ready for modules.  */
+
+      if (VAR_OR_FUNCTION_DECL_P (inner))
+	if (tree attr = lookup_attribute ("section", DECL_ATTRIBUTES (inner)))
+	  {
+	    tree section_name = TREE_VALUE (TREE_VALUE (attr));
+	    set_decl_section_name (inner, TREE_STRING_POINTER (section_name));
+	  }
+
       /* Setup aliases for the declaration.  */
       if (tree alias = lookup_attribute ("alias", DECL_ATTRIBUTES (decl)))
 	{
@@ -9413,6 +9434,11 @@ trees_out::decl_node (tree decl, walk_kind ref)
     case TYPE_DECL:
       if (DECL_TINFO_P (decl))
 	goto tinfo;
+      /* c++/125768: For an imported typedef, also mark the original type
+	 reachable in case it was instantiated here.  */
+      if (!streaming_p () && DECL_ORIGINAL_TYPE (decl)
+	  && (DECL_LANG_SPECIFIC (decl) && DECL_MODULE_IMPORT_P (decl)))
+	tree_node (DECL_ORIGINAL_TYPE (decl));
       break;
     }
 
@@ -10853,6 +10879,7 @@ trees_in::tree_node (bool is_use)
 	    int tag = insert (res);
 	    dump (dumper::TREE)
 	      && dump ("Created nttp object:%d %N", tag, name);
+	    vec_safe_push (post_load_decls, res);
 	  }
       }
       break;
@@ -11358,6 +11385,19 @@ trees_in::fn_parms_init (tree fn)
 		 base_tag - ix, ix, parm, fn);
       if (!tree_node_vals (parm))
 	return 0;
+
+      /* Apply relevant attributes.
+	 FIXME should probably use cplus_decl_attributes for this,
+	 but it's not yet ready for modules.  */
+
+      /* TREE_USED is deliberately not streamed for most declarations,
+	 but needs to be set if we have the [[maybe_unused]] attribute.  */
+      if (lookup_attribute ("unused", DECL_ATTRIBUTES (parm))
+	  || lookup_attribute ("maybe_unused", DECL_ATTRIBUTES (parm)))
+	{
+	  TREE_USED (parm) = true;
+	  DECL_READ_P (parm) = true;
+	}
     }
 
   /* Reload references to contract functions, if any.  */
@@ -11865,6 +11905,8 @@ trees_out::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 
 	      key.ref_q = type_memfn_rqual (fn_type);
 	      key.coro_disc = get_coroutine_discriminator (inner);
+	      key.iobj_p = DECL_IOBJ_MEMBER_FUNCTION_P (inner);
+	      key.xobj_p = DECL_XOBJ_MEMBER_FUNCTION_P (inner);
 	      key.args = TYPE_ARG_TYPES (fn_type);
 
 	      if (tree reqs = get_constraints (inner))
@@ -12002,11 +12044,13 @@ trees_out::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
       if (streaming_p ())
 	{
 	  /* Check we have enough bits for the index.  */
-	  gcc_checking_assert (key.index < (1u << (sizeof (unsigned) * 8 - 4)));
+	  gcc_checking_assert (key.index < (1u << (sizeof (unsigned) * 8 - 6)));
 
 	  unsigned code = ((key.ref_q << 0)
 			   | (key.coro_disc << 2)
-			   | (key.index << 4));
+			   | (key.iobj_p << 4)
+			   | (key.xobj_p << 5)
+			   | (key.index << 6));
 	  u (code);
 	}
 
@@ -12085,6 +12129,8 @@ check_mergeable_decl (merge_kind mk, tree decl, tree ovl, merge_key const &key)
 	    if ((!key.ret
 		 || same_type_p (key.ret, fndecl_declared_return_type (m_inner)))
 		&& type_memfn_rqual (m_type) == key.ref_q
+		&& key.iobj_p == DECL_IOBJ_MEMBER_FUNCTION_P (m_inner)
+		&& key.xobj_p == DECL_XOBJ_MEMBER_FUNCTION_P (m_inner)
 		&& compparms (key.args, TYPE_ARG_TYPES (m_type))
 		&& get_coroutine_discriminator (m_inner) == key.coro_disc
 		/* Reject if old is a "C" builtin and new is not "C".
@@ -12125,6 +12171,20 @@ check_mergeable_decl (merge_kind mk, tree decl, tree ovl, merge_key const &key)
 		       && (TYPE_NAME (ENUM_UNDERLYING_TYPE (TREE_TYPE (m_inner)))
 			   == key.ret))
 		found = match;
+	    }
+	  /* With -freflection, typedef struct { } A is now represented the same
+	     as typedef struct A_ { } A except the TYPE_DECL for A_ is invisible
+	     to name lookup, so we won't be able to find and match it directly.
+	     But we will find the in-TU A (m_inner), through which we can obtain
+	     the in-TU A_ when d_inner is the streamed-in A_.  */
+	  else if (flag_reflection
+		   && TYPE_DECL_WAS_UNNAMED (d_inner)
+		   && DECL_ORIGINAL_TYPE (m_inner))
+	    {
+	      tree orig = TYPE_NAME (DECL_ORIGINAL_TYPE (m_inner));
+	      if (TYPE_DECL_WAS_UNNAMED (orig)
+		  && DECL_NAME (orig) == DECL_NAME (d_inner))
+		found = orig;
 	    }
 	  break;
 
@@ -12210,7 +12270,9 @@ trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
       unsigned code = u ();
       key.ref_q = cp_ref_qualifier ((code >> 0) & 3);
       key.coro_disc = (code >> 2) & 3;
-      key.index = code >> 4;
+      key.iobj_p = (code >> 4) & 1;
+      key.xobj_p = (code >> 5) & 1;
+      key.index = code >> 6;
 
       if (mk == MK_enum)
 	key.ret = tree_node ();
@@ -12485,8 +12547,13 @@ trees_in::check_abi_tags (tree existing, tree decl, tree &eattr, tree &dattr)
       if (dtags)
 	dtags = TREE_VALUE (dtags);
 
-      /* We only error if mangling wouldn't consider the tags equivalent.  */
-      if (!equal_abi_tags (etags, dtags))
+      /* We only error if mangling wouldn't consider the tags equivalent.
+	 Since tags might have been inherited during mangling, ignore
+	 inherited tags if there's a mangled-ness mismatch.  */
+      bool ignore_inherited_p
+	= (DECL_ASSEMBLER_NAME_SET_P (STRIP_TEMPLATE (existing))
+	   != DECL_ASSEMBLER_NAME_SET_P (STRIP_TEMPLATE (decl)));
+      if (!equal_abi_tags (etags, dtags, ignore_inherited_p))
 	{
 	  auto_diagnostic_group d;
 	  if (dtags)
@@ -12564,7 +12631,7 @@ trees_in::is_matching_decl (tree existing, tree decl, bool is_typedef)
 	  goto mismatch;
 	}
 
-      tree e_type = TREE_TYPE (e_inner);
+      tree& e_type = TREE_TYPE (e_inner);
       tree d_type = TREE_TYPE (d_inner);
 
       for (tree e_args = TYPE_ARG_TYPES (e_type),
@@ -12595,24 +12662,21 @@ trees_in::is_matching_decl (tree existing, tree decl, bool is_typedef)
       tree d_spec = TYPE_RAISES_EXCEPTIONS (d_type);
       if (DECL_MAYBE_DELETED (e_inner) || DEFERRED_NOEXCEPT_SPEC_P (e_spec))
 	{
-	  if (!DEFERRED_NOEXCEPT_SPEC_P (d_spec)
+	  if (!(DECL_MAYBE_DELETED (d_inner)
+		|| DEFERRED_NOEXCEPT_SPEC_P (d_spec))
 	      || (UNEVALUATED_NOEXCEPT_SPEC_P (e_spec)
 		  && !UNEVALUATED_NOEXCEPT_SPEC_P (d_spec)))
 	    {
 	      dump (dumper::MERGE)
 		&& dump ("Propagating instantiated noexcept to %N", existing);
-	      TREE_TYPE (existing) = d_type;
+	      gcc_checking_assert (existing == e_inner);
+	      e_type = build_exception_variant (e_type, d_spec);
 
 	      /* Propagate to existing clones.  */
 	      tree clone;
 	      FOR_EACH_CLONE (clone, existing)
-		{
-		  if (TREE_TYPE (clone) == e_type)
-		    TREE_TYPE (clone) = d_type;
-		  else
-		    TREE_TYPE (clone)
-		      = build_exception_variant (TREE_TYPE (clone), d_spec);
-		}
+		TREE_TYPE (clone)
+		  = build_exception_variant (TREE_TYPE (clone), d_spec);
 	    }
 	}
       else if (!DECL_MAYBE_DELETED (d_inner)
@@ -12626,15 +12690,19 @@ trees_in::is_matching_decl (tree existing, tree decl, bool is_typedef)
 
       /* Similarly if EXISTING has an undeduced return type, but DECL's
 	 is already deduced.  */
-      if (undeduced_auto_decl (existing) && !undeduced_auto_decl (decl))
+      bool e_undeduced = undeduced_auto_decl (existing);
+      bool d_undeduced = undeduced_auto_decl (decl);
+      if (e_undeduced && !d_undeduced)
 	{
 	  dump (dumper::MERGE)
 	    && dump ("Propagating deduced return type to %N", existing);
 	  gcc_checking_assert (existing == e_inner);
 	  FNDECL_USED_AUTO (existing) = true;
 	  DECL_SAVED_AUTO_RETURN_TYPE (existing) = TREE_TYPE (e_type);
-	  TREE_TYPE (existing) = change_return_type (TREE_TYPE (d_type), e_type);
+	  e_type = change_return_type (TREE_TYPE (d_type), e_type);
 	}
+      else if (d_undeduced && !e_undeduced)
+	/* EXISTING was deduced, leave it alone.  */;
       else if (type_uses_auto (d_ret)
 	       && !same_type_p (TREE_TYPE (d_type), TREE_TYPE (e_type)))
 	{
@@ -12857,7 +12925,7 @@ trees_in::install_implicit_member (tree fn)
   tree name = DECL_NAME (fn);
   /* We know these are synthesized, so the set of expected prototypes
      is quite restricted.  We're not validating correctness, just
-     distinguishing beteeen the small set of possibilities.  */
+     distinguishing between the small set of possibilities.  */
   tree parm_type = TREE_VALUE (FUNCTION_FIRST_USER_PARMTYPE (fn));
   if (IDENTIFIER_CTOR_P (name))
     {
@@ -13066,7 +13134,7 @@ trees_in::odr_duplicate (tree maybe_existing, bool has_defn)
 
 /* The following writer functions rely on the current behaviour of
    depset::hash::add_dependency making the decl and defn depset nodes
-   depend on eachother.  That way we don't have to worry about seeding
+   depend on each other.  That way we don't have to worry about seeding
    the tree map with named decls that cannot be looked up by name (I.e
    template and function parms).  We know the decl and definition will
    be in the same cluster, which is what we want.  */
@@ -13216,6 +13284,13 @@ trees_in::read_function_def (tree decl, tree maybe_template)
       DECL_RESULT (decl) = result;
       DECL_INITIAL (decl) = initial;
       DECL_SAVED_TREE (decl) = saved;
+
+      /* Some entities (like anticipated builtins) were declared without
+	 DECL_ARGUMENTS, so update them now.  But don't do it if there's
+	 already an argument list, because we've already built the
+	 definition referencing those merged PARM_DECLs.  */
+      if (!DECL_ARGUMENTS (decl))
+	DECL_ARGUMENTS (decl) = DECL_ARGUMENTS (maybe_dup);
 
       if (context)
 	SET_DECL_FRIEND_CONTEXT (decl, context);
@@ -13665,9 +13740,8 @@ trees_in::read_class_def (tree defn, tree maybe_template)
 		{
 		  CLASSTYPE_BEFRIENDING_CLASSES (type_dup)
 		    = CLASSTYPE_BEFRIENDING_CLASSES (type);
-		  if (!ANON_AGGR_TYPE_P (type))
-		    CLASSTYPE_TYPEINFO_VAR (type_dup)
-		      = CLASSTYPE_TYPEINFO_VAR (type);
+		  SET_CLASSTYPE_TYPEINFO_VAR (type_dup,
+					      CLASSTYPE_TYPEINFO_VAR (type));
 		}
 	      for (tree v = type; v; v = TYPE_NEXT_VARIANT (v))
 		TYPE_LANG_SPECIFIC (v) = ls;
@@ -13708,7 +13782,7 @@ trees_in::read_class_def (tree defn, tree maybe_template)
 		       to the as-base FIELD_DECL copy.  */
 		    gcc_checking_assert (ANON_AGGR_TYPE_FIELD (anon_type));
 		  else
-		    ANON_AGGR_TYPE_FIELD (anon_type) = decl;
+		    SET_ANON_AGGR_TYPE_FIELD (anon_type, decl);
 		}
 
 	      if (TREE_CODE (decl) == USING_DECL
@@ -14494,12 +14568,12 @@ instantiating_tu_local_entity (tree decl)
     return false;
 
   auto_diagnostic_group d;
-  warning (OPT_Wexpose_global_module_tu_local,
+  pedwarn (input_location, OPT_Wexpose_global_module_tu_local,
 	   "instantiation exposes TU-local entity %qD", decl);
   inform (DECL_SOURCE_LOCATION (decl), "declared here");
 
   /* We treat TU-local entities from the GMF as not actually being
-     TU-local as an extension, so allow instantation to proceed.  */
+     TU-local as an extension, so allow instantiation to proceed.  */
   return false;
 }
 
@@ -14824,9 +14898,10 @@ depset::hash::add_dependency (depset *dep)
      details.  */
   if (writing_merge_key)
     {
-      dep->set_flag_bit<DB_MAYBE_RECURSIVE_BIT> ();
-      if (!current->is_maybe_recursive ())
+      if (!dep->is_maybe_recursive () && !current->is_maybe_recursive ())
 	current->set_flag_bit<DB_ENTRY_BIT> ();
+      dep->set_flag_bit<DB_MAYBE_RECURSIVE_BIT> ();
+      current->set_flag_bit<DB_MAYBE_RECURSIVE_BIT> ();
     }
 
   if (dep->is_unreached ())
@@ -14934,7 +15009,8 @@ depset::hash::add_binding_entity (tree decl, WMB_Flags flags, void *data_)
 	return false;
 
       bool internal_decl = false;
-      if (!header_module_p () && is_tu_local_entity (decl))
+      if (!header_module_p () && is_tu_local_entity (decl)
+	  && !((flags & WMB_Using) && (flags & WMB_Export)))
 	{
 	  /* A TU-local entity.  For ADL we still need to create bindings
 	     for internal-linkage functions attached to a named module.  */
@@ -15183,14 +15259,22 @@ void
 depset::hash::add_dependent_adl_entities (tree expr)
 {
   gcc_checking_assert (!is_key_order ());
+
+  /* This is not needed for header units where everything is
+     visible to name lookup, nothing is discarded.  */
+  if (header_module_p ())
+    return;
+
   if (TREE_CODE (current->get_entity ()) != TEMPLATE_DECL)
     return;
 
   dep_adl_info info;
+  auto_vec<tree, 3> args;
   switch (TREE_CODE (expr))
     {
     case CALL_EXPR:
-      if (!KOENIG_LOOKUP_P (expr))
+      if (!KOENIG_LOOKUP_P (expr)
+	  || !type_dependent_expression_p_push (expr))
 	return;
       info.name = CALL_EXPR_FN (expr);
       if (!info.name)
@@ -15202,7 +15286,7 @@ depset::hash::add_dependent_adl_entities (tree expr)
       if (!identifier_p (info.name))
 	info.name = OVL_NAME (info.name);
       for (int ix = 0; ix < call_expr_nargs (expr); ix++)
-	vec_safe_push (info.args, CALL_EXPR_ARG (expr, ix));
+	args.safe_push (CALL_EXPR_ARG (expr, ix));
       break;
 
     case LE_EXPR:
@@ -15239,10 +15323,12 @@ depset::hash::add_dependent_adl_entities (tree expr)
     case TRUTH_ANDIF_EXPR:
     case TRUTH_ORIF_EXPR:
     overloadable_expr:
+      if (!type_dependent_expression_p_push (expr))
+	return;
       info.name = ovl_op_identifier (TREE_CODE (expr));
       gcc_checking_assert (tree_operand_length (expr) == 2);
-      vec_safe_push (info.args, TREE_OPERAND (expr, 0));
-      vec_safe_push (info.args, TREE_OPERAND (expr, 1));
+      args.safe_push (TREE_OPERAND (expr, 0));
+      args.safe_push (TREE_OPERAND (expr, 1));
       break;
 
     default:
@@ -15251,10 +15337,20 @@ depset::hash::add_dependent_adl_entities (tree expr)
 
   /* If all arguments are type-dependent we don't need to do
      anything further, we won't find new entities.  */
-  processing_template_decl_sentinel ptds;
-  ++processing_template_decl;
-  if (!any_type_dependent_arguments_p (info.args))
+  bool all_type_dependent = true;
+  for (tree arg : args)
+    if (!type_dependent_expression_p_push (arg))
+      {
+	all_type_dependent = false;
+	break;
+      }
+  if (all_type_dependent)
     return;
+
+  gcc_checking_assert (!info.args);
+  info.args = make_tree_vector ();
+  for (tree arg : args)
+    vec_safe_push (info.args, arg);
 
   /* We need to defer name lookup until after walking, otherwise
      we get confused by stray TREE_VISITEDs.  */
@@ -15634,7 +15730,9 @@ depset::hash::find_dependencies (module_state *module)
 		      tree lookup = lookup_arg_dependent (info.name, NULL_TREE,
 							  info.args, true);
 		      for (tree fn : lkp_range (lookup))
-			add_dependency (make_dependency (fn, EK_DECL));
+			/* We don't need to add_dependency, just have
+			   make_dependency build an ADL binding.  */
+			make_dependency (fn, EK_DECL);
 
 		      if (info.rewrite)
 			{
@@ -15642,7 +15740,7 @@ depset::hash::find_dependencies (module_state *module)
 			  lookup = lookup_arg_dependent (rewrite_name, NULL_TREE,
 							 info.args, true);
 			  for (tree fn : lkp_range (lookup))
-			    add_dependency (make_dependency (fn, EK_DECL));
+			    make_dependency (fn, EK_DECL);
 			}
 		      release_tree_vector (info.args);
 		    }
@@ -15960,6 +16058,11 @@ depset::hash::finalize_dependencies ()
       if (dep->is_tu_local ())
 	continue;
 
+      /* We already complained about usings of non-external entities in
+	 check_can_export_using_decl, don't do it again here.  */
+      if (dep->get_entity_kind () == EK_USING)
+	continue;
+
       if (dep->is_exposure ())
 	{
 	  bool explained = diagnose_bad_internal_ref (dep);
@@ -16223,7 +16326,7 @@ sort_cluster (depset::hash *original, depset *scc[], unsigned size)
 
      The instantiation of TPL will be in the specialization table, and
      refer to Foo via arg.  But we can only get to that specialization
-     from Foo's declaration, so we only need to treat Foo as mergable
+     from Foo's declaration, so we only need to treat Foo as mergeable
      (We'll do structural comparison of TPL<decltype (arg)>).
 
      We approximate finding the single cluster entry dep by checking for
@@ -17171,6 +17274,7 @@ module_state_config::get_dialect ()
 		       ? "/coroutines" : ""),
 		      flag_module_implicit_inline ? "/implicit-inline" : "",
 		      flag_contracts ? "/contracts" : "",
+		      flag_reflection ? "/reflection" : "",
 		      NULL);
 
   return dialect;
@@ -19586,7 +19690,7 @@ module_state::write_define (bytes_out &sec, const cpp_macro *macro)
 
 	case CPP_TOKEN_FLD_STR:
 	  /* A string, number or comment.  Not always NUL terminated,
-	     we stream out in a single contatenation with embedded
+	     we stream out in a single concatenation with embedded
 	     NULs as that's a safe default.  */
 	  len += token->val.str.len + 1;
 	  sec.u (token->val.str.len);
@@ -20466,6 +20570,17 @@ post_load_processing ()
 
       dump () && dump ("Post-load processing of %N", decl);
 
+      if (VAR_P (decl) && DECL_NTTP_OBJECT_P (decl))
+	{
+	  if (!DECL_SIZE (decl))
+	    {
+	      push_to_top_level ();
+	      cp_finish_decl (decl, DECL_INITIAL (decl), false, NULL_TREE, 0);
+	      pop_from_top_level ();
+	    }
+	  continue;
+	}
+
       gcc_checking_assert (DECL_MAYBE_IN_CHARGE_CDTOR_P (decl));
       expand_or_defer_fn (decl);
       /* As in module_state::read_cluster.  */
@@ -21116,7 +21231,7 @@ module_state::write_begin (elf_out *to, cpp_reader *reader,
   gcc_assert (counts[MSC_sec_hwm] == to->get_section_limit ()
 	      && spaces.length () == counts[MSC_namespaces]);
 
-  /* Write the entitites.  None happens if we contain namespaces or
+  /* Write the entities.  None happens if we contain namespaces or
      nothing. */
   config.num_entities = counts[MSC_entities];
   if (counts[MSC_entities])
@@ -22045,12 +22160,18 @@ set_defining_module_for_partial_spec (tree decl)
     vec_safe_push (partial_specializations, decl);
 }
 
+/* Record that DECL is declared in this TU, and note attachment and
+   exporting for namespace-scope entities.  FRIEND_P is true if
+   this is a friend declaration.  */
+
 void
 set_originating_module (tree decl, bool friend_p ATTRIBUTE_UNUSED)
 {
   set_instantiating_module (decl);
 
-  if (!DECL_NAMESPACE_SCOPE_P (decl))
+  /* DECL_CONTEXT may not be set yet when we're called for
+     non-namespace-scope entities.  */
+  if (!DECL_CONTEXT (decl) || !DECL_NAMESPACE_SCOPE_P (decl))
     return;
 
   gcc_checking_assert (friend_p || decl == get_originating_module_decl (decl));
@@ -22089,7 +22210,7 @@ check_module_decl_linkage (tree decl)
       && decl_defined_p (decl)
       && !(DECL_LANG_SPECIFIC (decl)
 	   && DECL_TEMPLATE_INSTANTIATION (decl))
-      && decl_linkage (decl) == lk_external)
+      && DECL_EXTERNAL_LINKAGE_P (decl))
     error_at (DECL_SOURCE_LOCATION (decl),
 	      "external linkage definition of %qD in header module must "
 	      "be declared %<inline%>", decl);
@@ -22103,7 +22224,7 @@ check_module_decl_linkage (tree decl)
 	 internal namespace as exporting a declaration with internal
 	 linkage, as this would also implicitly export the internal
 	 linkage namespace.  */
-      if (decl_internal_context_p (decl))
+      if (decl_anon_ns_mem_p (decl))
 	{
 	  error_at (DECL_SOURCE_LOCATION (decl),
 		    "exporting declaration %qD declared in unnamed namespace",
@@ -22766,7 +22887,7 @@ declare_module (module_state *module, location_t from_loc, bool exporting_p,
     {
       /* Copy the importing information we may have already done.  We
 	 do not need to separate out the imports that only happen in
-	 the GMF, inspite of what the literal wording of the std
+	 the GMF, in spite of what the literal wording of the std
 	 might imply.  See p2191, the core list had a discussion
 	 where the module implementors agreed that the GMF of a named
 	 module is invisible to importers.  */
@@ -23081,13 +23202,22 @@ maybe_translate_include (cpp_reader *reader, line_maps *lmaps, location_t loc,
       /* Redirect importable <name> to <bits/stdc++.h>.  */
       /* ??? Generalize to use a .json.  */
       expanded_location eloc = expand_location (loc);
+      auto indir = [](const char *f, const char *d)
+      {
+	if (!filename_ncmp (f, d, strlen (d))) return true;
+	/* Also check canonical paths (c++/123879).  */
+	auto cf = lrealpath (f); auto cd = lrealpath (d);
+	bool r = cf && cd && !filename_ncmp (cf, cd, strlen (cd));
+	free (cf); free (cd);
+	return r;
+      };
       if (angle && is_importable_header (fname)
 	  /* Exclude <version> which often goes with import std.  */
 	  && strcmp (fname, "version") != 0
 	  /* Don't redirect #includes between headers under the same include
 	     path directory (i.e. between library headers); if the import
 	     brings in the current file we then get redefinition errors.  */
-	  && !strstr (eloc.file, _cpp_get_file_dir (file)->name)
+	  && !indir (eloc.file, _cpp_get_file_dir (file)->name)
 	  /* ??? These are needed when running a toolchain from the build
 	     directory, because libsupc++ headers aren't linked into
 	     libstdc++-v3/include with the other headers.  */
@@ -23477,7 +23607,7 @@ void
 init_modules (cpp_reader *reader)
 {
   /* PCH should not be reachable because of lang-specs, but the
-     user could have overriden that.  */
+     user could have overridden that.  */
   if (pch_file)
     fatal_error (input_location,
 		 "C++ modules are incompatible with precompiled headers");

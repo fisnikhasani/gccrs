@@ -107,12 +107,16 @@ TopLevel::go (AST::Crate &crate)
 void
 TopLevel::visit (AST::Module &module)
 {
-  DefaultResolver::visit (module);
-
   if (Analysis::Mappings::get ().lookup_glob_container (module.get_node_id ())
       == tl::nullopt)
     Analysis::Mappings::get ().insert_glob_container (module.get_node_id (),
 						      &module);
+
+  insert_or_error_out (module.get_name (), module, Namespace::Types);
+
+  Analysis::Mappings::get ().insert_module_id (module.get_node_id ());
+
+  DefaultResolver::visit (module);
 }
 
 void
@@ -504,7 +508,9 @@ flatten_glob (const AST::UseTreeGlob &glob, std::vector<AST::SimplePath> &paths,
   if (glob.has_path ())
     paths.emplace_back (glob.get_path ());
   else
-    paths.emplace_back (AST::SimplePath ({}, false, glob.get_locus ()));
+    paths.emplace_back (AST::SimplePath (
+      {}, glob.get_glob_type () == AST::UseTreeGlob::PathType::GLOBAL,
+      glob.get_locus ()));
 }
 
 static bool

@@ -24,7 +24,8 @@
 #include "rust-hir-type-check-item.h"
 #include "rust-hir-type-check-pattern.h"
 #include "rust-hir-type-check-struct-field.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
+#include "rust-rib.h"
 
 extern bool saw_errors (void);
 
@@ -275,11 +276,11 @@ TraitItemReference::get_type_from_fn (/*const*/ HIR::TraitItemFunc &fn) const
 			   param_tyty);
     }
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (fn.get_mappings ().get_nodeid ());
+    = nr_ctx.to_canonical_path (fn.get_mappings ().get_nodeid (),
+				Resolver2_0::Namespace::Types);
 
   RustIdent ident{canonical_path, fn.get_locus ()};
   auto resolved = new TyTy::FnType (

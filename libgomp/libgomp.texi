@@ -644,7 +644,8 @@ to address of matching mapped list item per 5.1, Sect. 2.21.7.2 @tab N @tab
 @item Multi-word directives now use underscore by default @tab N @tab
 @item Relaxed Fortran restrictions to the @code{aligned} clause @tab N @tab
 @item Mapping lambda captures @tab N @tab
-@item New @code{omp_pause_stop_tool} constant for omp_pause_resource @tab N @tab
+@item New @code{omp_pause_stop_tool} constant for @code{omp_pause_resource}
+      @tab Y @tab
 @item In Fortran (fixed and free source form), spaces between directive names are mandatory
       @tab N @tab
 @item Update of the map-type decay for mapping and @code{declare_mapper}
@@ -700,6 +701,7 @@ specification in version 5.2.
 * Thread Team Routines::
 * Thread Affinity Routines::
 * Teams Region Routines::
+* Multidimensional Support Routines::
 * Tasking Routines::
 * Resource Relinquishing Routines::
 * Device Information Routines::
@@ -709,7 +711,7 @@ specification in version 5.2.
 * Event Routine::
 * Interoperability Routines::
 * Memory Management Routines::
-@c * Tool Control Routine::
+* Tool Control Routine::
 * Environment Display Routine::
 @end menu
 
@@ -783,7 +785,7 @@ the program @code{omp_get_num_threads} returns 1.
 
 The default team size may be initialized at startup by the
 @env{OMP_NUM_THREADS} environment variable.  At runtime, the size
-of the current team may be set either by the @code{NUM_THREADS}
+of the current team may be set either by the @code{num_threads}
 clause or by @code{omp_set_num_threads}.  If none of the above were
 used to define a specific value and @env{OMP_DYNAMIC} is disabled,
 one thread per CPU online is used.
@@ -799,7 +801,8 @@ one thread per CPU online is used.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_get_max_threads}, @ref{omp_set_num_threads}, @ref{OMP_NUM_THREADS}
+@ref{omp_get_max_threads}, @ref{omp_set_num_threads},
+@ref{omp_get_num_threads_dim}, @ref{OMP_NUM_THREADS}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v4.5}, Section 3.2.2.
@@ -854,7 +857,8 @@ value of the primary thread of a team is always 0.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_get_num_threads}, @ref{omp_get_ancestor_thread_num}
+@ref{omp_get_thread_num_dim}, @ref{omp_get_num_threads},
+@ref{omp_get_ancestor_thread_num}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v4.5}, Section 3.2.4.
@@ -1420,6 +1424,9 @@ Returns the number of teams in the current team region.
 @item @emph{Interface}: @tab @code{integer function omp_get_num_teams()}
 @end multitable
 
+@item @emph{See also}:
+@ref{omp_get_num_teams_dim}, @ref{OMP_NUM_TEAMS}, @ref{omp_get_team_num}
+
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v4.5}, Section 3.2.32.
 @end table
@@ -1441,6 +1448,9 @@ Returns the team number of the calling thread.
 @multitable @columnfractions .20 .80
 @item @emph{Interface}: @tab @code{integer function omp_get_team_num()}
 @end multitable
+
+@item @emph{See also}:
+@ref{omp_get_num_teams_dim}, @ref{OMP_NUM_TEAMS}, @ref{omp_get_num_teams}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v4.5}, Section 3.2.33.
@@ -1535,7 +1545,9 @@ for each team created by the teams construct which does not specify a
 @subsection @code{omp_get_thread_limit} -- Maximum number of threads
 @table @asis
 @item @emph{Description}:
-Return the maximum number of threads of the program.
+Return the maximal number of threads that are available in the current
+contention group to execute tasks, i.e. the unidimenional value of
+the @var{thread-limit-var} ICV.
 
 @item @emph{C/C++}:
 @multitable @columnfractions .20 .80
@@ -1548,10 +1560,380 @@ Return the maximum number of threads of the program.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_get_max_threads}, @ref{OMP_THREAD_LIMIT}
+@ref{omp_get_thread_limit_dim}, @ref{omp_get_max_threads}, @ref{OMP_THREAD_LIMIT}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v4.5}, Section 3.2.14.
+@end table
+
+
+
+@node Multidimensional Support Routines
+@section Multidimensional Support Routines
+
+Routines that retrieve information about the execution environment with
+multiple spatial dimensions.  They have C linkage and do not throw exceptions.
+
+The dimensional space is unidimensional, if the number of active spaces
+is one.  To create a multidimensional space, the @code{dim} modifier must
+be specified with a dimension greater than one in the @code{num_teams},
+@code{num_thread_limits}, or @code{num_threads} clause.
+
+The relation between the unidimensional and the spatial values is as
+follows: For the size, the unidimensional size is the product of the
+spatial sizes.  For the thread or team number, the unidimensional number
+is the respective index of dimension 0 plus the index of dimension 1
+times the size of dimension 0 plus the index of dimension 2 times the
+size of dimension 1 times the size of dimension 0 etc.  If the active
+spatial dimensions is one, the spatial dimensional result for dimension
+zero is the same as returned by the respective unidimensional routine.
+
+Note that there is no means to obtain the number of active dimensions in
+the general case as the size of an inactive spatial dimension is one,
+which is also a permitted size for an active spatial dimension.
+
+@menu
+* omp_get_num_threads_dim::       Size of a dimension of the active team
+* omp_get_thread_num_dim::        Dimensional ID of the current thread
+* omp_get_num_teams_dim::         Number of teams along a dimension
+* omp_get_team_num_dim::          Get team number in a dimension
+* omp_get_thread_limit_dim::      Maximum number of threads in a dimension
+* omp_get_supported_active_team_dims::   Number of supported team dimensions
+* omp_get_supported_active_league_dims:: Number of supported thread dimensions
+* omp_get_supported_threads_dim:: Get upper limit of threads in a dimension
+* omp_get_supported_teams_dim::   Get upper limit of teams in a dimension
+@end menu
+
+
+@node omp_get_num_threads_dim
+@subsection @code{omp_get_num_threads_dim} -- Size of a dimension of the active team
+@table @asis
+Returns the size in dimension @var{DIM} of threads in the current team and,
+therefore, of the parallel region that binds to that team, i.e. the value
+of the @var{team-size-var} ICV in dimension @var{dim}.  For inactive spatial
+dimensions, the routine returns 1.  The dimension argument @var{DIM} must be
+non-negative.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_num_threads_dim(int dim)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_num_threads_dim(dim)}
+@item                   @tab @code{integer :: dim}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_num_threads}, @ref{omp_get_thread_num_dim},
+@ref{omp_get_thread_limit_dim}, @ref{omp_get_max_threads},
+@ref{omp_set_num_threads}, @ref{OMP_NUM_THREADS},
+@ref{omp_get_supported_active_league_dims}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.1
+@end table
+
+
+
+@node omp_get_thread_num_dim
+@subsection @code{omp_get_thread_num_dim} -- Dimensional ID of the current thread
+@table @asis
+@item @emph{Description}:
+Returns the value of dimension @var{dim} of the multidimensional thread
+identification number for the invoking thread in the current team, i.e. the
+value of the @var{thread-num-var} ICV in dimension @var{dim}.  For inactive
+spatial dimensions, the routine returns 0.  The dimension argument @var{DIM}
+must be non-negative.
+
+The returned value is between zero and one less than the value returned by
+@code{omp_get_num_threads} for the dimension @var{dim}.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_thread_num(int dim)}
+@item                   @tab @code{integer :: dim}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_thread_num(dim)}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_thread_num}, @ref{omp_get_num_threads_dim}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.2
+@end table
+
+
+
+@node omp_get_num_teams_dim
+@subsection @code{omp_get_num_teams_dim} -- Number of teams along a dimension
+@table @asis
+@item @emph{description}:
+Returns the size in dimension @var{DIM} of the number of initial teams, i.e.
+the value of the @var{league-size-var} ICV in dimension @var{dim}.  For inactive
+spatial dimensions, the routine returns 1.  The dimension argument @var{DIM}
+must be non-negative.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{c/c++}:
+@multitable @columnfractions .20 .80
+@item @emph{prototype}: @tab @code{int omp_get_num_teams(int dim)}
+@end multitable
+
+@item @emph{fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{interface}: @tab @code{integer function omp_get_num_teams(dim)}
+@item                   @tab @code{integer :: dim}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_num_teams}, @ref{OMP_NUM_TEAMS}, @ref{omp_get_team_num_dim}
+@ref{omp_get_supported_active_team_dims}
+
+
+@item @emph{reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.3
+@end table
+
+
+
+@node omp_get_team_num_dim
+@subsection @code{omp_get_team_num_dim} -- Get team number in a dimension
+@table @asis
+@item @emph{description}:
+Returns the value of dimension @var{dim} of the multidimensional team
+identification number in the current team, i.e.  the value of the
+@var{team-num-var} ICV in dimension @var{dim}.  For inactive spatial
+dimensions, the routine returns 0.  The dimension argument @var{DIM}
+must be non-negative.
+
+The returned value is between zero and one less than the value returned by
+@code{omp_get_num_teams_dim} for the dimension @var{dim}.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{c/c++}:
+@multitable @columnfractions .20 .80
+@item @emph{prototype}: @tab @code{int omp_get_team_num_dim(int dim);}
+@end multitable
+
+@item @emph{fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{interface}: @tab @code{integer function omp_get_team_num_dim(dim)}
+@item                   @tab @code{integer :: dim}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_team_num_dim}, @ref{OMP_NUM_TEAMS}, @ref{omp_get_num_teams_dim}
+
+@item @emph{reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.4
+@end table
+
+
+
+@node omp_get_thread_limit_dim
+@subsection @code{omp_get_thread_limit_dim} -- Maximum number of threads in a dimension
+@table @asis
+@item @emph{Description}:
+Return the maximal number of threads in dimension @var{dim} that are available
+in the current contention group in that dimension, i.e. the value of the
+@var{thread-limit-var} ICV in dimension @var{dim}.  The routine returns one if
+the dimension @var{dim} exceeds the number of dimensions for which values have
+been specified in the @var{thread-limit-var} ICV.  The dimension argument
+@var{DIM} must be non-negative.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_thread_limit_dim(int dim)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_thread_limit_dim(dim)}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_thread_limit}, @ref{omp_get_thread_limit_dim},
+@ref{omp_get_max_threads}, @ref{OMP_THREAD_LIMIT}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.5
+@end table
+
+
+
+@node omp_get_supported_active_team_dims
+@subsection @code{omp_get_supported_active_team_dims} -- Number of supported team dimensions
+@table @asis
+@item @emph{Description}:
+The routine returns the number of active spatial dimensions that the device with
+@var{device_num} supports for teams.  If @var{native_support} is set to true, it
+returns the maximal number active spatial dimensions that are natively supported
+by the device.
+
+The effect when the routine is invoked from within a @code{target} region is unspecified.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_supported_active_team_dims(int device_num, int native_support)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_supported_active_team_dims(device_num, native_support)}
+@item                   @tab @code{integer :: device_num}
+@item                   @tab @code{logical :: native_support}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_supported_teams_dim}, @ref{omp_get_num_teams_dim}, @ref{OMP_NUM_TEAMS}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.6
+@end table
+
+
+
+@node omp_get_supported_active_league_dims
+@subsection @code{omp_get_supported_active_league_dims} -- Number of supported thread dimensions
+@table @asis
+@item @emph{Description}:
+The routine returns the number of active spatial dimensions that the device with
+@var{device_num} supports for league spaces, i.e. the number of threads available
+to each team in the league.  If @var{native_support} is set to true, it returns
+the maximal number active spatial dimensions that are natively supported by the
+device.
+
+The effect when the routine is invoked from within a @code{target} region is unspecified.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_supported_active_league_dims(int device_num, int native_support)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_supported_active_league_dims(device_num, native_support)}
+@item                   @tab @code{integer :: device_num}
+@item                   @tab @code{logical :: native_support}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_supported_threads_dim}, @ref{omp_get_thread_limit_dim},
+@ref{omp_get_num_teams_dim}, @ref{OMP_THREAD_LIMIT}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.7
+@end table
+
+
+
+@node omp_get_supported_threads_dim
+@subsection @code{omp_get_supported_threads_dim} -- Get upper limit of threads in a dimension
+@table @asis
+@item @emph{Description}:
+The routine returns an upper bound for the number of threads supported in
+dimension @var{dim} on device @var{device_num}.  If @var{dim} specifies a number
+that exceeds the number of supported active spatial dimensions for threads, the
+routine returns one.
+
+Note: The actually supported number of threads by dimension might be lower,
+depending on used number of threads in other dimensions, the number of
+teams, and other parameters like the register use of the code to be executed.
+
+The effect when the routine is invoked from within a @code{target} region is unspecified.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_supported_threads_dim(int device_num, int dim)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_supported_threads_dim(device_num, dim)}
+@item                   @tab @code{integer :: device_num, dim}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_supported_active_league_dims}, @ref{omp_get_thread_limit_dim},
+@ref{omp_get_max_threads}, @ref{omp_get_num_teams_dim}, @ref{OMP_THREAD_LIMIT}
+
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.8
+@end table
+
+
+
+@node omp_get_supported_teams_dim
+@subsection @code{omp_get_supported_teams_dim} -- Get upper limit of teams in a dimension
+@table @asis
+@item @emph{Description}:
+The routine returns an upper bound for the number of teams supported in
+dimension @var{dim} on device @var{device_num}.  If @var{dim} specifies a number
+that exceeds the number of supported active spatial dimensions for teams, the
+routine returns one.
+
+Note: The actually supported number of teams by dimension might be lower,
+depending on used number of teams in other dimensions and other parameters.
+
+The effect when the routine is invoked from within a @code{target} region is unspecified.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{int omp_get_supported_teams_dim(int device_num, int dim)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer function omp_get_supported_teams_dim(device_num, dim)}
+@item                   @tab @code{integer :: device_num, dim}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_supported_active_team_dims}, @ref{omp_get_num_teams_dim}, @ref{OMP_NUM_TEAMS}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 29.9
 @end table
 
 
@@ -1739,6 +2121,7 @@ They have C linkage and do not throw exceptions.
 @c * omp_set_device_num_teams::  <fixme>/TR13
 @c * omp_get_device_teams_thread_limit::  <fixme>/TR13
 @c * omp_set_device_teams_thread_limit::  <fixme>/TR13
+* omp_get_device_distances:: Obtain the NUMA distance of a device
 @end menu
 
 
@@ -2017,6 +2400,55 @@ to @code{omp_initial_device}; and otherwise it is replaced with a call to
 @end table
 
 
+@node omp_get_device_distances
+@subsection @code{omp_get_device_distances} -- Obtain the NUMA distance of a device
+@table @asis
+@item @emph{Description}:
+The routine takes two arrays, @var{devs} and @var{distances}, that have at least
+the size @var{ndevs}.  For each element of @var{devs}, the corresponding element
+of @var{distances} is set to an implementation-defined non-negative distance
+between the place on which the routine was invoked and the device number
+specified in @var{devs}. For the host device, the distance is zero.
+
+The routine must be executed on the host device and all values of @var{devs}
+must be conforming devices numbers other than @code{omp_invalid_device}.
+
+In GCC the distance is the value returned by the operating system for the
+NUMA distance between the node on which the routine was executed and the node
+to which the device is attached to. There are two exceptions: As required by
+the specification, for the host device @code{0} is returned.  Additionally,
+when either the operating system reports a negative number or when GCC runtime
+cannot obtain the distance, the fixed value @code{10} is returned.  The former
+is in particular the case when the system is virtualized.  The values the
+operating system returns are usually based on the SLIT (System Locality Distance
+Information Table) of ACPI (Advanced Configuration and Power Interface) and have
+values between @code{10} and @code{254}.  If an invalid device number is
+specified, GCC returns @code{-1}.
+
+Fortran note: In GCC, this routine does not support passing default-kind integer
+arguments with @code{-fdefault-integer-8}.
+
+@item @emph{C/C++}
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{void omp_get_device_distances (int ndevs, const int *devs, int *distances)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{subroutine omp_get_device_distances (ndevs, devs, distances)}
+@item                   @tab @code{integer, intent(in) :: ndevs, devs(*)}
+@item                   @tab @code{integer, intent(out) :: distances(*)}
+@end multitable
+
+@item @emph{See also}:
+@ref{omp_get_num_devices}
+
+@item @emph{Reference}:
+@c TODO: Update once OpenMP 6.1 is released
+@uref{https://www.openmp.org, OpenMP Technical Report 15}, Section 31.16
+@end table
+
+
 
 @node Device Memory Routines
 @section Device Memory Routines
@@ -2122,18 +2554,9 @@ is not supported.
 @item @emph{Description}:
 This routine tests whether storage, identified by the host pointer @var{ptr}
 is mapped to the device specified by @var{device_num}.  If so, it returns
-a nonzero value and otherwise zero.
-
-In GCC, this includes self mapping such that @code{omp_target_is_present}
-returns @emph{true} when @var{device_num} specifies the host or when the host
-and the device share memory.  If @var{ptr} is a null pointer, @var{true} is
-returned and if @var{device_num} is an invalid device number, @var{false} is
-returned.
-
-If those conditions do not apply, @emph{true} is returned if the association has
-been established by an explicit or implicit @code{map} clause, the
-@code{declare target} directive or a call to the @code{omp_target_associate_ptr}
-routine.
+a nonzero value and otherwise zero.  In particular, it always returns zero
+for the null pointer and for invalid device numbers; for the host device,
+a nonzero value is returned for all non-null pointers.
 
 Running this routine in a @code{target} region except on the initial device
 is not supported.
@@ -2154,7 +2577,7 @@ is not supported.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_target_associate_ptr}
+@ref{omp_get_mapped_ptr}, @ref{omp_target_associate_ptr}, @ref{omp_target_is_accessible}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v5.1}, Section 3.8.3
@@ -2204,7 +2627,7 @@ is not supported.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_target_associate_ptr}
+@ref{omp_target_is_present}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v5.1}, Section 3.8.4
@@ -2599,7 +3022,8 @@ is not supported.
 
 @item @emph{See also}:
 @ref{omp_target_disassociate_ptr}, @ref{omp_target_is_present},
-@ref{omp_target_alloc}
+@ref{omp_get_mapped_ptr}, @ref{omp_target_alloc}
+
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v5.1}, Section 3.8.9
@@ -2657,12 +3081,19 @@ is not supported.
 @subsection @code{omp_get_mapped_ptr} -- Return device pointer to a host pointer
 @table @asis
 @item @emph{Description}:
-If the device number is refers to the initial device or to a device with
-memory accessible from the host (shared memory), the @code{omp_get_mapped_ptr}
-routines returns the value of the passed @var{ptr}.  Otherwise, if associated
+If the device number refers to the initial device, @code{omp_get_mapped_ptr}
+returns the value of the passed @var{ptr}.  Otherwise, if associated
 storage to the passed host pointer @var{ptr} exists on device associated with
 @var{device_num}, it returns that pointer. In all other cases and in cases of
 an error, a null pointer is returned.
+
+If the device number is not the initial device and the pointer points to a
+variable that is specified in a @code{declare target} directive: When
+requiring @code{unified_shared_memory} or @code{self_maps}, a null pointer is
+returned if the variable appears in a @code{link} or @code{enter} clause.
+Otherwise, the corresponding device memory is returned; with the @code{link}
+clause, GCC returns the address of the pointer-typed link variable on the device,
+not to the data that is mapped to that variable.
 
 The association of storage location is established either via an explicit or
 implicit @code{map} clause, the @code{declare target} directive or the
@@ -2685,7 +3116,7 @@ is not supported.
 @end multitable
 
 @item @emph{See also}:
-@ref{omp_target_associate_ptr}
+@ref{omp_target_is_present}, @ref{omp_target_associate_ptr}
 
 @item @emph{Reference}:
 @uref{https://www.openmp.org, OpenMP specification v5.1}, Section 3.8.11
@@ -3941,10 +4372,74 @@ was already deallocated or when the used allocator has already been destroyed.
 
 
 
-@c @node Tool Control Routine
-@c @section Tool Control Routine
-@c
-@c FIXME
+@node Tool Control Routine
+@section Tool Control Routine
+
+Routine that supports the use of the OpenMP tools interface (OMPT).
+
+@menu
+* omp_control_tool:: pass commands to a tool
+@end menu
+
+@node omp_control_tool
+@subsection @code{omp_control_tool} -- pass commands to a tool
+@table @asis
+@item @emph{Description}:
+The @code{omp_control_tool} routine can be used to pass commands to a tool. The
+values for @var{modifier} and @var{arg} are specific for the particular tool;
+for Fortran, @var{arg} is NULL.  The following predefined values for
+@var{command} are supported by all tools:
+
+@itemize
+@item @code{omp_control_tool_start}: Request that monitoring is started or resumed;
+      it has no effect if monitoring is already on or was turned off permanently.
+@item @code{omp_control_tool_pause}: Request that monitoring is temporarily paused;
+      it has no effect if monitoring is already paused or stopped.
+@item @code{omp_control_tool_flush}: Request flushing of any buffered data,
+      independently whether monitoring is currently active.
+@item @code{omp_control_tool_end}: Request that monitoring is turned off
+      permanently, flushing all output and terminating the tool.
+@end itemize
+
+For the listed standard commands, the @var{modifier} and @var{arg} arguments
+are ignored by the tool.
+
+Negative return values indicate that the tool has not processed the command;
+in particular, the return value is @code{omp_control_tool_notool} if OMPT is
+inactive and no tool is active; if it is active but no callback is registered
+for the tool-control event, @code{omp_control_tool_nocallback} is returned.
+On success, @code{omp_control_tool_success} is returned and
+@code{omp_control_tool_ignored} indicates that the tool received the command
+but ignored it. Positive return values greater than 64 are tool specific.
+
+GCC implements the OpenMP 6.0 version of this function for C and C++, which is
+not compatible with its type signature in previous versions of the OpenMP
+specification.  In older versions, the type @code{int} was used for the
+@var{command} argument in place of the enumerated type
+@code{omp_control_tool_t}; the return type likewise changed from @code{int} to
+@code{omp_control_tool_result_t}.
+
+@item @emph{C/C++}:
+@multitable @columnfractions .20 .80
+@item @emph{Prototype}: @tab @code{omp_control_tool_result_t omp_control_tool(}
+@item                   @tab @code{  omp_control_tool_t command, int modifier, void *arg)}
+@end multitable
+
+@item @emph{Fortran}:
+@multitable @columnfractions .20 .80
+@item @emph{Interface}: @tab @code{integer (kind=omp_control_tool_result_kind) &}
+@item                   @tab @code{   function omp_control_tool(command, modifier)}
+@item                   @tab @code{integer (kind=omp_control_tool_kind) command}
+@item                   @tab @code{integer :: modifier}
+@end multitable
+
+@c @item @emph{See also}:
+
+@item @emph{Reference}:
+@uref{https://www.openmp.org, OpenMP specification v6.0}, Section 31.1
+@end table
+
+
 
 @node Environment Display Routine
 @section Environment Display Routine
@@ -4096,7 +4591,7 @@ The value can either be a predefined allocator or a predefined memory space
 or a predefined memory space followed by a colon and a comma-separated list
 of memory trait and value pairs, separated by @code{=}.
 
-See @ref{Memory allocation} for a list of supported prefedined allocators,
+See @ref{Memory allocation} for a list of supported predefined allocators,
 memory spaces, and traits.
 
 Note: The corresponding device environment variables are currently not
@@ -7172,8 +7667,10 @@ The implementation remark:
       true, in which case the runtime will attempt to set the @code{HSA_XNACK}
       environment variable to @samp{1} automatically (user-set values are not
       overridden, and the setting only affects the executable itself and any
-      child processes).  If any AMD GPU device is not supported, all AMD GPUs
-      are removed from the list of available devices (``host fallback'').
+      child processes).  If any AMD GPU device does not support unified-shared
+      memory, all AMD GPUs are removed from the list of available devices
+      (``host fallback''); consider using @code{ROCR_VISIBLE_DEVICES} to only
+      enable devices supporting it.
 @item The available stack size can be changed using the @code{GCN_STACK_SIZE}
       environment variable; the default is 32 kiB per thread.
 @item Low-latency memory (@code{omp_low_lat_mem_space}) is supported when the
@@ -7265,8 +7762,8 @@ Available properties for an HIP interop object:
 @headitem Property          @tab C data type             @tab API routine @tab value (if constant)
 @item @code{fr_id}          @tab @code{omp_interop_fr_t} @tab int         @tab @code{omp_fr_hip}
 @item @code{fr_name}        @tab @code{const char *}     @tab str         @tab @code{"hip"}
-@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{1}
-@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"amd"}
+@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{5}
+@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"gnu"}
 @item @code{device_num}     @tab @code{int}              @tab int         @tab
 @item @code{platform}       @tab N/A                     @tab             @tab
 @item @code{device}         @tab @code{hipDevice_t}      @tab int         @tab
@@ -7281,8 +7778,8 @@ Available properties for an HSA interop object:
 @headitem Property          @tab C data type             @tab API routine @tab value (if constant)
 @item @code{fr_id}          @tab @code{omp_interop_fr_t} @tab int         @tab @code{omp_fr_hsa}
 @item @code{fr_name}        @tab @code{const char *}     @tab str         @tab @code{"hsa"}
-@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{1}
-@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"amd"}
+@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{5}
+@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"gnu"}
 @item @code{device_num}     @tab @code{int}              @tab int         @tab
 @item @code{platform}       @tab N/A                     @tab             @tab
 @item @code{device}         @tab @code{hsa_agent *}      @tab ptr         @tab
@@ -7450,8 +7947,8 @@ Available properties for a CUDA runtime API interop object:
 @headitem Property          @tab C data type             @tab API routine @tab value (if constant)
 @item @code{fr_id}          @tab @code{omp_interop_fr_t} @tab int         @tab @code{omp_fr_cuda}
 @item @code{fr_name}        @tab @code{const char *}     @tab str         @tab @code{"cuda"}
-@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{11}
-@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"nvidia"}
+@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{5}
+@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"gnu"}
 @item @code{device_num}     @tab @code{int}              @tab int         @tab
 @item @code{platform}       @tab N/A                     @tab             @tab
 @item @code{device}         @tab @code{int}              @tab int         @tab
@@ -7466,8 +7963,8 @@ Available properties for a CUDA driver API interop object:
 @headitem Property          @tab C data type             @tab API routine @tab value (if constant)
 @item @code{fr_id}          @tab @code{omp_interop_fr_t} @tab int         @tab @code{omp_fr_cuda_driver}
 @item @code{fr_name}        @tab @code{const char *}     @tab str         @tab @code{"cuda_driver"}
-@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{11}
-@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"nvidia"}
+@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{5}
+@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"gnu"}
 @item @code{device_num}     @tab @code{int}              @tab int         @tab
 @item @code{platform}       @tab N/A                     @tab             @tab
 @item @code{device}         @tab @code{CUdevice}         @tab int         @tab
@@ -7482,8 +7979,8 @@ Available properties for an HIP interop object:
 @headitem Property          @tab C data type             @tab API routine @tab value (if constant)
 @item @code{fr_id}          @tab @code{omp_interop_fr_t} @tab int         @tab @code{omp_fr_hip}
 @item @code{fr_name}        @tab @code{const char *}     @tab str         @tab @code{"hip"}
-@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{11}
-@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"nvidia"}
+@item @code{vendor}         @tab @code{int}              @tab int         @tab @code{5}
+@item @code{vendor_name}    @tab @code{const char *}     @tab str         @tab @code{"gnu"}
 @item @code{device_num}     @tab @code{int}              @tab int         @tab
 @item @code{platform}       @tab N/A                     @tab             @tab
 @item @code{device}         @tab @code{hipDevice_t}      @tab int         @tab

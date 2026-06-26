@@ -855,18 +855,6 @@ public:
   }
 };
 
-class svcvtnt_impl : public CODE_FOR_MODE0 (aarch64_sve_cvtnt)
-{
-public:
-  gimple *
-  fold (gimple_folder &f) const override
-  {
-    if (f.pred == PRED_x && is_pfalse (gimple_call_arg (f.call, 1)))
-      f.fold_call_to (build_zero_cst (TREE_TYPE (f.lhs)));
-    return NULL;
-  }
-};
-
 class svdiv_impl : public rtx_code_function
 {
 public:
@@ -1294,6 +1282,19 @@ class sveorv_impl : public reduction
 public:
   CONSTEXPR sveorv_impl () : reduction (UNSPEC_XORV) {}
 
+  gimple *
+  fold (gimple_folder &f) const override
+  {
+    if (is_pfalse (gimple_call_arg (f.call, 0)))
+      return f.fold_call_to (build_zero_cst (TREE_TYPE (f.lhs)));
+    return NULL;
+  }
+};
+
+class svexpand_impl
+  : public QUIET_CODE_FOR_MODE0 (aarch64_sve_expand)
+{
+public:
   gimple *
   fold (gimple_folder &f) const override
   {
@@ -1854,6 +1855,20 @@ public:
 	gimple_seq_add_stmt_without_update (&stmts, mem_ref_stmt);
 
 	int source_nelts = TYPE_VECTOR_SUBPARTS (access_type).to_constant ();
+
+	/* When the SVE vector has the same number of elements as the
+	   128-bit quadword (i.e. VL == 128), the load fills the entire
+	   register and no replication is needed.  Just convert the
+	   loaded value from the Advanced SIMD type to the SVE type.  */
+	if (known_eq (lhs_len, (unsigned int) source_nelts))
+	  {
+	    gimple *g
+	      = gimple_build_assign (lhs, build1 (VIEW_CONVERT_EXPR,
+						  lhs_type, mem_ref_lhs));
+	    gimple_seq_add_stmt_without_update (&stmts, g);
+	    gsi_replace_with_seq_vops (f.gsi, stmts);
+	    return g;
+	  }
 	vec_perm_builder sel (lhs_len, source_nelts, 1);
 	for (int i = 0; i < source_nelts; i++)
 	  sel.quick_push (i);
@@ -2977,12 +2992,12 @@ public:
        The fold routines expect the replacement statement to have the
        same lhs as the original call, so return the copy statement
        rather than the field update.  */
-    gassign *copy = gimple_build_assign (unshare_expr (f.lhs), rhs_tuple);
+    gassign *copy = gimple_build_assign (f.lhs, rhs_tuple);
 
     /* Get a reference to the individual vector.  */
     tree field = tuple_type_field (TREE_TYPE (f.lhs));
     tree lhs_array = build3 (COMPONENT_REF, TREE_TYPE (field),
-			     f.lhs, field, NULL_TREE);
+			     unshare_expr (f.lhs), field, NULL_TREE);
     tree lhs_vector = build4 (ARRAY_REF, TREE_TYPE (rhs_vector),
 			      lhs_array, index, NULL_TREE, NULL_TREE);
     gassign *update = gimple_build_assign (lhs_vector, rhs_vector);
@@ -3580,7 +3595,7 @@ FUNCTION (svcreate2, svcreate_impl, (2))
 FUNCTION (svcreate3, svcreate_impl, (3))
 FUNCTION (svcreate4, svcreate_impl, (4))
 FUNCTION (svcvt, svcvt_impl,)
-FUNCTION (svcvtnt, svcvtnt_impl,)
+FUNCTION (svcvtnt, NARROWING_TOP_CONVERT0 (aarch64_sve_cvtnt),)
 FUNCTION (svdiv, svdiv_impl,)
 FUNCTION (svdivr, rtx_code_function_rotated, (DIV, UDIV, UNSPEC_COND_FDIV))
 FUNCTION (svdot, svdot_impl,)
@@ -3593,6 +3608,7 @@ FUNCTION (svdupq_lane, svdupq_lane_impl,)
 FUNCTION (sveor, rtx_code_function, (XOR, XOR, -1))
 FUNCTION (sveorv, sveorv_impl,)
 FUNCTION (svexpa, unspec_based_function, (-1, -1, UNSPEC_FEXPA))
+FUNCTION (svexpand, svexpand_impl,)
 FUNCTION (svext, QUIET_CODE_FOR_MODE0 (aarch64_sve_ext),)
 FUNCTION (svextb, svext_bhw_impl, (QImode))
 FUNCTION (svexth, svext_bhw_impl, (HImode))

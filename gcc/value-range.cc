@@ -30,6 +30,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "value-range-pretty-print.h"
 #include "fold-const.h"
 #include "gimple-range.h"
+#include "tree-dfa.h"
+#include "tree-affine.h"
 
 // Return the bitmask inherent in a range :   TYPE [MIN, MAX].
 // This used to be get_bitmask_from_range ().
@@ -155,6 +157,18 @@ value_range::dump (FILE *out) const
     m_vrange->dump (out);
   else
     fprintf (out, "NULL");
+}
+
+void
+value_range::print (pretty_printer *pp) const
+{
+  if (m_vrange)
+    {
+      vrange_printer vrange_pp (pp);
+      m_vrange->accept (vrange_pp);
+    }
+  else
+    pp_string (pp, "NULL");
 }
 
 DEBUG_FUNCTION void
@@ -446,6 +460,14 @@ add_vrange (const vrange &v, inchash::hash &hstate,
 	  irange_bitmask bm = r.get_bitmask ();
 	  hstate.add_wide_int (bm.value ());
 	  hstate.add_wide_int (bm.mask ());
+	  bool flag = false;
+	  tree tmp = r.pt_invariant ();
+	  if (tmp)
+	    flag = true;
+	  else
+	    tmp = r.pt_invariant_away ();
+	  hstate.add_ptr (tmp);
+	  hstate.add_flag (flag);
 	}
       return;
     }
@@ -504,6 +526,101 @@ irange::set_nonnegative (tree type)
        wi::to_wide (TYPE_MAX_VALUE (type)));
 }
 
+
+// Set the points to info for EXPR if possible.  POINTS_TO_P is true if it
+// points to EXPR, and FALSE if it points away.
+
+void
+prange::set_pt (tree expr, bool points_to_p)
+{
+  gcc_checking_assert (m_kind != VR_UNDEFINED);
+  gcc_checking_assert (!expr || TREE_CODE (expr) != SSA_NAME);
+
+  m_pt = NULL_TREE;
+  m_points_to_p = false;
+
+  // No points to initially may make this VARYING.
+  if (varying_compatible_p ())
+    set_varying (type ());
+  else
+    m_kind = VR_RANGE;
+
+  if (!expr)
+    return;
+
+  gcc_checking_assert (TREE_CODE (expr) == ADDR_EXPR);
+
+  // Ensure only constants get through for now.
+  if (!is_gimple_min_invariant (expr))
+    return;
+
+  aff_tree offset;
+  poly_widest_int size;
+  tree obj = TREE_OPERAND (expr, 0);
+  tree base = get_inner_reference_aff (obj, &offset, &size);
+
+  if (!base)
+    return;
+  if (!offset.offset.is_constant ())
+    return;
+  if (!size.is_constant ())
+    return;
+
+  m_pt = expr;
+  m_points_to_p = points_to_p;
+  m_kind = VR_RANGE;
+}
+
+// Return object/allocation the pointer refers into, otherwise NULL_TREE.
+
+tree
+prange::pt_base () const
+{
+  if (!m_pt)
+    return NULL_TREE;
+
+  aff_tree off;
+  poly_widest_int sz;
+
+  gcc_checking_assert (m_pt);
+  return get_inner_reference_aff (m_pt, &off, &sz);
+}
+
+// Return possible byte offset range from BASE.
+
+void
+prange::pt_offset (irange &r) const
+{
+  aff_tree off;
+  poly_widest_int sz;
+
+  gcc_checking_assert (m_pt);
+
+  get_inner_reference_aff (m_pt, &off, &sz);
+  gcc_checking_assert (off.offset.is_constant ());
+
+  widest_int w = off.offset.coeffs[0];
+  wide_int w2 = wi::to_wide (wide_int_to_tree (sizetype, w));
+  r.set (sizetype, w2, w2);
+}
+
+// Return possible size range of the referenced object.
+
+void
+prange::pt_size (irange &r) const
+{
+  aff_tree off;
+  poly_widest_int sz;
+
+  gcc_checking_assert (m_pt);
+
+  get_inner_reference_aff (m_pt, &off, &sz);
+  gcc_checking_assert (sz.is_constant ());
+
+  widest_int w = sz.coeffs[0];
+  wide_int w2 = wi::to_wide (wide_int_to_tree (sizetype, w));
+  r.set (sizetype, w2, w2);
+}
 // Prange implementation.
 
 void
@@ -549,6 +666,8 @@ prange::set (tree type, const wide_int &min, const wide_int &max,
   m_type = type;
   m_min = min;
   m_max = max;
+  set_pt_unknown ();
+
   if (m_min == 0 && m_max == -1)
     {
       m_kind = VR_VARYING;
@@ -628,6 +747,12 @@ prange::union_ (const vrange &v)
   prange new_range (type (), new_lb, new_ub);
   new_range.m_bitmask.union_ (m_bitmask);
   new_range.m_bitmask.union_ (r.m_bitmask);
+
+  // Keep it simple, either both point to the same thing or both
+  // do not point to the same thing, or we drop the points to info.
+  if (pt_equal_p (r))
+    new_range.set_pt (*this);
+
   if (new_range.varying_compatible_p ())
     {
       set_varying (type ());
@@ -663,6 +788,13 @@ prange::intersect (const vrange &v)
       return true;
     }
 
+  // If this points to and away, results are undefined,
+  if (pt_inverted_p (r))
+    {
+      set_undefined ();
+      return true;
+    }
+
   prange save = *this;
   m_min = wi::max (r.lower_bound (), lower_bound (), UNSIGNED);
   m_max = wi::min (r.upper_bound (), upper_bound (), UNSIGNED);
@@ -678,6 +810,21 @@ prange::intersect (const vrange &v)
     set_undefined ();
   else if (!m_bitmask.intersect (r.m_bitmask))
     set_undefined ();
+  // If only one object points to something, that is the intersection.
+  else if (pt_unknown_p () && !r.pt_unknown_p ())
+    set_pt (r);
+  else if (!pt_unknown_p () && !r.pt_unknown_p ())
+    {
+      // If both point to something, we want to be careful.  Without aliasing
+      // 2 different values can point to the same thing, so UNDEFINED is
+      // not appropriate, but we want to keep the rule that intersection
+      // never becomes larger.
+      // If the other object points to something specific, and this one does
+      // not, use the specific one. Otherwise leave the range as is.
+      if (pt_invariant_away () && r.pt_invariant ())
+	set_pt (r);
+    }
+
   if (varying_compatible_p ())
     {
       set_varying (type ());
@@ -699,6 +846,7 @@ prange::operator= (const prange &src)
   m_min = src.m_min;
   m_max = src.m_max;
   m_bitmask = src.m_bitmask;
+  set_pt (src);
   if (flag_checking)
     verify_range ();
   return *this;
@@ -715,16 +863,26 @@ prange::operator== (const prange &src) const
       if (varying_p ())
 	return types_compatible_p (type (), src.type ());
 
+      if (!pt_equal_p (src))
+	return false;
+
       return (m_min == src.m_min && m_max == src.m_max
 	      && m_bitmask == src.m_bitmask);
     }
   return false;
 }
 
+
 void
 prange::invert ()
 {
   gcc_checking_assert (!undefined_p () && !varying_p ());
+
+  // Invert the points_to object. If that worked, this is done.
+  if (pt_invert ())
+    return;
+  else
+    set_pt_unknown ();
 
   wide_int new_lb, new_ub;
   unsigned prec = TYPE_PRECISION (type ());
@@ -759,7 +917,10 @@ prange::verify_range () const
   gcc_checking_assert (m_discriminator == VR_PRANGE);
 
   if (m_kind == VR_UNDEFINED)
-    return;
+    {
+      gcc_checking_assert (pt_unknown_p ());
+      return;
+    }
 
   gcc_checking_assert (supports_p (type ()));
 
@@ -1811,8 +1972,8 @@ irange::irange_single_pair_union (const irange &r)
 bool
 irange::union_append (const irange &r)
 {
-  // Check if the first range in R is an immmediate successor to the last
-  // range, ths requiring a merge.
+  // Check if the first range in R is an immediate successor to the last
+  // range, thus requiring a merge.
   signop sign = TYPE_SIGN (m_type);
   wide_int lb = r.lower_bound ();
   wide_int ub = upper_bound ();
@@ -2095,6 +2256,7 @@ irange::intersect (const vrange &v)
   int_range_max r2 (*this);
   unsigned r2_lim = r2.num_pairs ();
   unsigned i2 = 0;
+  bool need_snapping = !m_bitmask.unknown_p ();
   for (unsigned i = 0; i < r.num_pairs (); )
     {
       // If r1's upper is < r2's lower, we can skip r1's pair.
@@ -2128,29 +2290,51 @@ irange::intersect (const vrange &v)
 	    m_base[bld_pair * 2] = r2l;
 	}
       else
-	// Decrease and set a new upper.
+	// Decrease the index to use the existing lower bound, and
+	// set a new upper for this pair.
 	bld_pair--;
 
+      // Changes to false if the last value in i2's range is consumed.
+      bool more = true;
       // ...and choose the lower of the upper bounds.
       if (wi::le_p (ru, r2u, sign))
 	{
 	  m_base[bld_pair * 2 + 1] = ru;
-	  bld_pair++;
 	  // Move past the r1 pair and keep trying.
 	  i++;
-	  continue;
 	}
       else
 	{
 	  m_base[bld_pair * 2 + 1] = r2u;
-	  bld_pair++;
 	  i2++;
-	  if (i2 < r2_lim)
-	    continue;
-	  // No more r2, break.
-	  break;
+	  // No more r2, break the loop when done.
+	  if (i2 >= r2_lim)
+	    more = false;
 	}
-      // r2 has the higher lower bound.
+      // Now snap these ranges to the bitmask, if there is one.
+      if (need_snapping)
+	{
+	  bool ovf;
+	  wide_int lb, ub;
+	  if (snap (m_base[bld_pair * 2], m_base[bld_pair * 2 + 1],
+		    lb, ub, ovf))
+	    {
+	      // If the new subrange does not fit the mask, skip it.
+	      if (ovf)
+		{
+		  if (!more)
+		    break;
+		  continue;
+		}
+	      // Otherwise adjust the pair.
+	      m_base[bld_pair * 2] = lb;
+	      m_base[bld_pair * 2 + 1] = ub;
+	    }
+	}
+      // Current pair now satisfies any mask, ready for another pair.
+      bld_pair++;
+      if (!more)
+	break;
     }
 
   // At the exit of this loop, it is one of 2 things:
@@ -2163,13 +2347,6 @@ irange::intersect (const vrange &v)
     }
 
   m_kind = VR_RANGE;
-  // Snap subranges if there is a bitmask.  See PR 123319.
-  if (!m_bitmask.unknown_p ())
-    {
-      snap_subranges ();
-      if (undefined_p ())
-	return true;
-    }
   // The range has been altered, so normalize it even if nothing
   // changed in the mask.
   if (!intersect_bitmask (r))
@@ -2428,7 +2605,7 @@ irange::snap (const wide_int &lb, const wide_int &ub,
 }
 
 // This method loops through the subranges in THIS, and adjusts any bounds
-// to satisfy the contraints of the BITMASK.  If a subrange is invalid,
+// to satisfy the constraints of the BITMASK.  If a subrange is invalid,
 // it is removed.   TRUE is returned if there were any changes.
 
 bool
@@ -2467,7 +2644,7 @@ irange::snap_subranges ()
 }
 
 // If the bitmask has a range representation, intersect this range with
-// the bitmasks range.  Then ensure all enpoints match the bitmask.
+// the bitmasks range.  Then ensure all endpoints match the bitmask.
 // Return TRUE if the range changes at all.
 
 bool
@@ -2537,7 +2714,7 @@ irange::get_bitmask () const
   irange_bitmask bm (type (), lower_bound (), upper_bound ());
   if (!m_bitmask.unknown_p ())
     {
-      // If the new intersection is unknown, it means there are inconstent
+      // If the new intersection is unknown, it means there are inconsistent
       // bits, so simply return the original bitmask.
       if (!bm.intersect (m_bitmask))
 	return m_bitmask;

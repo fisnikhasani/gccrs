@@ -164,7 +164,7 @@ namespace __detail
 }
 /// @endcond
 
-  /** Return an object that asssociates timezone info with a local time.
+  /** Return an object that associates timezone info with a local time.
    *
    * A `chrono::local_time` object has no timezone associated with it. This
    * function creates an object that allows formatting a `local_time` as
@@ -885,9 +885,9 @@ namespace __format
       static constexpr const _CharT* _S_empty_spec = _S_chars + 18;
 
       [[__gnu__::__always_inline__]]
-      static _Runtime_format_string<_CharT>
+      static _Dynamic_format_string<_CharT>
       _S_empty_fs()
-      { return _Runtime_format_string<_CharT>(_S_empty_spec); }
+      { return _Dynamic_format_string<_CharT>(_S_empty_spec); }
 
       static constexpr const _CharT* _S_weekdays[]
       {
@@ -1313,6 +1313,8 @@ namespace __format
 
 	  int __yi = (int)__y;
 	  const bool __is_neg = __yi < 0;
+	  // _GLIBCXX_RESOLVE_LIB_DEFECTS
+	  // 3831. Two-digit formatting of negative year is ambiguous
 	  __yi = __builtin_abs(__yi);
 	  int __ci = __yi / 100;
 	  // For floored division -123//100 is -2 and -100//100 is -1
@@ -1321,7 +1323,7 @@ namespace __format
 
 	  if (__conv != 'y' && __ci >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs = _S_minus_empty_spec + !__is_neg;
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
 				     __conv == 'C' ? __ci : __yi);
@@ -1360,7 +1362,7 @@ namespace __format
 
 	  if (__mi >= 100 || __di >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs = _GLIBCXX_WIDEN("{:02d}/{:02d}/{:02d}");
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
 				     __mi, __di, __yi);
@@ -1416,7 +1418,7 @@ namespace __format
 
 	  if (__yi >= 10000 || __mi >= 100 || __di >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs
 		= _GLIBCXX_WIDEN("-{:04d}-{:02d}-{:02d}") + !__is_neg;
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
@@ -1706,7 +1708,7 @@ namespace __format
 	  else if (__prec > __max_prec)
 	    __prec = __max_prec;
 
-	  using _FmtStr = _Runtime_format_string<_CharT>;
+	  using _FmtStr = _Dynamic_format_string<_CharT>;
 	  return std::format_to(__out, _FmtStr(_GLIBCXX_WIDEN("{0:0{1}}")),
 				__subs, __prec);
 	}
@@ -2110,7 +2112,7 @@ namespace __format
 	 _Out
 	 _M_format_to(_Out __out, const chrono::sys_info& __si) const
 	 {
-	   using _FmtStr = _Runtime_format_string<_CharT>;
+	   using _FmtStr = _Dynamic_format_string<_CharT>;
 	   // n.b. only decimal separator is locale dependent for specifiers
 	   // used below, as sys_info uses seconds and minutes duration, the
 	   // output is locale-independent.
@@ -5232,8 +5234,12 @@ namespace __detail
 		      else
 			{
 			  // Read hh
-			  __hh = 10 * _S_try_read_digit(__is, __err);
-			  __hh += _S_try_read_digit(__is, __err);
+			  auto __d1 = _S_try_read_digit(__is, __err);
+			  auto __d2 = _S_try_read_digit(__is, __err);
+			  if (__d1 >= 0 && __d2 >= 0) [[likely]]
+			    __hh = 10 * __d1 + __d2;
+			  else
+			    __err |= ios_base::failbit;
 			}
 
 		      if (__is_failed(__err))
@@ -5267,8 +5273,12 @@ namespace __detail
 		      int_least32_t __mm = 0;
 		      if (__read_mm)
 			{
-			  __mm = 10 * _S_try_read_digit(__is, __err);
-			  __mm += _S_try_read_digit(__is, __err);
+			  auto __d1 = _S_try_read_digit(__is, __err);
+			  auto __d2 = _S_try_read_digit(__is, __err);
+			  if (__d1 >= 0 && __d2 >= 0) [[likely]]
+			    __mm = 10 * __d1 + __d2;
+			  else
+			    __err |= ios_base::failbit;
 			}
 
 		      if (!__is_failed(__err))

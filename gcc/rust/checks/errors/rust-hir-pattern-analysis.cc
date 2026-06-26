@@ -16,6 +16,7 @@
 // along with GCC; see the file COPYING3.  If not see
 // <http://www.gnu.org/licenses/>.
 
+#include "rust-rib.h"
 #include "rust-system.h"
 #include "rust-hir-pattern-analysis.h"
 #include "rust-diagnostics.h"
@@ -26,14 +27,14 @@
 #include "rust-mapping-common.h"
 #include "rust-system.h"
 #include "rust-tyty.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 
 namespace Rust {
 namespace Analysis {
 
 PatternChecker::PatternChecker ()
   : tyctx (*Resolver::TypeCheckContext::get ()),
-    resolver (Resolver2_0::ImmutableNameResolutionContext::get ().resolver ()),
+    resolver (Resolver2_0::FinalizedNameResolutionContext::get ()),
     mappings (Analysis::Mappings::get ())
 {}
 
@@ -235,7 +236,7 @@ PatternChecker::visit (CallExpr &expr)
 
   NodeId ast_node_id = expr.get_fnexpr ().get_mappings ().get_nodeid ();
   NodeId ref_node_id;
-  if (auto id = resolver.lookup (ast_node_id))
+  if (auto id = resolver.lookup (ast_node_id, Resolver2_0::Namespace::Values))
     ref_node_id = *id;
   else
     return;

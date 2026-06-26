@@ -2224,6 +2224,8 @@ gfc_copy_attr (symbol_attribute *dest, symbol_attribute *src, locus *where)
     goto fail;
   if (src->recursive && !gfc_add_recursive (dest, where))
     goto fail;
+  if (src->always_explicit)
+    dest->always_explicit = 1;
 
   if (src->flavor != FL_UNKNOWN
       && !gfc_add_flavor (dest, src->flavor, NULL, where))
@@ -2491,7 +2493,11 @@ find_derived_types (gfc_symbol *sym, gfc_symtree *st, const char *name,
   if (st->n.sym && st->n.sym->attr.flavor == FL_DERIVED
       && !st->n.sym->attr.is_class
       && ((contained && st->n.sym->attr.use_assoc) || !contained)
-      && gfc_find_component (st->n.sym, name, true, true, NULL))
+      && !st->n.sym->attr.vtype
+      && (gfc_find_component (st->n.sym, name, true, true, NULL)
+	  || (st->n.sym->f2k_derived
+	      && gfc_find_typebound_proc (st->n.sym, NULL, name, true,
+					 NULL))))
     {
       /* Do the stashing, if required.  */
       cts++;
@@ -3206,7 +3212,15 @@ gfc_get_unique_symtree (gfc_namespace *ns)
   static int serial = 0;
 
   sprintf (name, "@%d", serial++);
-  return gfc_new_symtree (&ns->sym_root, name);
+  if (ns)
+    return gfc_new_symtree (&ns->sym_root, name);
+  else
+    {
+      /* Some uses need a symtree that is cleaned up locally.  */
+      gfc_symtree *st = XCNEW (gfc_symtree);
+      st->name = gfc_get_string ("%s", name);
+      return st;
+    }
 }
 
 
@@ -4181,6 +4195,21 @@ free_omp_udr_tree (gfc_symtree * omp_udr_tree)
   free (omp_udr_tree);
 }
 
+/* Similar, for !$omp declare mappers.  */
+
+static void
+free_omp_udm_tree (gfc_symtree *omp_udm_tree)
+{
+  if (omp_udm_tree == NULL)
+    return;
+
+  free_omp_udm_tree (omp_udm_tree->left);
+  free_omp_udm_tree (omp_udm_tree->right);
+
+  gfc_free_omp_udm (omp_udm_tree->n.omp_udm);
+  free (omp_udm_tree);
+}
+
 
 /* Recursive function that deletes an entire tree and all the user
    operator nodes that it contains.  */
@@ -4355,6 +4384,7 @@ gfc_free_namespace (gfc_namespace *&ns)
   free_uop_tree (ns->uop_root);
   free_common_tree (ns->common_root);
   free_omp_udr_tree (ns->omp_udr_root);
+  free_omp_udm_tree (ns->omp_udm_root);
   free_tb_tree (ns->tb_sym_root);
   free_tb_tree (ns->tb_uop_root);
   gfc_free_finalizer_list (ns->finalizers);
@@ -5702,4 +5732,222 @@ gfc_get_spec_ns (gfc_symbol *sym)
     }
 
   return sym->ns;
+}
+
+/* This section deals with looking up a symbol when the symtree name and symbol
+   name do not agree, so gfc_find_symbol() cannot be used.  */
+
+static gfc_symbol* found_sym;		/* Where to store the symbol.  */
+static const char* sym_target_name;	/* What name to look for.  */
+
+/* Helper function.  */
+
+static void
+compare_target_sym_name (gfc_symbol *sym)
+{
+  if (strcmp(sym->name, sym_target_name) == 0)
+    found_sym = sym;
+}
+
+/* Search for a symbol when the symtree name may be different from the
+   symbol name.  Return true if found.  */
+
+bool
+gfc_find_symbol_by_name (const char *name, gfc_namespace *ns,
+			       gfc_symbol **result)
+{
+  found_sym = NULL;
+  sym_target_name = name;
+
+  do_traverse_symtree (ns->sym_root, NULL, compare_target_sym_name);
+  *result = found_sym;
+  return result != 0;
+}
+
+/* Note that the value of a variable has been set to a "higher" value and, if
+   loc is passed, where.  Return true of loc has been changed.  */
+
+bool
+gfc_value_set_at (gfc_symbol *sym, locus *loc, enum value_set how)
+{
+  if (sym == NULL || sym->attr.flavor != FL_VARIABLE)
+    return false;
+
+  if (how <= sym->attr.value_set)
+    return false;
+
+  if (loc)
+    sym->other_loc = *loc;
+  else
+    memset (&sym->other_loc, 0, sizeof(*loc));
+
+  sym->attr.value_set = how;
+  return true;
+}
+
+/* Callback function for setting the "value_used" flag.  We can also set
+   other_loc here because, in the event of an error message, at most one of
+   attr.value_used and attr.value_set can be true.  */
+
+static int
+mark_vars_as_used (gfc_expr **e, int *walk_subtrees, void *data)
+{
+  gfc_expr *expr = *e;
+  gfc_symbol *sym;
+  enum value_used how_used = *(enum value_used *) data;
+
+  if (expr->expr_type != EXPR_VARIABLE && expr->expr_type != EXPR_FUNCTION)
+    return 0;
+
+  if (expr->symtree == NULL)
+    return 0;
+
+  /* Some intrinsic functions do not evaluate some (or all) of their
+     aguments. Do not walk the expressions there.  */
+
+  if (expr->expr_type == EXPR_FUNCTION && expr->value.function.isym)
+    {
+      gfc_actual_arglist *a = expr->value.function.actual;
+
+      switch (expr->value.function.isym->id)
+	{
+	case GFC_ISYM_ALLOCATED:
+	case GFC_ISYM_EXTENDS_TYPE_OF:
+	case GFC_ISYM_SAME_TYPE_AS:
+	case GFC_ISYM_ASSOCIATED:
+	case GFC_ISYM_IS_CONTIGUOUS:
+	case GFC_ISYM_PRESENT:
+	case GFC_ISYM_RANK:
+	case GFC_ISYM_STORAGE_SIZE:
+	case GFC_ISYM_NULL:
+	  *walk_subtrees = 0;
+	  return 0;
+
+	case GFC_ISYM_LBOUND:
+	case GFC_ISYM_UBOUND:
+	case GFC_ISYM_SIZE:
+	  gfc_expr_walker (&a->next->expr, mark_vars_as_used, &how_used);
+	  *walk_subtrees = 0;
+	  return 0;
+
+	case GFC_ISYM_TRANSFER:
+	  /* Source.  */
+	  gfc_expr_walker (&a->expr, mark_vars_as_used, &how_used);
+	  /* Size.  */
+	  gfc_expr_walker (&a->next->next->expr, mark_vars_as_used, &how_used);
+	  *walk_subtrees = 0;
+	  return 0;
+
+	case GFC_ISYM_OUT_OF_RANGE:
+	  gfc_expr_walker (&a->next->expr, mark_vars_as_used, &how_used);
+	  *walk_subtrees = 0;
+	  return 0;
+
+	default:
+	  break;
+	}
+    }
+
+  sym = expr->symtree->n.sym;
+
+  if (sym->attr.flavor != FL_VARIABLE)
+    return 0;
+
+  if (how_used <= sym->attr.value_used)
+    return 0;
+
+  sym->attr.value_used = how_used;
+  if (sym->other_loc.nextc == NULL)
+    sym->other_loc = expr->where;
+
+  return 0;
+}
+
+/* Recursively visit every variable and mark it as used.  */
+
+void
+gfc_value_used_expr (gfc_expr *expr, enum value_used how_used)
+{
+
+  if (expr == NULL)
+    return;
+
+  gfc_expr_walker (&expr, mark_vars_as_used, &how_used);
+}
+
+/* For when we want to set everything in an expression as both
+   set and used, for example in an actual argument list.  */
+
+void
+gfc_value_set_and_used (gfc_expr *expr, locus *loc, enum value_set how_set,
+			enum value_used how_used)
+{
+  if (!expr)
+    return;
+
+  if (expr->expr_type == EXPR_VARIABLE)
+    gfc_value_set_at (expr->symtree->n.sym, loc, how_set);
+
+  gfc_value_used_expr (expr, how_used);
+}
+
+/* ALLOCATE (A(N)) means that N is used, but A is not marked as such.  */
+
+void
+gfc_used_in_allocate_expr (gfc_expr *expr, locus *loc)
+{
+  gfc_symbol *sym;
+  enum value_used prev_used;
+  locus prev_loc;
+
+  if (expr->expr_type != EXPR_VARIABLE)
+    return;
+
+  sym = expr->symtree->n.sym;
+  prev_used = sym->attr.value_used;
+  prev_loc = sym->other_loc;
+  gfc_value_used_expr (expr, VALUE_USED);
+  sym->attr.value_used = prev_used;
+  sym->other_loc = prev_loc;
+  sym->attr.allocated = 1;
+
+  if (sym->extra_loc.nextc == NULL)
+    sym->extra_loc = *loc;
+}
+
+/* Mark a symbol to allocated.  */
+
+bool
+gfc_lvalue_allocated_at (gfc_symbol *sym, locus *loc)
+{
+  if (sym->other_loc.nextc == 0)
+    sym->other_loc = *loc;
+
+  sym->attr.allocated = 1;
+  return true;
+}
+
+/* Mark the variable of an expression in a vardef context as
+   set and mark everything in the references as used.  */
+
+void
+gfc_expr_set_at (gfc_expr *expr, locus *loc, enum value_set how_set)
+{
+  enum value_used prev_used;
+  gfc_symbol *sym;
+  locus prev_loc;
+
+  if (!expr)
+    return;
+
+  if (expr->expr_type != EXPR_VARIABLE)
+    return;
+
+  sym = expr->symtree->n.sym;
+  gfc_value_set_at (sym, loc, how_set);
+  prev_used = sym->attr.value_used;
+  prev_loc = sym->other_loc;
+  gfc_value_used_expr (expr, VALUE_USED);
+  sym->other_loc = prev_loc;
+  sym->attr.value_used = prev_used;
 }

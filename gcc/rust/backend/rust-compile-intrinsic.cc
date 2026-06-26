@@ -30,6 +30,7 @@ using IValue = Values::Intrinsics;
 static const std::map<std::string, handlers::HandlerBuilder> generic_intrinsics
   = {{IValue::OFFSET, handlers::offset},
      {IValue::SIZE_OF, handlers::sizeof_handler},
+     {IValue::MIN_ALIGN_OF, handlers::min_align_of_handler},
      {IValue::TRANSMUTE, handlers::transmute},
      {IValue::ROTATE_LEFT, handlers::rotate_left},
      {IValue::ROTATE_RIGHT, handlers::rotate_right},
@@ -70,7 +71,9 @@ static const std::map<std::string, handlers::HandlerBuilder> generic_intrinsics
      {IValue::VARIANT_COUNT, handlers::variant_count},
      {IValue::BSWAP, handlers::bswap_handler},
      {IValue::CTLZ, handlers::ctlz_handler},
-     {IValue::CTLZ_NONZERO, handlers::ctlz_nonzero_handler}};
+     {IValue::CTLZ_NONZERO, handlers::ctlz_nonzero_handler},
+     {IValue::CTTZ, handlers::cttz_handler},
+     {IValue::CTTZ_NONZERO, handlers::cttz_nonzero_handler}};
 
 Intrinsics::Intrinsics (Context *ctx) : ctx (ctx) {}
 
@@ -83,7 +86,7 @@ Intrinsics::Intrinsics (Context *ctx) : ctx (ctx) {}
  * compiler
  */
 tree
-Intrinsics::compile (TyTy::FnType *fntype)
+Intrinsics::compile (TyTy::FnType *fntype, location_t expr_locus)
 {
   rust_assert (fntype->get_abi () == ABI::INTRINSIC);
 
@@ -96,7 +99,7 @@ Intrinsics::compile (TyTy::FnType *fntype)
   // is it an generic builtin?
   auto it = generic_intrinsics.find (fntype->get_identifier ());
   if (it != generic_intrinsics.end ())
-    return it->second (ctx, fntype);
+    return it->second (ctx, fntype, expr_locus);
 
   location_t locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
   rust_error_at (locus, ErrorCode::E0093,

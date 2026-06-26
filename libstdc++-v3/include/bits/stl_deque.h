@@ -632,7 +632,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CONTAINER
    *  @brief Layout storage.
    *  @param  __num_elements  The count of T's for which to allocate space
    *                          at first.
-   *  @return   Nothing.
    *
    *  The initial underlying memory layout is a bit complicated...
   */
@@ -1838,7 +1837,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CONTAINER
 	insert_range(const_iterator __pos, _Rg&& __rg);
 
       /**
-       * @brief Prepend a range at the begining of the deque.
+       * @brief Prepend a range at the beginning of the deque.
        * @param __rg A range of values that are convertible to `value_type`.
        * @since C++23
        */
@@ -1985,7 +1984,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CONTAINER
        *  @brief Fills the deque with whatever is in [first,last).
        *  @param  __first  An input iterator.
        *  @param  __last  An input iterator.
-       *  @return   Nothing.
        *
        *  If the iterators are actually forward iterators (or better), then the
        *  memory layout can be done all at once.  Else we move forward using
@@ -2006,7 +2004,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CONTAINER
       /**
        *  @brief Fills the %deque with copies of value.
        *  @param  __value  Initial value.
-       *  @return   Nothing.
        *  @pre _M_start and _M_finish have already been initialized,
        *  but none of the %deque's elements have yet been constructed.
        *
@@ -2417,7 +2414,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CONTAINER
 
 #if __glibcxx_containers_ranges // C++ >= 23
   template<ranges::input_range _Rg,
-	   typename _Alloc = allocator<ranges::range_value_t<_Rg>>>
+	   __allocator_like _Alloc = allocator<ranges::range_value_t<_Rg>>>
     deque(from_range_t, _Rg&&, _Alloc = _Alloc())
       -> deque<ranges::range_value_t<_Rg>, _Alloc>;
 #endif

@@ -2506,6 +2506,9 @@ gfc_simplify_expr (gfc_expr *p, int type)
 	      start--;  /* Convert from one-based to zero-based.  */
 	    }
 
+	  if (start < 0)
+	    return false;
+
 	  end = p->value.character.length;
 	  if (p->ref && p->ref->u.ss.end)
 	    gfc_extract_hwi (p->ref->u.ss.end, &end);
@@ -4985,7 +4988,7 @@ gfc_check_assign_symbol (gfc_symbol *sym, gfc_component *comp, gfc_expr *rvalue)
       if (flag)
 	{
 	  gfc_error ("The component %qs at %L of derived type %qs has "
-		     "paramterized type or array length parameters, which is "
+		     "parameterized type or array length parameters, which is "
 		     "not compatible with a default initializer",
 		      comp->name, &comp->initializer->where, sym->name);
 	  return false;

@@ -83,7 +83,7 @@ struct ipa_vr_ggc_hash_traits : public ggc_cache_remove <ipa_vr *>
     {
       // This never get called, except in the verification code, as
       // ipa_get_value_range() calculates the hash itself.  This
-      // function is mostly here for completness' sake.
+      // function is mostly here for completeness' sake.
       value_range vr;
       p->get_vrange (vr);
       inchash::hash hstate;
@@ -148,7 +148,7 @@ ipa_vr::ipa_vr ()
 }
 
 ipa_vr::ipa_vr (const vrange &r)
-  : m_storage (ggc_alloc_vrange_storage (r)),
+  : m_storage (ggc_alloc_vrange_storage (r, false /* shared_p */)),
     m_type (r.type ())
 {
 }
@@ -177,7 +177,7 @@ ipa_vr::equal_p (const ipa_vr &o) const
 void
 ipa_vr::get_vrange (value_range &r) const
 {
-  r.set_type (m_type);
+  r.set_range_class (m_type);
   m_storage->get_vrange (r, m_type);
 }
 
@@ -320,7 +320,7 @@ noted_fnptr_hasher::equal (noted_fnptr_store *v1,
 }
 
 
-/* Structore holding the information that all stores to OFFSET of a particular
+/* Structure holding the information that all stores to OFFSET of a particular
    record type RECTYPE was storing a pointer to specific function or that there
    were multiple such functions. */
 
@@ -680,8 +680,8 @@ ipa_set_jf_unknown (struct ipa_jump_func *jfunc)
   jfunc->type = IPA_JF_UNKNOWN;
 }
 
-/* Set JFUNC to be a copy of another jmp (to be used by jump function
-   combination code).  The two functions will share their rdesc.  */
+/* Set DST to be a copy of another SRC.  The two functions will share their
+   rdesc.  */
 
 static void
 ipa_set_jf_cst_copy (struct ipa_jump_func *dst,
@@ -691,6 +691,36 @@ ipa_set_jf_cst_copy (struct ipa_jump_func *dst,
   gcc_checking_assert (src->type == IPA_JF_CONST);
   dst->type = IPA_JF_CONST;
   dst->value.constant = src->value.constant;
+}
+
+/* Set DST to be a copy of another jump function SRC but possibly adjust it to
+   a new passed type PARM_TYPE.  If the adjustment fails, the jump function can
+   end up being set to the unknown type.  If the conversion is not necessary or
+   it succeeds and if the destination rdesc has not been already used, the two
+   functions will share their rdesc.  */
+
+static void
+ipa_convert_prop_cst_jf (struct ipa_jump_func *dst,
+			 struct ipa_jump_func *src,
+			 tree parm_type)
+
+{
+  gcc_checking_assert (src->type == IPA_JF_CONST);
+  tree new_val = ipacp_value_safe_for_type (parm_type,
+					    ipa_get_jf_constant (src));
+  if (new_val)
+    {
+      bool rd = ipa_get_jf_pass_through_refdesc_decremented (dst);
+
+      dst->type = IPA_JF_CONST;
+      dst->value.constant.value = new_val;
+      if (!rd)
+	dst->value.constant.rdesc = src->value.constant.rdesc;
+      else
+	ipa_zap_jf_refdesc (dst);
+    }
+  else
+    ipa_set_jf_unknown (dst);
 }
 
 /* Set JFUNC to be a constant jmp function.  */
@@ -776,7 +806,7 @@ ipa_set_ancestor_jf (struct ipa_jump_func *jfunc, HOST_WIDE_INT offset,
   jfunc->value.ancestor.keep_null = keep_null;
 }
 
-/* Get IPA BB information about the given BB.  FBI is the context of analyzis
+/* Get IPA BB information about the given BB.  FBI is the context of analysis
    of this function body.  */
 
 static struct ipa_bb_info *
@@ -888,7 +918,7 @@ check_stmt_for_type_change (ao_ref *ao ATTRIBUTE_UNUSED, tree vdef, void *data)
 
 /* See if ARG is PARAM_DECl describing instance passed by pointer
    or reference in FUNCTION.  Return false if the dynamic type may change
-   in between beggining of the function until CALL is invoked.
+   in between beginning of the function until CALL is invoked.
 
    Generally functions are not allowed to change type of such instances,
    but they call destructors.  We assume that methods cannot destroy the THIS
@@ -899,10 +929,10 @@ static bool
 param_type_may_change_p (tree function, tree arg, gimple *call)
 {
   /* Pure functions cannot do any changes on the dynamic type;
-     that require writting to memory.  */
+     that require writing to memory.  */
   if (flags_from_decl_or_type (function) & (ECF_PURE | ECF_CONST))
     return false;
-  /* We need to check if we are within inlined consturctor
+  /* We need to check if we are within inlined constructor
      or destructor (ideally we would have way to check that the
      inline cdtor is actually working on ARG, but we don't have
      easy tie on this, so punt on all non-pure cdtors.
@@ -947,7 +977,7 @@ param_type_may_change_p (tree function, tree arg, gimple *call)
    returned by get_ref_base_and_extent, as is the offset.
 
    This is helper function for detect_type_change and detect_type_change_ssa
-   that does the heavy work which is usually unnecesary.  */
+   that does the heavy work which is usually unnecessary.  */
 
 static bool
 detect_type_change_from_memory_writes (ipa_func_body_info *fbi, tree arg,
@@ -1077,7 +1107,7 @@ find_dominating_aa_status (struct ipa_func_body_info *fbi, basic_block bb,
 }
 
 /* Get AA status structure for the given BB and parameter with INDEX.  Allocate
-   structures and/or intialize the result with a dominating description as
+   structures and/or initialize the result with a dominating description as
    necessary.  */
 
 static struct ipa_param_aa_status *
@@ -1217,8 +1247,8 @@ parm_ref_data_pass_through_p (struct ipa_func_body_info *fbi, int index,
   bool modified = false;
   ao_ref refd;
 
-  /* It's unnecessary to calculate anything about memory contnets for a const
-     function because it is not goin to use it.  But do not cache the result
+  /* It's unnecessary to calculate anything about memory contents for a const
+     function because it is not going to use it.  But do not cache the result
      either.  Also, no such calculations for non-pointers.  */
   if (!gimple_vuse (call)
       || !POINTER_TYPE_P (TREE_TYPE (parm)))
@@ -1878,7 +1908,7 @@ build_agg_jump_func_from_list (struct ipa_known_agg_contents_list *list,
 
       if (list->value.pass_through.formal_id >= 0)
 	{
-	  /* Content value is derived from some formal paramerter.  */
+	  /* Content value is derived from some formal parameter.  */
 	  if (list->value.offset >= 0)
 	    item.jftype = IPA_JF_LOAD_AGG;
 	  else
@@ -1982,7 +2012,7 @@ analyze_agg_content_value (struct ipa_func_body_info *fbi,
 	   __x_MOD_foo (&parm.6, b_31(D));
 
 	 The aggregate function describing parm.6.dim[0].stride is encoded as a
-	 PASS-THROUGH jump function with ASSERT_EXPR operation whith operand 1
+	 PASS-THROUGH jump function with ASSERT_EXPR operation with operand 1
 	 (the constant from the PHI node).  */
 
       if (gimple_phi_num_args (phi) != 2
@@ -2513,8 +2543,7 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
 	      || vr.varying_p ()
 	      || vr.undefined_p ())
 	    {
-	      bool strict_overflow = false;
-	      if (tree_single_nonzero_warnv_p (arg, &strict_overflow))
+	      if (tree_single_nonzero_p (arg))
 		vr.set_nonzero (TREE_TYPE (arg));
 	      else
 		vr.set_varying (TREE_TYPE (arg));
@@ -3319,7 +3348,7 @@ ipa_single_noted_fnptr_in_record (tree rec_type, unsigned fld_offset)
 }
 
 /* Free the hash table storing the information about function pointers stored
-   to a particular position in record typed strucutres.  */
+   to a particular position in record typed structures.  */
 
 void
 ipa_free_noted_fnptr_calls ()
@@ -3863,13 +3892,9 @@ update_jump_functions_after_inlining (struct cgraph_edge *cs,
 		  ipa_set_jf_unknown (dst);
 		  break;
 		case IPA_JF_CONST:
-		  {
-		    bool rd = ipa_get_jf_pass_through_refdesc_decremented (dst);
-		    ipa_set_jf_cst_copy (dst, src);
-		    if (rd)
-		      ipa_zap_jf_refdesc (dst);
-		  }
-
+		  ipa_convert_prop_cst_jf (dst, src,
+					   ipa_get_type (old_inline_root_info,
+							 dst_fid));
 		  break;
 
 		case IPA_JF_PASS_THROUGH:
@@ -3998,7 +4023,7 @@ ipa_make_edge_direct_to_target (struct cgraph_edge *ie, tree target,
 	  /* Member pointer call that goes through a VMT lookup.  */
 	  if ((sii && sii->member_ptr)
 	      /* Or if target is not an invariant expression and we do not
-		 know if it will evaulate to function at runtime.
+		 know if it will evaluate to function at runtime.
 		 This can happen when folding through &VAR, where &VAR
 		 is IP invariant, but VAR itself is not.
 
@@ -4712,7 +4737,7 @@ combine_controlled_uses_counters (int c, int d)
     return c + d - 1;
 }
 
-/* Propagate number of controlled users from CS->caleee to the new root of the
+/* Propagate number of controlled users from CS->callee to the new root of the
    tree of inlined nodes.  */
 
 static void
@@ -5109,7 +5134,7 @@ ipa_duplicate_jump_function (cgraph_edge *src, cgraph_edge *dst,
 }
 
 /* Method invoked when an edge is duplicated.  Copy ipa_edge_args and adjust
-   reference count data strucutres accordingly.  */
+   reference count data structures accordingly.  */
 
 void
 ipa_edge_args_sum_t::duplicate (cgraph_edge *src, cgraph_edge *dst,
@@ -5304,7 +5329,7 @@ ipa_write_jump_function (struct output_block *ob,
   int i, count;
   int flag = 0;
 
-  /* ADDR_EXPRs are very comon IP invariants; save some streamer data
+  /* ADDR_EXPRs are very common IP invariants; save some streamer data
      as well as WPA memory by handling them specially.  */
   if (jump_func->type == IPA_JF_CONST
       && TREE_CODE (jump_func->value.constant.value) == ADDR_EXPR)
@@ -5961,6 +5986,23 @@ ipa_prop_write_jump_functions (void)
 static void
 ipa_record_return_value_range_1 (cgraph_node *n, value_range val)
 {
+  // Remove local invariant from return values.
+  if (is_a<prange> (val))
+    {
+      const prange &pr = as_a <prange> (val);
+      tree t = pr.pt_invariant ();
+      if (t && !is_gimple_ip_invariant (t))
+        {
+	  if (dump_file && (dump_flags & TDF_DETAILS))
+	    {
+	      fprintf (dump_file, "Could not record return range of %s:", n->dump_name ());
+	      val.dump (dump_file);
+	      fprintf (dump_file, "\n");
+	      fprintf (dump_file, "Because uses non ipa invariant\n");
+	    }
+	  return;
+        }
+    }
   if (!ipa_return_value_sum)
     {
       if (!ipa_vr_hash_table)
@@ -6092,7 +6134,7 @@ useful_ipcp_transformation_info_p (ipcp_transformation *ts)
   return false;
 }
 
-/* Write into OB IPA-CP transfromation summary TS describing NODE.  */
+/* Write into OB IPA-CP transformation summary TS describing NODE.  */
 
 void
 write_ipcp_transformation_info (output_block *ob, cgraph_node *node,

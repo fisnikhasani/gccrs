@@ -321,6 +321,10 @@ equiv_oracle::equiv_oracle ()
   m_self_equiv.safe_grow_cleared (num_ssa_names + 1);
   m_partial.create (0);
   m_partial.safe_grow_cleared (num_ssa_names + 1);
+  // Create a bitmap to avoid registering multiple equivalences from a LHS.
+  // See PR 124809.
+  m_lhs_equiv_set_p = BITMAP_ALLOC (&m_bitmaps);
+  bitmap_tree_view (m_lhs_equiv_set_p);
 }
 
 // Destruct an equivalency oracle.
@@ -953,7 +957,7 @@ public:
 };
 
 // Given relation record PTR in block BB, return the next relation in the
-// list.  If PTR is NULL, retreive the first relation in BB.
+// list.  If PTR is NULL, retrieve the first relation in BB.
 // If NAME is sprecified, return only relations which include NAME.
 // Return NULL when there are no relations left.
 
@@ -962,7 +966,7 @@ dom_oracle::next_relation (basic_block bb, relation_chain *ptr,
 			   tree name) const
 {
   relation_chain *p;
-  // No value_relation pointer is used to intialize the iterator.
+  // No value_relation pointer is used to initialize the iterator.
   if (!ptr)
     {
       int bbi = bb->index;
@@ -981,7 +985,7 @@ dom_oracle::next_relation (basic_block bb, relation_chain *ptr,
   return p;
 }
 
-// Instatiate a block relation iterator to iterate over the relations
+// Instantiate a block relation iterator to iterate over the relations
 // on exit from block BB in ORACLE.  Limit this to relations involving NAME
 // if specified.  Return the first such relation in VR if there is one.
 
@@ -1003,7 +1007,7 @@ block_relation_iterator::block_relation_iterator (const relation_oracle *oracle,
     m_done = true;
 }
 
-// Retreive the next relation from the iterator and return it in VR.
+// Retrieve the next relation from the iterator and return it in VR.
 
 void
 block_relation_iterator::get_next_relation (value_relation &vr)
@@ -1103,6 +1107,14 @@ relation_oracle::record (gimple *stmt, relation_kind k, tree op1, tree op2)
 	return false;
     }
 
+  // If the LHS of a statement has already been processed and an equivalence
+  // registered, do not register another one.  See PR 124809.
+  if (m_lhs_equiv_set_p && relation_equiv_p (k)
+      && gimple_get_lhs (stmt) == op1)
+    {
+      if (!bitmap_set_bit (m_lhs_equiv_set_p, SSA_NAME_VERSION (op1)))
+	return false;
+    }
   bool ret = record (gimple_bb (stmt), k, op1, op2);
 
   if (ret && dump_file && (dump_flags & TDF_DETAILS))

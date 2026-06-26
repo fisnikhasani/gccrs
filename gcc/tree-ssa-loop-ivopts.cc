@@ -524,7 +524,7 @@ struct iv_inv_expr_ent
 {
   /* Tree expression of the entry.  */
   tree expr;
-  /* Unique indentifier.  */
+  /* Unique identifier.  */
   int id;
   /* Hash value.  */
   hashval_t hash;
@@ -869,7 +869,7 @@ dump_cand (FILE *file, struct iv_cand *cand)
 
   if (cand->var_before)
     {
-      fprintf (file, "  Var befor: ");
+      fprintf (file, "  Var before: ");
       print_generic_expr (file, cand->var_before, TDF_SLIM);
       fprintf (file, "\n");
     }
@@ -1162,8 +1162,8 @@ alloc_iv (struct ivopts_data *data, tree base, tree step,
 					      sizeof (struct iv));
   gcc_assert (step != NULL_TREE);
 
-  /* Canonicalize the address expression in base if it were an unsigned
-      computation. That leads to more equalities being detected and results in:
+  /* Canonicalize the address expression in base.
+     That leads to more equalities being detected and results in:
 
        1) More accurate cost can be computed for address expressions;
        2) Duplicate candidates won't be created for bases in different
@@ -1171,10 +1171,8 @@ alloc_iv (struct ivopts_data *data, tree base, tree step,
        3) Duplicate candidates won't be created for IV expressions that differ
 	  only in their sign.  */
   aff_tree comb;
-  STRIP_NOPS (expr);
-  expr = fold_convert (unsigned_type_for (TREE_TYPE (expr)), expr);
   tree_to_aff_combination (expr, TREE_TYPE (expr), &comb);
-  base = fold_convert (TREE_TYPE (base), aff_combination_to_tree (&comb));
+  base = aff_combination_to_tree (&comb);
 
   iv->base = base;
   iv->base_object = determine_base_object (data, base);
@@ -2578,7 +2576,7 @@ group_compare_offset (const void *a, const void *b)
    contains more than two uses with distinct addr_offsets.  Return
    false otherwise.  We want to split such groups because:
 
-     1) Small groups don't have much benefit and may interfer with
+     1) Small groups don't have much benefit and may interfere with
 	general candidate selection.
      2) Size for problem with only small groups is usually small and
 	general algorithm can handle it well.
@@ -2658,7 +2656,7 @@ split_address_groups (struct ivopts_data *data)
 	  struct iv_use *next = group->vuses[j];
 	  poly_int64 offset = next->addr_offset - use->addr_offset;
 
-	  /* Split group if aksed to, or the offset against the first
+	  /* Split group if asked to, or the offset against the first
 	     use can't fit in offset part of addressing mode.  IV uses
 	     having the same offset are still kept in one group.  */
 	  if (maybe_ne (offset, 0)
@@ -3997,7 +3995,7 @@ get_computation_aff_1 (struct ivopts_data *data, gimple *at, struct iv_use *use,
 	  inner_type = TREE_TYPE (inner_base);
 	  /* If candidate is added from a biv whose type is smaller than
 	     ctype, we know both candidate and the biv won't overflow.
-	     In this case, it's safe to skip the convertion in candidate.
+	     In this case, it's safe to skip the conversion in candidate.
 	     As an example, (unsigned short)((unsigned long)A) equals to
 	     (unsigned short)A, if A has a type no larger than short.  */
 	  if (TYPE_PRECISION (inner_type) <= TYPE_PRECISION (uutype))
@@ -5382,6 +5380,11 @@ may_eliminate_iv (struct ivopts_data *data,
   aff_tree bnd;
   class tree_niter_desc *desc = NULL;
 
+  /* If the IV candidate involves undefs do not attempt to use it to
+     express a condition.  */
+  if (cand->involves_undefs)
+    return false;
+
   if (TREE_CODE (cand->iv->step) != INTEGER_CST)
     return false;
 
@@ -5778,7 +5781,7 @@ add_iv_candidate_for_doloop (struct ivopts_data *data)
 
   tree niter = niter_desc->niter;
   tree ntype = TREE_TYPE (niter);
-  gcc_assert (TREE_CODE (ntype) == INTEGER_TYPE);
+  gcc_assert (INTEGRAL_NB_TYPE_P (ntype));
 
   tree may_be_zero = niter_desc->may_be_zero;
   if (may_be_zero && integer_zerop (may_be_zero))
@@ -5810,6 +5813,15 @@ add_iv_candidate_for_doloop (struct ivopts_data *data)
     base = fold_build2 (PLUS_EXPR, ntype, unshare_expr (niter),
 			build_int_cst (ntype, 1));
 
+  /* For non integer types or non-mode precision types,
+     convert directly to an integer type. */
+  if (TREE_CODE (ntype) != INTEGER_TYPE
+      || !type_has_mode_precision_p (ntype))
+    {
+      ntype = lang_hooks.types.type_for_mode (TYPE_MODE (ntype),
+					      TYPE_UNSIGNED (ntype));
+      base = fold_convert (ntype, base);
+    }
 
   add_candidate (data, base, build_int_cst (ntype, -1), true, NULL, NULL, true);
 }
@@ -6612,7 +6624,7 @@ iv_ca_dump (struct ivopts_data *data, FILE *file, class iv_ca *ivs)
 /* Try changing candidate in IVS to CAND for each use.  Return cost of the
    new set, and store differences in DELTA.  Number of induction variables
    in the new set is stored to N_IVS. MIN_NCAND is a flag. When it is true
-   the function will try to find a solution with mimimal iv candidates.  */
+   the function will try to find a solution with minimal iv candidates.  */
 
 static comp_cost
 iv_ca_extend (struct ivopts_data *data, class iv_ca *ivs,

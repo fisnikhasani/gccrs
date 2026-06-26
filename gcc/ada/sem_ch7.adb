@@ -136,9 +136,6 @@ package body Sem_Ch7 is
    --  one entity on its visibility chain, and recurses on the visible part if
    --  the entity is an inner package.
 
-   function Is_Private_Base_Type (E : Entity_Id) return Boolean;
-   --  True for a private type that is not a subtype
-
    function Is_Visible_Dependent (Dep : Entity_Id) return Boolean;
    --  If the private dependent is a private type whose full view is derived
    --  from the parent type, its full properties are revealed only if we are in
@@ -700,7 +697,7 @@ package body Sem_Ch7 is
             if Is_Type (Id)
               and then (Is_Limited_Composite (Id)
                          or else Is_Private_Composite (Id))
-              and then No (Private_Component (Id))
+              and then No (Partially_Visible_Part (Id))
             then
                Set_Is_Limited_Composite (Id, False);
                Set_Is_Private_Composite (Id, False);
@@ -1087,14 +1084,6 @@ package body Sem_Ch7 is
             Set_Is_Immediately_Visible (E, False);
             Set_Is_Potentially_Use_Visible (E, False);
             Set_Is_Hidden (E);
-
-            --  Child units may appear on the entity list (e.g. if they appear
-            --  in the context of a subunit) but they are not body entities.
-
-            if not Is_Child_Unit (E) then
-               Set_Is_Package_Body_Entity (E);
-            end if;
-
             Next_Entity (E);
          end loop;
       end;
@@ -1348,6 +1337,11 @@ package body Sem_Ch7 is
       --  primitive equality operator and, if so, make it so that it will be
       --  used as the predefined operator of the private view of the record.
 
+      procedure Inspect_Abstract_Constructors_Completion (Id : Entity_Id);
+      --  For each abstract constructor in the visible part of package Id,
+      --  verify that a non-abstract counterpart exists in the private part
+      --  of the package, and emit an error for each that lacks one.
+
       procedure Install_Parent_Private_Declarations (Inst_Id : Entity_Id);
       --  Given the package entity of a generic package instantiation or
       --  formal package whose corresponding generic is a child unit, installs
@@ -1459,6 +1453,50 @@ package body Sem_Ch7 is
             end if;
          end if;
       end Is_Public_Child;
+
+      ----------------------------------------------
+      -- Inspect_Abstract_Constructors_Completion --
+      ----------------------------------------------
+
+      procedure Inspect_Abstract_Constructors_Completion (Id : Entity_Id) is
+         First_Priv : constant Entity_Id := First_Private_Entity (Id);
+         Vis_E      : Entity_Id          := First_Entity (Id);
+
+      begin
+         while Present (Vis_E) and then Vis_E /= First_Priv loop
+            if Is_Constructor (Vis_E)
+              and then Is_Abstract_Subprogram (Vis_E)
+            then
+               declare
+                  Hom   : Entity_Id := Get_Name_Entity_Id (Chars (Vis_E));
+                  Found : Boolean   := False;
+
+               begin
+                  while Present (Hom)
+                    and then Scope (Hom) = Scope (Vis_E)
+                  loop
+                     if not Is_Abstract_Subprogram (Hom)
+                       and then Is_Constructor (Hom)
+                       and then Overridden_Operation (Hom) = Vis_E
+                     then
+                        Found := True;
+                        exit;
+                     end if;
+
+                     Hom := Homonym (Hom);
+                  end loop;
+
+                  if not Found then
+                     Error_Msg_N
+                       ("abstract constructor has no declaration in "
+                        & "the private part", Vis_E);
+                  end if;
+               end;
+            end if;
+
+            Next_Entity (Vis_E);
+         end loop;
+      end Inspect_Abstract_Constructors_Completion;
 
       ----------------------------------------
       -- Inspect_Unchecked_Union_Completion --
@@ -1900,6 +1938,13 @@ package body Sem_Ch7 is
          Set_In_Private_Part (Id);
          Declare_Inherited_Private_Subprograms (Id);
          Set_First_Private_Entity (Id, Next_Entity (L));
+      end if;
+
+      --  An abstract constructor declared in the visible part requires a
+      --  matching concrete constructor in the private part.
+
+      if Core_Extensions_Allowed then
+         Inspect_Abstract_Constructors_Completion (Id);
       end if;
 
       E := First_Entity (Id);
@@ -2720,7 +2765,7 @@ package body Sem_Ch7 is
    begin
       if not Has_Completion (E)
         and then Nkind (P) = N_Package_Declaration
-        and then (Present (Activation_Chain_Entity (P)) or else Has_RACW (E))
+        and then (Has_Activation_Chain_Entity (E) or else Has_RACW (E))
       then
          B :=
            Make_Package_Body (Sloc (E),

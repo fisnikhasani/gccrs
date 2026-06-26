@@ -39,6 +39,13 @@ typedef enum
   refer_source,
   } refer_type_t;
 
+typedef struct TREEPLET
+  {
+  tree pfield;
+  tree offset;
+  tree length;
+  } TREEPLET;
+
 void parser_display_internal( tree file_descriptor,
                               cbl_refer_t refer,
                               bool advance=DISPLAY_NO_ADVANCE);
@@ -424,25 +431,19 @@ parser_lsearch_start(   cbl_label_t *name,
 
 void parser_lsearch_conditional(cbl_label_t * name);
 void parser_bsearch_conditional(cbl_label_t * name);
-
 void parser_lsearch_when( cbl_label_t *name, cbl_field_t *conditional );
-void
-parser_bsearch_when(cbl_label_t *name,
-                    cbl_refer_t key,
-                    cbl_refer_t sarg,
-                    bool ascending);
-
+void parser_bsearch_when( cbl_label_t *name,
+                          const cbl_refer_t &key,
+                          const cbl_refer_t &sarg,
+                                bool ascending);
 void parser_lsearch_end( cbl_label_t *name );
 void parser_bsearch_end( cbl_label_t *name );
+void parser_bsearch_start( cbl_label_t *name, cbl_field_t *tgt );
 
-void
-parser_bsearch_start( cbl_label_t *name, cbl_field_t *tgt );
-
-void
-parser_sort(cbl_refer_t table,
-            bool duplicates,
-            cbl_alphabet_t *alphabet,
-            const std::vector<cbl_key_t>& keys );
+void parser_sort( cbl_refer_t table,
+                  bool duplicates,
+                  cbl_alphabet_t *alphabet,
+                  const std::vector<cbl_key_t>& keys );
 void
 parser_file_sort(   cbl_file_t *file,
                     bool duplicates,
@@ -616,12 +617,23 @@ void parser_init_list_size(int count_of_variables);
 void parser_init_list_element(cbl_field_t *field);
 void parser_init_list();
 
-tree file_static_variable(tree type, const char *name);
-
 void parser_statement_begin( const cbl_name_t name, tree ecs, tree dcls );
 void parser_statement_end( const std::list<cbl_field_t*>& );
 
 tree parser_compile_ecs( const std::vector<uint64_t>& ecs );
 tree parser_compile_dcls( const std::vector<uint64_t>& dcls );
+
+void parser_trim( cbl_field_t *tgt, const cbl_refer_t& input,
+                  size_t how, const std::vector<cbl_refer_t>& args );
+
+void 
+move_helper(tree        size_error,  // INT
+            cbl_refer_t destref,
+            cbl_refer_t sourceref,
+            TREEPLET    &tsource,
+            cbl_round_t rounded,
+            bool check_for_error,
+            bool restore_on_error = false
+            );
 
 #endif

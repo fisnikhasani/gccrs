@@ -149,7 +149,7 @@ GRS_OBJS = \
 	rust/rust-ice-finalizer.o \
     rust/rust-late-name-resolver-2.0.o \
     rust/rust-identifier-path.o \
-	rust/rust-immutable-name-resolution-context.o \
+	rust/rust-finalized-name-resolution-context.o \
     rust/rust-name-resolver.o \
     rust/rust-resolve-builtins.o \
     rust/rust-forever-stack.o \
@@ -177,6 +177,7 @@ GRS_OBJS = \
     rust/rust-hir-type-check-stmt.o \
     rust/rust-hir-type-check-enumitem.o \
     rust/rust-hir-type-check-implitem.o \
+    rust/rust-hir-type-check-intrinsic.o \
     rust/rust-borrow-checker.o \
     rust/rust-borrow-checker-diagnostics.o\
     rust/rust-bir-builder-expr-stmt.o \
@@ -225,6 +226,7 @@ GRS_OBJS = \
     rust/rust-compile-struct-field-expr.o \
     rust/rust-constexpr.o \
     rust/rust-compile-base.o \
+    rust/rust-compile-drop.o \
     rust/rust-tree.o \
     rust/rust-compile-context.o \
     rust/rust-export-metadata.o \
