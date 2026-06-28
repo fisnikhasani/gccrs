@@ -58,6 +58,12 @@ UnusedChecker::visit (HIR::ConstantItem &item)
     rust_warning_at (item.get_locus (), OPT_Wunused_variable,
 		     "unused variable %qs",
 		     item.get_identifier ().as_string ().c_str ());
+
+  // The unused_visibilities lint: a visibility qualifier on a `const _` item
+  // has no effect.
+  if (var_name == "_" && item.get_visibility ().is_public ())
+    rust_warning_at (item.get_locus (), OPT_Wunused_variable,
+		     "visibility qualifier on a %<const _%> item is unused");
 }
 
 void
@@ -190,6 +196,23 @@ UnusedChecker::visit_loop_label (HIR::LoopLabel &label)
   if (!unused_context.is_label_used (id) && var_name[0] != '_')
     rust_warning_at (lifetime.get_locus (), OPT_Wunused_variable,
 		     "unused label %qs", lifetime.to_string ().c_str ());
+}
+
+void
+UnusedChecker::visit (HIR::StructPatternFieldIdentPat &field)
+{
+  auto &pattern = field.get_pattern ();
+  if (pattern.get_pattern_type () == HIR::Pattern::PatternType::IDENTIFIER)
+    {
+      auto &ident = static_cast<HIR::IdentifierPattern &> (pattern);
+      if (!ident.has_subpattern ()
+	  && ident.get_identifier ().as_string ()
+	       == field.get_identifier ().as_string ())
+	rust_warning_at (field.get_locus (), OPT_Wunused_variable,
+			 "the %qs in this pattern is redundant",
+			 (field.get_identifier ().as_string () + ":").c_str ());
+    }
+  walk (field);
 }
 
 } // namespace Analysis
