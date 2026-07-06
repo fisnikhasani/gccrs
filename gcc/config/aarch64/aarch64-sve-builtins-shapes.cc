@@ -31,7 +31,7 @@
 #include "memmodel.h"
 #include "insn-codes.h"
 #include "optabs.h"
-#include "aarch64-sve-builtins.h"
+#include "aarch64-acle-builtins.h"
 #include "aarch64-sve-builtins-shapes.h"
 #include "aarch64-builtins.h"
 
@@ -48,7 +48,7 @@
    but this does not affect the prototype, which is always
    "svbool_t(svbool_t, svbool_t)".  */
 
-namespace aarch64_sve {
+namespace aarch64_acle {
 
 /* Return a representation of "const T *".  */
 static tree
@@ -205,6 +205,8 @@ parse_element_type (const function_instance &instance, const char *&format)
    v<elt>  - a vector with the given element suffix
    D<elt>  - a 64 bit neon vector
    Q<elt>  - a 128 bit neon vector
+   D<elt>x<n>  - an n-tuple of 64 bit neon vectors
+   Q<elt>x<n>  - an n-tuple of 128 bit neon vectors
 
    where <elt> has the format described above parse_element_type
 
@@ -277,6 +279,18 @@ parse_type (const function_instance &instance, const char *&format)
   if (ch == 's')
     {
       type_suffix_index suffix = parse_element_type (instance, format);
+
+      // HACK: remove once all NEON intrinsics have been ported to the
+      // pragma-based framework.
+      if (suffix == TYPE_SUFFIX_p8)
+	return aarch64_simd_types_trees[Poly8_t].eltype;
+      if (suffix == TYPE_SUFFIX_p16)
+	return aarch64_simd_types_trees[Poly16_t].eltype;
+      if (suffix == TYPE_SUFFIX_p64)
+	return aarch64_simd_types_trees[Poly64_t].eltype;
+      if (suffix == TYPE_SUFFIX_p128)
+	return aarch64_simd_types_trees[Poly128_t].eltype;
+
       return scalar_types[type_suffixes[suffix].vector_type];
     }
 
@@ -309,18 +323,23 @@ parse_type (const function_instance &instance, const char *&format)
       return acle_vector_types[0][type_suffixes[suffix].vector_type];
     }
 
-  if (ch == 'D')
+  if (ch == 'D' || ch == 'Q')
     {
       type_suffix_index suffix = parse_element_type (instance, format);
-      int neon_index = type_suffixes[suffix].neon64_type;
-      return aarch64_simd_types_trees[neon_index].itype;
-    }
-
-  if (ch == 'Q')
-    {
-      type_suffix_index suffix = parse_element_type (instance, format);
-      int neon_index = type_suffixes[suffix].neon128_type;
-      return aarch64_simd_types_trees[neon_index].itype;
+      aarch64_simd_type neon_index = ch == 'D'
+				       ? type_suffixes[suffix].neon64_type
+				       : type_suffixes[suffix].neon128_type;
+      unsigned int num_vectors = 1;
+      if (format[0] == 'x')
+	{
+	  int ch = format[1];
+	  format += 2;
+	  gcc_assert (IN_RANGE (ch, '1', '4'));
+	  num_vectors = ch - '0';
+	}
+      return num_vectors == 1
+	       ? aarch64_simd_types_trees[neon_index].itype
+	       : aarch64_simd_tuple_types[neon_index][num_vectors - 2];
     }
 
   gcc_unreachable ();
@@ -530,10 +549,10 @@ build_vs_offset (function_builder &b, const char *signature,
    predicate.  FORCE_DIRECT_OVERLOADS is true if there is a one-to-one
    mapping between "short" and "full" names, and if standard overload
    resolution therefore isn't necessary.  */
-static void
+void
 build_all (function_builder &b, const char *signature,
 	   const function_group_info &group, mode_suffix_index mode_suffix_id,
-	   bool force_direct_overloads = false)
+	   bool force_direct_overloads)
 {
   for (unsigned int pi = 0; group.preds[pi] != NUM_PREDS; ++pi)
     for (unsigned int gi = 0; group.groups[gi] != NUM_GROUP_SUFFIXES; ++gi)

@@ -3161,15 +3161,15 @@ typedef struct GTY((chain_circular ("%h.die_sib"), for_user)) die_struct {
   unsigned int decl_id;
   enum dwarf_tag die_tag;
   /* Die is used and must not be pruned as unused.  */
-  BOOL_BITFIELD die_perennial_p : 1;
-  BOOL_BITFIELD comdat_type_p : 1; /* DIE has a type signature */
+  bool die_perennial_p : 1;
+  bool comdat_type_p : 1; /* DIE has a type signature */
   /* For an external ref to die_symbol if die_offset contains an extra
      offset to that symbol.  */
-  BOOL_BITFIELD with_offset : 1;
+  bool with_offset : 1;
   /* Whether this DIE was removed from the DIE tree, for example via
      prune_unused_types.  We don't consider those present from the
      DIE lookup routines.  */
-  BOOL_BITFIELD removed : 1;
+  bool removed : 1;
   /* Lots of spare bits.  */
 }
 die_node;
@@ -13997,7 +13997,16 @@ modified_type_die (tree type, int cv_quals, tree type_attrs, bool reverse,
       tree dtype = TREE_TYPE (name);
 
       /* Skip the typedef for base types with DW_AT_endianity, no big deal.  */
-      if (qualified_type == dtype && !reverse_type)
+      if (!reverse_type
+	  && (qualified_type == dtype
+	      /* Pointer identity check above might fail when qualified_type
+		 is a different variant node of the same typedef yet requires
+		 the same handling as if they matched (see PR/125421).
+		 Skip this when btf_type_tag attributes are present, as those
+		 need to be handled in the else branch below.  */
+	      || (TYPE_NAME (qualified_type) == name
+		  && TYPE_QUALS (qualified_type) == TYPE_QUALS (dtype)
+		  && !lookup_attribute ("btf_type_tag", type_attrs))))
 	{
 	  tree origin = decl_ultimate_origin (name);
 
@@ -14009,8 +14018,8 @@ modified_type_die (tree type, int cv_quals, tree type_attrs, bool reverse,
 				      reverse, context_die);
 
 	  /* For a named type, use the typedef.  */
-	  gen_type_die (qualified_type, context_die);
-	  return lookup_type_die (qualified_type);
+	  gen_type_die (dtype, context_die);
+	  return lookup_type_die (dtype);
 	}
       else
 	{

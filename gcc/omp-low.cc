@@ -1193,6 +1193,36 @@ scan_sharing_clauses (tree clauses, omp_context *ctx)
 	    && omp_maybe_offloaded_ctx (ctx))
 	  error_at (OMP_CLAUSE_LOCATION (c), "%<allocate%> clause must"
 		    " specify an allocator here");
+	if ((omp_requires_mask & OMP_REQUIRES_DYNAMIC_ALLOCATORS) == 0
+	    && OMP_CLAUSE_ALLOCATE_ALLOCATOR (c) != NULL_TREE
+	    && DECL_P (OMP_CLAUSE_ALLOCATE_ALLOCATOR (c))
+	    && !DECL_ARTIFICIAL (OMP_CLAUSE_ALLOCATE_ALLOCATOR (c)))
+	  {
+	    tree alloc2 = OMP_CLAUSE_ALLOCATE_ALLOCATOR (c);
+	    if (TREE_CODE (alloc2) == MEM_REF
+		|| TREE_CODE (alloc2) == INDIRECT_REF)
+	      alloc2 = TREE_OPERAND (alloc2, 0);
+	    omp_context *ctx2 = ctx;
+	    for (; ctx2; ctx2 = ctx2->outer)
+	      if (is_gimple_omp_offloaded (ctx2->stmt))
+		break;
+	    if (ctx2 != NULL)
+	      {
+		tree c2 = gimple_omp_target_clauses (ctx2->stmt);
+		for (; c2; c2 = OMP_CLAUSE_CHAIN (c2))
+		  if (OMP_CLAUSE_CODE (c2) == OMP_CLAUSE_USES_ALLOCATORS
+		      && operand_equal_p (
+			   alloc2, OMP_CLAUSE_USES_ALLOCATORS_ALLOCATOR (c2)))
+		    break;
+		if (c2 == NULL_TREE)
+		  error_at (EXPR_LOC_OR_LOC (OMP_CLAUSE_ALLOCATE_ALLOCATOR (c),
+					     OMP_CLAUSE_LOCATION (c)),
+			    "allocator %qE in %<allocate%> clause inside a "
+			    "target region must be specified in an "
+			    "%<uses_allocators%> clause on the %<target%> "
+			    "directive", alloc2);
+	      }
+	  }
 	if (ctx->allocate_map == NULL)
 	  ctx->allocate_map = new hash_map<tree, tree>;
 	tree val = integer_zero_node;
@@ -1797,6 +1827,14 @@ scan_sharing_clauses (tree clauses, omp_context *ctx)
 	case OMP_CLAUSE_DEVICE_TYPE:
 	  break;
 
+	case OMP_CLAUSE_USES_ALLOCATORS:
+	  decl = OMP_CLAUSE_USES_ALLOCATORS_ALLOCATOR (c);
+	  gcc_assert (DECL_P (decl));
+	  gcc_assert (is_gimple_omp_offloaded (ctx->stmt));
+	  install_var_field (decl, false, 3, ctx);
+	  install_var_local (decl, ctx);
+	  break;
+
 	case OMP_CLAUSE_ALIGNED:
 	  decl = OMP_CLAUSE_DECL (c);
 	  if (is_global_var (decl)
@@ -2022,6 +2060,7 @@ scan_sharing_clauses (tree clauses, omp_context *ctx)
 	case OMP_CLAUSE_USE:
 	case OMP_CLAUSE_DESTROY:
 	case OMP_CLAUSE_DEVICE_TYPE:
+	case OMP_CLAUSE_USES_ALLOCATORS:
 	  break;
 
 	case OMP_CLAUSE__CACHE_:
@@ -7043,7 +7082,25 @@ lower_rec_input_clauses (tree clauses, gimple_seq *ilist, gimple_seq *dlist,
       if (!is_task_ctx (ctx)
 	  && (gimple_code (ctx->stmt) != GIMPLE_OMP_FOR
 	      || gimple_omp_for_kind (ctx->stmt) == GF_OMP_FOR_KIND_FOR))
-	gimple_seq_add_stmt (ilist, omp_build_barrier (NULL_TREE));
+	{
+	  int barrier_kind;
+	  switch (gimple_code (ctx->stmt))
+	    {
+	    case GIMPLE_OMP_SECTIONS:
+	    case GIMPLE_OMP_SCOPE:
+	    case GIMPLE_OMP_FOR:
+	      barrier_kind = GOMP_BARRIER_IMPLICIT_WORKSHARE;
+	      break;
+	    case GIMPLE_OMP_PARALLEL:
+	    case GIMPLE_OMP_TEAMS:
+	      barrier_kind = GOMP_BARRIER_IMPLICIT_PARALLEL;
+	      break;
+	    default:
+	      gcc_unreachable ();
+	    }
+	  gimple_seq_add_stmt (ilist,
+			       omp_build_barrier (NULL_TREE, barrier_kind));
+	}
     }
 
   /* If max_vf is non-zero, then we can use only a vectorization factor
@@ -7982,8 +8039,9 @@ lower_reduction_clauses (tree clauses, gimple_seq *stmt_seqp,
 	}
     }
 
-  stmt = gimple_build_call (builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_START),
-			    0);
+  stmt
+    = gimple_build_call (builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_START),
+			 0);
   gimple_seq_add_stmt (stmt_seqp, stmt);
 
   gimple_seq_add_seq (stmt_seqp, sub_seq);
@@ -7994,7 +8052,7 @@ lower_reduction_clauses (tree clauses, gimple_seq *stmt_seqp,
       *clist = NULL;
     }
 
-  stmt = gimple_build_call (builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_END),
+  stmt = gimple_build_call (builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_END),
 			    0);
   gimple_seq_add_stmt (stmt_seqp, stmt);
 }
@@ -8698,11 +8756,11 @@ lower_omp_sections (gimple_stmt_iterator *gsi_p, omp_context *ctx)
 			   &clist, ctx);
   if (clist)
     {
-      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_START);
+      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_START);
       gcall *g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&olist, g);
       gimple_seq_add_seq (&olist, clist);
-      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_END);
+      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_END);
       g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&olist, g);
     }
@@ -8977,11 +9035,11 @@ lower_omp_scope (gimple_stmt_iterator *gsi_p, omp_context *ctx)
 			   &bind_body, &clist, ctx);
   if (clist)
     {
-      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_START);
+      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_START);
       gcall *g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&bind_body, g);
       gimple_seq_add_seq (&bind_body, clist);
-      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_END);
+      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_END);
       g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&bind_body, g);
     }
@@ -9068,9 +9126,8 @@ lower_omp_master (gimple_stmt_iterator *gsi_p, omp_context *ctx)
   gsi_replace (gsi_p, bind, true);
   gimple_bind_add_stmt (bind, stmt);
 
-  bfn_decl = builtin_decl_explicit (BUILT_IN_OMP_GET_THREAD_NUM);
-  x = build_call_expr_loc (loc, bfn_decl, 0);
-  x = build2 (EQ_EXPR, boolean_type_node, x, filter);
+  bfn_decl = builtin_decl_explicit (BUILT_IN_GOMP_HAS_MASKED_THREAD_NUM);
+  x = build_call_expr_loc (loc, bfn_decl, 1, filter);
   x = build3 (COND_EXPR, void_type_node, x, NULL, build_and_jump (&lab));
   tseq = NULL;
   gimplify_and_add (x, &tseq);
@@ -11478,7 +11535,7 @@ lower_omp_for_scan (gimple_seq *body_p, gimple_seq *dlist, gomp_for *stmt,
   g = gimple_build_label (lab1);
   gimple_seq_add_stmt (body_p, g);
 
-  g = omp_build_barrier (NULL);
+  g = omp_build_barrier (NULL, GOMP_BARRIER_IMPLICIT_WORKSHARE);
   gimple_seq_add_stmt (body_p, g);
 
   tree down = create_tmp_var (unsigned_type_node);
@@ -11595,7 +11652,7 @@ lower_omp_for_scan (gimple_seq *body_p, gimple_seq *dlist, gomp_for *stmt,
   g = gimple_build_label (lab12);
   gimple_seq_add_stmt (body_p, g);
 
-  g = omp_build_barrier (NULL);
+  g = omp_build_barrier (NULL, GOMP_BARRIER_IMPLICIT_WORKSHARE);
   gimple_seq_add_stmt (body_p, g);
 
   g = gimple_build_cond (NE_EXPR, k, build_zero_cst (unsigned_type_node),
@@ -11935,11 +11992,11 @@ lower_omp_for (gimple_stmt_iterator *gsi_p, omp_context *ctx)
 
   if (clist)
     {
-      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_START);
+      tree fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_START);
       gcall *g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&body, g);
       gimple_seq_add_seq (&body, clist);
-      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_ATOMIC_END);
+      fndecl = builtin_decl_explicit (BUILT_IN_GOMP_REDUCTION_END);
       g = gimple_build_call (fndecl, 0);
       gimple_seq_add_stmt (&body, g);
     }
@@ -13215,6 +13272,14 @@ lower_omp_target (gimple_stmt_iterator *gsi_p, omp_context *ctx)
 	    sorry_at (OMP_CLAUSE_LOCATION (c),
 		      "only the %<device_type(any)%> is supported");
 	  break;
+      case OMP_CLAUSE_USES_ALLOCATORS:
+	allocator = OMP_CLAUSE_USES_ALLOCATORS_ALLOCATOR (c);
+	tree new_allocator = lookup_decl (allocator, ctx);
+	x = build_receiver_ref (allocator, false, ctx);
+	SET_DECL_VALUE_EXPR (new_allocator, x);
+	DECL_HAS_VALUE_EXPR_P (new_allocator) = 1;
+	map_cnt++;
+	break;
       }
 
   if (offloaded)
@@ -13943,6 +14008,80 @@ lower_omp_target (gimple_stmt_iterator *gsi_p, omp_context *ctx)
 	    CONSTRUCTOR_APPEND_ELT (vsize, purpose, s);
 	    gcc_checking_assert (tkind
 				 < (HOST_WIDE_INT_C (1U) << talign_shift));
+	    gcc_checking_assert (tkind
+				 <= tree_to_uhwi (TYPE_MAX_VALUE (tkind_type)));
+	    CONSTRUCTOR_APPEND_ELT (vkind, purpose,
+				    build_int_cstu (tkind_type, tkind));
+	    break;
+
+	  case OMP_CLAUSE_USES_ALLOCATORS:
+	    tree allocator = OMP_CLAUSE_USES_ALLOCATORS_ALLOCATOR (c);
+	    tree memspace = OMP_CLAUSE_USES_ALLOCATORS_MEMSPACE (c);
+	    tree traits = OMP_CLAUSE_USES_ALLOCATORS_TRAITS (c);
+
+	    tree ntraits, traits_var;
+	    if (traits == NULL_TREE)
+	      {
+		ntraits = integer_zero_node;
+		traits_var = null_pointer_node;
+	      }
+	    else if (DECL_INITIAL (traits))
+	      {
+		location_t loc = OMP_CLAUSE_LOCATION (c);
+		ntraits = array_type_nelts_top (TREE_TYPE (traits));
+		tree t = DECL_INITIAL (traits);
+		t = get_initialized_tmp_var (t, &ilist, NULL);
+		traits_var = build_fold_addr_expr_loc (loc, t);
+	      }
+	    else
+	      {
+		/* This happens for VLAs, which probably aren't useful
+		   because they can't be const initialized in the same
+		   scope....  is there something else?  */
+		location_t loc = OMP_CLAUSE_LOCATION (c);
+		gcc_assert (TREE_CODE (TREE_TYPE (traits)) == ARRAY_TYPE);
+		ntraits = array_type_nelts_top (TREE_TYPE (traits));
+		traits_var = build_fold_addr_expr_loc (loc, traits);
+	      }
+
+	    if (memspace == NULL_TREE)
+	      memspace = build_int_cst (pointer_sized_int_node, 0);
+	    else
+	      memspace = fold_convert (pointer_sized_int_node, memspace);
+
+	    tree arr_type
+	      = build_array_type_nelts (pointer_sized_int_node, 3);
+	    tree uses_allocators_descr
+	      = create_tmp_var (arr_type, "uses_allocator_descr");
+	    tree ua_descr[3];
+	    for (int i = 0; i < 3; i++)
+	      ua_descr[i] = build4 (ARRAY_REF, pointer_sized_int_node,
+				    uses_allocators_descr,
+				    build_int_cst (size_type_node, i),
+				    NULL_TREE, NULL_TREE);
+	    gimplify_assign (ua_descr[0],
+			     fold_convert (pointer_sized_int_node, memspace),
+			     &ilist);
+	    gimplify_assign (ua_descr[1],
+			     fold_convert (pointer_sized_int_node, ntraits),
+			     &ilist);
+	    gimplify_assign (ua_descr[2],
+			     fold_convert (pointer_sized_int_node, traits_var),
+			     &ilist);
+
+	    x = build_sender_ref (allocator, ctx);
+	    tree ptr = build_fold_addr_expr (uses_allocators_descr);
+	    gimplify_assign (x, fold_convert (TREE_TYPE (x), ptr), &ilist);
+
+	    s = size_int (0);
+	    purpose = size_int (map_idx++);
+	    CONSTRUCTOR_APPEND_ELT (vsize, purpose, s);
+	    tkind = GOMP_MAP_USES_ALLOCATORS;
+	    gcc_checking_assert (tkind
+				 < (HOST_WIDE_INT_C (1U) << talign_shift));
+	    talign = TYPE_ALIGN_UNIT (pointer_sized_int_node);
+	    talign = ceil_log2 (talign);
+	    tkind |= talign << talign_shift;
 	    gcc_checking_assert (tkind
 				 <= tree_to_uhwi (TYPE_MAX_VALUE (tkind_type)));
 	    CONSTRUCTOR_APPEND_ELT (vkind, purpose,

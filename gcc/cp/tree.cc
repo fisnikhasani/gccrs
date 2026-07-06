@@ -4915,12 +4915,29 @@ bool
 trivially_copy_constructible_p (tree t)
 {
   tree arg = make_tree_vec (1);
-  TREE_VEC_ELT (arg, 0)
-    = build_stub_type (t, cp_type_quals (t) | TYPE_QUAL_CONST, false);
+  TREE_VEC_ELT (arg, 0) = build_const_lref (t);
   return is_trivially_xible (INIT_EXPR, t, arg);
 }
 
-/* Returns 1 iff type T is an implicit-lifetime type, as defined in
+/* Returns true iff FN (which is a special member function) is
+   an eligible special member function, as defined in [special]/6.
+   The "no special member function of the same kind whose associated
+   constraints, if any, are satisfied is more constrained" condition
+   is not checked, this is checked during add_method instead.  */
+
+static bool
+eligible_special_member_function_p (tree fn)
+{
+  /* The function is not deleted.  */
+  if (DECL_DELETED_FN (fn))
+    return false;
+  /* The associated constraints, if any, are satisfied.  */
+  if (!constraints_satisfied_p (fn))
+    return false;
+  return true;
+}
+
+/* Returns true iff type T is an implicit-lifetime type, as defined in
    [basic.types.general] and [class.prop].  */
 
 bool
@@ -4935,6 +4952,7 @@ implicit_lifetime_type_p (tree t)
   if (!CLASS_TYPE_P (t))
     return false;
   t = TYPE_MAIN_VARIANT (t);
+  /* It is an aggregate whose destructor is not user-provided.  */
   if (CP_AGGREGATE_TYPE_P (t)
       && (!CLASSTYPE_DESTRUCTOR (t)
 	  || !user_provided_p (CLASSTYPE_DESTRUCTOR (t))))
@@ -4947,6 +4965,8 @@ implicit_lifetime_type_p (tree t)
     return false;
   if (CLASSTYPE_LAZY_DESTRUCTOR (t))
     lazily_declare_fn (sfk_destructor, t);
+  /* It has at least one trivial eligible constructor and a trivial,
+     non-deleted destructor.  */
   tree fn = CLASSTYPE_DESTRUCTOR (t);
   if (!fn || DECL_DELETED_FN (fn))
     return false;
@@ -4956,7 +4976,7 @@ implicit_lifetime_type_p (tree t)
       fn = *iter;
       if ((default_ctor_p (fn) || copy_fn_p (fn) || move_fn_p (fn))
 	  && trivial_fn_p (fn)
-	  && !DECL_DELETED_FN (fn))
+	  && eligible_special_member_function_p (fn))
 	return true;
     }
   return false;
@@ -5982,9 +6002,7 @@ handle_annotation_attribute (tree *node, tree ARG_UNUSED (name),
     {
       tree arg = make_tree_vec (1);
       tree type = TREE_TYPE (TREE_VALUE (args));
-      TREE_VEC_ELT (arg, 0)
-	= build_stub_type (type, cp_type_quals (type) | TYPE_QUAL_CONST,
-			   /*rvalue=*/false);
+      TREE_VEC_ELT (arg, 0) = build_const_lref (type);
       if (!is_xible (INIT_EXPR, type, arg))
 	{
 	  auto_diagnostic_group d;

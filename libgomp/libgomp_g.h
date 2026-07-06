@@ -37,11 +37,15 @@
 
 extern void GOMP_atomic_start (void);
 extern void GOMP_atomic_end (void);
+extern void GOMP_reduction_start (void);
+extern void GOMP_reduction_end (void);
 
 /* barrier.c */
 
 extern void GOMP_barrier (void);
+extern void GOMP_barrier_ext (int);
 extern bool GOMP_barrier_cancel (void);
+extern bool GOMP_barrier_cancel_ext (int);
 
 /* critical.c */
 
@@ -293,6 +297,8 @@ extern unsigned GOMP_parallel_reductions (void (*) (void *), void *, unsigned,
 					  unsigned);
 extern bool GOMP_cancel (int, bool);
 extern bool GOMP_cancellation_point (int);
+extern bool GOMP_has_masked_thread_num (int);
+extern __complex__ int GOMP_loop_static_worksharing (void);
 
 /* task.c */
 
@@ -373,6 +379,7 @@ extern void *GOMP_target_map_indirect_ptr (void *);
 
 extern void GOMP_teams_reg (void (*) (void *), void *, unsigned, unsigned,
 			    unsigned);
+extern __complex__ int GOMP_distribute_static_worksharing (void);
 
 /* allocator.c */
 

@@ -195,6 +195,11 @@ enum gomp_map_kind
     GOMP_MAP_ATTACH_ZERO_LENGTH_ARRAY_SECTION
       =					(GOMP_MAP_DEEP_COPY | 2),
 
+    /* Used to pass a descriptor for an OpenMP uses_allocators clause,
+       also serves as an effective 'firstprivate' clause for the allocator
+       variable.  */
+    GOMP_MAP_USES_ALLOCATORS =		(GOMP_MAP_DEEP_COPY | 3),
+
     /* Internal to GCC, not used in libgomp.  */
     /* Do not map, but pointer assign a pointer instead.  */
     GOMP_MAP_FIRSTPRIVATE_POINTER =	(GOMP_MAP_LAST | 1),
@@ -434,5 +439,11 @@ enum gomp_map_kind
 
 /* Identifiers of device-specific target arguments.  */
 #define GOMP_TARGET_ARG_HSA_KERNEL_ATTRIBUTES	(1 << 8)
+
+/* GOMP_barrier{,_cancel}_ext argument.
+   TODO turn this into an enum?  */
+#define GOMP_BARRIER_IMPLICIT_PARALLEL 0
+#define GOMP_BARRIER_IMPLICIT_WORKSHARE 1
+#define GOMP_BARRIER_EXPLICIT 2
 
 #endif

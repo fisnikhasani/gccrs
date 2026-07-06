@@ -311,6 +311,7 @@ class locale_tgt_t {
   struct file_list_t;
   struct cbl_label_t;
   typedef struct Elem_list_t<cbl_label_t*> Label_list_t;
+  typedef struct Elem_list_t<int> token_list_t;
 
   struct cbl_file_key_t;
   typedef struct Elem_list_t<cbl_file_key_t*> key_list_t;
@@ -922,6 +923,8 @@ class locale_tgt_t {
 
 %type   <nameloc>       repo_func_name                        
 %type   <namelocs>      repo_func_names
+%type   <tokens>        repo_intrinsics
+%type   <number>        repo_intrinsic
 %type   <codeset>       codeset_name
 %type   <locale_phrase> locale_phrase
 %type   <number>        convert_hex convert_nat convert_alpha // convert_fmt
@@ -969,6 +972,7 @@ class locale_tgt_t {
     struct perform_t *perf;
     struct cbl_perform_tgt_t *tgt;
            Label_list_t *labels;
+           token_list_t *tokens;
            key_list_t *file_keys;
            cbl_file_mode_t io_mode;
     struct cbl_file_key_t *file_key;
@@ -2604,8 +2608,21 @@ repo_func:      FUNCTION repo_func_names[namelocs] INTRINSIC {
                 {
                   current.repository_add_all();
                 }
+        |       FUNCTION repo_intrinsics INTRINSIC
+                {
+                  for( int token : $repo_intrinsics->elems ) {
+                    if( token != 0 ) {
+                      current.repository_add(keyword_str(token));
+                    }
+                  }
+                }
+        |       FUNCTION repo_intrinsics error {
+                  const char *func = $repo_intrinsics->elems.empty() ?
+                    "" : keyword_str($repo_intrinsics->elems.front());
+                  error_msg(@repo_intrinsics,
+                          "intrinsic function %qs requires INTRINSIC", func);
+                }
         |       FUNCTION repo_func_names[namelocs] {
-		  // We allow multiple names because GnuCOBOL does.  ISO says 1.
                   for( const auto& nameloc : *$namelocs ) {
                     if( 0 != intrinsic_token_of(nameloc.name) ) {
                       error_msg(nameloc.loc,
@@ -2643,6 +2660,121 @@ repo_func_name: NAME repo_as {
                   }
                   $$ = new cbl_nameloc_t(@NAME, $NAME);
                 }
+                ;
+
+repo_intrinsics:
+                repo_intrinsic { $$ = new token_list_t($1); }
+        |       repo_intrinsics repo_intrinsic {
+                  $$ = $1;
+                  $$->elems.push_back($repo_intrinsic);
+                }
+                ;
+ 
+repo_intrinsic: ABS { $$ = ABS; }
+        |       ACOS { $$ = ACOS; }
+        |       ANNUITY { $$ = ANNUITY; }
+        |       ASIN { $$ = ASIN; }
+        |       ATAN { $$ = ATAN; }
+        |       BASECONVERT { $$ = BASECONVERT; }
+        |       BIT_OF { $$ = BIT_OF; }
+        |       BIT_TO_CHAR { $$ = BIT_TO_CHAR; }
+        |       BOOLEAN_OF_INTEGER { $$ = BOOLEAN_OF_INTEGER; }
+        |       BYTE_LENGTH { $$ = BYTE_LENGTH; }
+        |       CHAR { $$ = CHAR; }
+        |       CHAR_NATIONAL { $$ = CHAR_NATIONAL; }
+        |       COMBINED_DATETIME { $$ = COMBINED_DATETIME; }
+        |       CONCAT { $$ = CONCAT; }
+        |       CONVERT { $$ = CONVERT; }
+        |       COS { $$ = COS; }
+        |       CURRENT_DATE { $$ = CURRENT_DATE; }
+        |       DATE_OF_INTEGER { $$ = DATE_OF_INTEGER; }
+        |       DATE_TO_YYYYMMDD { $$ = DATE_TO_YYYYMMDD; }
+        |       DAY_OF_INTEGER { $$ = DAY_OF_INTEGER; }
+        |       DAY_TO_YYYYDDD { $$ = DAY_TO_YYYYDDD; }
+        |       DISPLAY_OF { $$ = DISPLAY_OF; }
+        |       E { $$ = E; }
+        |       EXCEPTION_FILE { $$ = EXCEPTION_FILE; }
+        |       EXCEPTION_FILE_N { $$ = EXCEPTION_FILE_N; }
+        |       EXCEPTION_LOCATION { $$ = EXCEPTION_LOCATION; }
+        |       EXCEPTION_LOCATION_N { $$ = EXCEPTION_LOCATION_N; }
+        |       EXCEPTION_STATEMENT { $$ = EXCEPTION_STATEMENT; }
+        |       EXCEPTION_STATUS { $$ = EXCEPTION_STATUS; }
+        |       EXP { $$ = EXP; }
+        |       EXP10 { $$ = EXP10; }
+        |       FACTORIAL { $$ = FACTORIAL; }
+        |       FIND_STRING { $$ = FIND_STRING; }
+        |       FORMATTED_CURRENT_DATE { $$ = FORMATTED_CURRENT_DATE; }
+        |       FORMATTED_DATE { $$ = FORMATTED_DATE; }
+        |       FORMATTED_DATETIME { $$ = FORMATTED_DATETIME; }
+        |       FORMATTED_TIME { $$ = FORMATTED_TIME; }
+        |       FRACTION_PART { $$ = FRACTION_PART; }
+        |       HEX_OF { $$ = HEX_OF; }
+        |       HEX_TO_CHAR { $$ = HEX_TO_CHAR; }
+        |       HIGHEST_ALGEBRAIC { $$ = HIGHEST_ALGEBRAIC; }
+        |       INTEGER { $$ = INTEGER; }
+        |       INTEGER_OF_BOOLEAN { $$ = INTEGER_OF_BOOLEAN; }
+        |       INTEGER_OF_DATE { $$ = INTEGER_OF_DATE; }
+        |       INTEGER_OF_DAY { $$ = INTEGER_OF_DAY; }
+        |       INTEGER_OF_FORMATTED_DATE { $$ = INTEGER_OF_FORMATTED_DATE; }
+        |       INTEGER_PART { $$ = INTEGER_PART; }
+        |       LENGTH { $$ = LENGTH; }
+        |       LOCALE_COMPARE { $$ = LOCALE_COMPARE; }
+        |       LOCALE_DATE { $$ = LOCALE_DATE; }
+        |       LOCALE_TIME { $$ = LOCALE_TIME; }
+        |       LOCALE_TIME_FROM_SECONDS { $$ = LOCALE_TIME_FROM_SECONDS; }
+        |       LOG { $$ = LOG; }
+        |       LOG10 { $$ = LOG10; }
+        |       LOWER_CASE { $$ = LOWER_CASE; }
+        |       LOWEST_ALGEBRAIC { $$ = LOWEST_ALGEBRAIC; }
+        |       MAXX { $$ = MAXX; }
+        |       MEAN { $$ = MEAN; }
+        |       MEDIAN { $$ = MEDIAN; }
+        |       MIDRANGE { $$ = MIDRANGE; }
+        |       MINN { $$ = MINN; }
+        |       MOD { $$ = MOD; }
+        |       MODULE_NAME { $$ = MODULE_NAME; }
+        |       NATIONAL_OF { $$ = NATIONAL_OF; }
+        |       NUMVAL { $$ = NUMVAL; }
+        |       NUMVAL_C { $$ = NUMVAL_C; }
+        |       NUMVAL_F { $$ = NUMVAL_F; }
+        |       ORD { $$ = ORD; }
+        |       ORD_MAX { $$ = ORD_MAX; }
+        |       ORD_MIN { $$ = ORD_MIN; }
+        |       PI { $$ = PI; }
+        |       PRESENT_VALUE { $$ = PRESENT_VALUE; }
+        |       RANDOM { $$ = RANDOM; }
+        |       RANGE { $$ = RANGE; }
+        |       REM { $$ = REM; }
+        |       REVERSE { $$ = REVERSE; }
+        |       SECONDS_FROM_FORMATTED_TIME { $$ = SECONDS_FROM_FORMATTED_TIME; }
+        |       SECONDS_PAST_MIDNIGHT { $$ = SECONDS_PAST_MIDNIGHT; }
+        |       SIGN { $$ = SIGN; }
+        |       SIN { $$ = SIN; }
+        |       SMALLEST_ALGEBRAIC { $$ = SMALLEST_ALGEBRAIC; }
+        |       SQRT { $$ = SQRT; }
+        |       STANDARD_COMPARE { $$ = STANDARD_COMPARE; }
+        |       STANDARD_DEVIATION { $$ = STANDARD_DEVIATION; }
+        |       SUBSTITUTE { $$ = SUBSTITUTE; }
+        |       SUM { $$ = SUM; }
+        |       TAN { $$ = TAN; }
+        |       TEST_DATE_YYYYMMDD { $$ = TEST_DATE_YYYYMMDD; }
+        |       TEST_DAY_YYYYDDD { $$ = TEST_DAY_YYYYDDD; }
+        |       TEST_FORMATTED_DATETIME { $$ = TEST_FORMATTED_DATETIME; }
+        |       TEST_NUMVAL { $$ = TEST_NUMVAL; }
+        |       TEST_NUMVAL_C { $$ = TEST_NUMVAL_C; }
+        |       TEST_NUMVAL_F { $$ = TEST_NUMVAL_F; }
+        |       TRIM { $$ = TRIM; }
+        |       ULENGTH { $$ = ULENGTH; }
+        |       UPOS { $$ = UPOS; }
+        |       UPPER_CASE { $$ = UPPER_CASE; }
+        |       USUBSTR { $$ = USUBSTR; }
+        |       USUPPLEMENTARY { $$ = USUPPLEMENTARY; }
+        |       UUID4 { $$ = UUID4; }
+        |       UVALID { $$ = UVALID; }
+        |       UWIDTH { $$ = UWIDTH; }
+        |       VARIANCE { $$ = VARIANCE; }
+        |       WHEN_COMPILED { $$ = WHEN_COMPILED; }
+        |       YEAR_TO_YYYY { $$ = YEAR_TO_YYYY; }
                 ;
 
 repo_program:   PROGRAM_kw NAME repo_as
@@ -5554,6 +5686,10 @@ sentence:       statements  '.'
                   if( ! successful_parse() ) YYABORT;
                   YYACCEPT;
                 }
+        |       statements end_program1 {
+                  error_msg(@1, "missing %qs before END PROGRAM", ".");
+                  YYERROR;
+                }
         |       program END_SUBPROGRAM namestr[name] '.'
                 { // a contained program (no prior END PROGRAM) is a "sentence"
                   const cbl_label_t *prog = current.program();
@@ -6597,7 +6733,7 @@ simple_cond:    kind_of_name
                   lhs.addr_of = true;
                   auto rhs = cbl_field_of(symbol_field(0,0, "NULLS"));
                   $$ = new_reference(new_temporary(FldConditional));
-                  parser_relop($$->field, lhs, eq_op, rhs);
+                  ast_relop(@$, $$->field, lhs, eq_op, rhs);
                 }
         |       expr /* IS */ NOT OMITTED
 	        { // IS captured by lexer
@@ -6605,7 +6741,7 @@ simple_cond:    kind_of_name
                   lhs.addr_of = true;
                   auto rhs = cbl_field_of(symbol_field(0,0, "NULLS"));
                   $$ = new_reference(new_temporary(FldConditional));
-                  parser_relop($$->field, lhs, ne_op, rhs);
+                  ast_relop(@$, $$->field, lhs, ne_op, rhs);
                 }
         |       expr posneg[op] {
                   $$ = new_reference(new_temporary(FldConditional));
@@ -6617,7 +6753,7 @@ simple_cond:    kind_of_name
                               cbl_field_type_name($1->field->type));
                     YYERROR;
                   }
-                  parser_relop($$->cond(), *$1, op, zero);
+                  ast_relop(@$, $$->cond(), *$1, op, zero);
                 }
         |       scalar88 {
                   // copy the subscripts and set the parent field
@@ -6719,7 +6855,7 @@ rel_expr:	rel_lhs rel_term[rhs]
                     YYERROR;
                   }
 		  auto cond = new_temporary(FldConditional);
-		  parser_relop( cond, *ante.operand, op, *$rhs.term );
+		  ast_relop( @$, cond, *ante.operand, op, *$rhs.term );
 		  $$ = cond;
                 }
 	|	rel_lhs[lhs] '(' rel_abbrs ')' {
@@ -6775,7 +6911,7 @@ rel_abbr:	rel_term {
                                             ante.operand, ante.relop, $rel_term.term) ){
                     YYERROR;
                   }
-		  parser_relop(cond, *ante.operand, ante.relop, *$rel_term.term);
+		  ast_relop(@$, cond, *ante.operand, ante.relop, *$rel_term.term);
 		  $$ = cond;
 		}
 	|	relop rel_term {
@@ -6798,7 +6934,7 @@ rel_abbr:	rel_term {
                     YYERROR;
                   }
 		  auto cond = new_temporary(FldConditional);
-		  parser_relop(cond, *ante.operand, ante.relop, *$rel_term.term);
+		  ast_relop(@$, cond, *ante.operand, ante.relop, *$rel_term.term);
 		  $$ = cond;
 		}
 		;
@@ -7145,7 +7281,7 @@ eval_abbrs:	rel_term[a] {
                   cbl_refer_t lhs( ev.subject() );
                   // on pointer error, emit message and continue parsing 
                   valid_pointer_relop(@1, @1, @2, &lhs, relop_of($relop), $a.term);
-		  auto result = ev.compare(relop, *$a.term);
+		  auto result = ev.compare(@$, relop, *$a.term);
 		  if( ! result ) YYERROR;
 		  if( $a.invert ) {
 		    parser_logop(result, nullptr, not_op, result);
@@ -7182,7 +7318,7 @@ eval_abbr:	rel_term[a] {
                   cbl_refer_t lhs(subj);
                   // on pointer error, emit message and continue parsing 
                   valid_pointer_relop(@1, @1, @1, &lhs, relop, $a.term);
-		  $$ = ev.compare(relop, *$a.term);
+		  $$ = ev.compare(@$, relop, *$a.term);
 		  if( $a.invert ) {
 		    parser_logop($$, nullptr, not_op, $$);
 		  }
@@ -7195,7 +7331,7 @@ eval_abbr:	rel_term[a] {
                   cbl_refer_t lhs( ev.subject() );
                   // on pointer error, emit message and continue parsing 
                   valid_pointer_relop(@1, @1, @2, &lhs, relop_of($relop), $a.term);
-		  $$ = ev.compare(relop, *$a.term);
+		  $$ = ev.compare(@$, relop, *$a.term);
 		  if( $a.invert ) {
 		    parser_logop($$, nullptr, not_op, $$);
 		  }
@@ -7899,27 +8035,31 @@ section_name:	NAME section_kw '.'
                 ;
 
 section_kw:     SECTION
-                {
-                  if( $1 && dialect_ok(@1, IbmSectionSegmentW, "SECTION segment") ) {
-		    cbl_message(@1, IbmSectionSegmentW,
-                                "SECTION segment %qs was ignored", $1);
-		    if( *$1 == '-' ) {
-                      cbl_message(@1, IbmSectionNegE,
-                                  "SECTION segment %qs is negative", $1);
-                    } else {
-                      int sectno;
-                      sscanf($1, "%d", &sectno);
-                      if( ! (0 <= sectno && sectno <= 99) ) {
-                        cbl_message(@1, IbmSectionRangeE,
-                                     "SECTION segment %qs must be 0-99", $1);
-		      } 
-                    }
-		  }
-                }
-        |       SECTION error
-                {
-                  error_msg(@1, "unknown section qualifier");
-                }
+/* Dubner commented out this code on 2026-06-28 as part of getting the
+   compiler working on the IBM S390. It was failing in an off-by-one way;
+   the $1 parameter, on the S390, wasn't the section number, but rather the
+   section name.  */
+//                {
+//                  if( $1 && dialect_ok(@1, IbmSectionSegmentW, "SECTION segment") ) {
+//		    cbl_message(@1, IbmSectionSegmentW,
+//                                "SECTION segment %qs was ignored", $1);
+//		    if( *$1 == '-' ) {
+//                      cbl_message(@1, IbmSectionNegE,
+//                                  "SECTION segment %qs is negative", $1);
+//                    } else {
+//                      int sectno;
+//                      sscanf($1, "%d", &sectno);
+//                      if( ! (0 <= sectno && sectno <= 99) ) {
+//                        cbl_message(@1, IbmSectionRangeE,
+//                                     "SECTION segment %qs must be 0-99", $1);
+//		      } 
+//                    }
+//		  }
+//                }
+//        |       SECTION error
+//                {
+//                  error_msg(@1, "unknown section qualifier");
+//                }
                 ;
 
 stop:           STOP RUN exit_with
@@ -13399,6 +13539,26 @@ ast_op( const cbl_loc_t& loc, cbl_refer_t *lhs, char op, cbl_refer_t *rhs ) {
   return tgt;
 }
 
+/*
+ * Verify that any field being compared can be moved.  If it cannot, and one
+ * operand is not numeric, ensure the other is not FldFloat.
+ */
+static void
+ast_relop( const cbl_loc_t& loc, cbl_field_t *tgt,
+           cbl_refer_t lhs, relop_t op, cbl_refer_t rhs ) {
+  if( ! (valid_move(lhs.field, rhs.field) && valid_move(rhs.field, lhs.field)) ) {
+    if( is_numeric(lhs.field) != is_numeric(rhs.field) ) {
+      if( (lhs.field->type == FldFloat) || (rhs.field->type == FldFloat) ) {
+        error_msg(loc, "cannot compare %s to %s",
+                  cbl_field_type_name(lhs.field->type),
+                  cbl_field_type_name(rhs.field->type));
+        return;
+      }
+    }
+  }
+  parser_relop(tgt, lhs, op, rhs);
+}
+
 static void
 ast_add( arith_t *arith ) {
   size_t nC = arith->tgts.size(), nA = arith->A.size();
@@ -14777,12 +14937,13 @@ eval_subject_t::compare( int token ) {
 }
 
 cbl_field_t *
-eval_subject_t::compare( relop_t op, const cbl_refer_t& object, bool deciding ) {
+eval_subject_t::compare( const cbl_loc_t& loc, 
+                         relop_t op, const cbl_refer_t& object, bool deciding ) {
   auto subject(*pcol);
   if( compatible(object.field) ) {
     if( ! is_conditional(subject.field) ) {
       auto result = deciding? this->result : new_temporary(FldConditional);
-      parser_relop(result, subject, op, object);
+      ast_relop(loc, result, subject, op, object);
       return result;
       }
     }

@@ -6548,21 +6548,18 @@ package body Exp_Ch3 is
 
             Set_Is_Frozen (Typ);
 
-            if not Is_Derived_Type (Typ)
-              or else Is_Tagged_Type (Etype (Typ))
-            then
-               Set_All_DT_Position (Typ);
-
-            --  If this is a type derived from an untagged private type whose
+            --  If the type is derived from an untagged private type whose
             --  full view is tagged, the type is marked tagged for layout
             --  reasons, but it has no dispatch table.
 
-            elsif Is_Derived_Type (Typ)
-              and then Is_Private_Type (Etype (Typ))
+            if Is_Derived_Type (Typ)
               and then not Is_Tagged_Type (Etype (Typ))
             then
+               pragma Assert (Is_Private_Type (Etype (Typ)));
                return;
             end if;
+
+            Set_All_DT_Position (Typ);
 
             --  Create and decorate the tags. Suppress their creation when
             --  not Tagged_Type_Expansion because the dispatching mechanism is
@@ -7507,6 +7504,8 @@ package body Exp_Ch3 is
       -------------------------------
 
       procedure Default_Initialize_Object (After : Node_Id) is
+         Marker : constant Node_Id := Next (After);
+
          Init_Expr  : Node_Id;
          Init_Stmts : List_Id;
 
@@ -7560,16 +7559,18 @@ package body Exp_Ch3 is
             Init_Stmts := Build_Default_Initialization (N, Typ, Def_Id);
          end if;
 
-         --  Insert the whole initialization sequence into the tree. If the
-         --  object has a delayed freeze, as will be the case when it has
-         --  aspect specifications, the initialization sequence is part of
-         --  the freeze actions.
+         --  Insert the whole initialization sequence into the tree. Park the
+         --  generated statements if the declaration requires it and is not the
+         --  node that is wrapped in a transient scope.
 
          if Present (Init_Stmts) then
-            if Has_Delayed_Freeze (Def_Id) then
-               Append_Freeze_Actions (Def_Id, Init_Stmts);
-            else
-               Insert_Actions_After (After, Init_Stmts);
+            Insert_Actions_After (After, Init_Stmts);
+
+            if not Special_Ret_Obj
+              and then Needs_Initialization_Statements (N)
+              and then not (Scope_Is_Transient and then N = Node_To_Be_Wrapped)
+            then
+               Move_To_Initialization_Statements (N, Marker);
             end if;
          end if;
       end Default_Initialize_Object;

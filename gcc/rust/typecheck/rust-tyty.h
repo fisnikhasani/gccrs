@@ -1691,6 +1691,7 @@ public:
   bool is_dyn_slice_type (const TyTy::SliceType **slice = nullptr) const;
   bool is_dyn_str_type (const TyTy::StrType **str = nullptr) const;
   bool is_dyn_obj_type (const TyTy::DynamicObjectType **dyn = nullptr) const;
+  bool is_dyn_cstr_type (const TyTy::ADTType **adt = nullptr) const;
 
 private:
   TyVar base;
@@ -1958,6 +1959,9 @@ BaseType::try_as<const SubstitutionRef> () const
     }
   return nullptr;
 }
+
+WARN_UNUSED_RESULT tl::optional<BaseType *>
+try_get_box_inner_type (BaseType *base);
 
 } // namespace TyTy
 } // namespace Rust

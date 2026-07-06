@@ -228,6 +228,13 @@ TypeCheckItem::validate_trait_impl_block (
 void
 TypeCheckItem::visit (HIR::TypeAlias &alias)
 {
+  auto lifetime_pin = context->push_clean_lifetime_resolver ();
+
+  std::vector<TyTy::SubstitutionParamMapping> substitutions;
+  if (alias.has_generics ())
+    resolve_generic_params (HIR::Item::ItemKind::TypeAlias, alias.get_locus (),
+			    alias.get_generic_params (), substitutions);
+
   TyTy::BaseType *actual_type
     = TypeCheckType::Resolve (alias.get_type_aliased ());
 
@@ -318,6 +325,7 @@ void
 TypeCheckItem::visit (HIR::StructStruct &struct_decl)
 {
   auto lifetime_pin = context->push_clean_lifetime_resolver ();
+  auto &mappings = Analysis::Mappings::get ();
 
   std::vector<TyTy::SubstitutionParamMapping> substitutions;
   if (struct_decl.has_generics ())
@@ -336,6 +344,14 @@ TypeCheckItem::visit (HIR::StructStruct &struct_decl)
     {
       TyTy::BaseType *field_type
 	= TypeCheckType::Resolve (field.get_field_type ());
+      auto infer_type = field_type->contains_infer ();
+      if (infer_type)
+	{
+	  rust_error_at (mappings.lookup_location (infer_type->get_ref ()),
+			 "the placeholder %<_%> is not allowed within types on "
+			 "item signatures for structs");
+	  return;
+	}
       auto *ty_field
 	= new TyTy::StructFieldType (field.get_mappings ().get_hirid (),
 				     field.get_field_name ().as_string (),
@@ -405,9 +421,11 @@ TypeCheckItem::visit (HIR::Enum &enum_decl)
     {
       TyTy::VariantDef *field_type
 	= TypeCheckEnumItem::Resolve (*variant, discriminant_value);
-
-      discriminant_value++;
-      variants.push_back (field_type);
+      if (field_type)
+	{
+	  discriminant_value++;
+	  variants.push_back (field_type);
+	}
     }
 
   // Check for zero-variant enum compatibility

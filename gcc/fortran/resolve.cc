@@ -6164,7 +6164,12 @@ gfc_resolve_ref (gfc_expr *expr)
   n_components = 0;
   array_ref = NULL;
 
-  if (expr->expr_type == EXPR_VARIABLE && IS_PDT (expr))
+  /* Use the declared type of the base symbol to initialize last_pdt when the
+     expression is not itself a PDT. This matters for ASSOCIATE variables whose
+     component reference may still point to a PDT template.  */
+  if (expr->expr_type == EXPR_VARIABLE
+      && (IS_PDT (expr)
+	  || (expr->ref && expr->symtree && IS_PDT (expr->symtree->n.sym))))
     last_pdt = expr->symtree->n.sym->ts.u.derived;
 
   for (ref = expr->ref; ref; ref = ref->next)
@@ -11769,6 +11774,10 @@ resolve_transfer (gfc_code *code)
       return;
     }
 
+  if (dt && (dt->dt_io_kind->value.iokind == M_WRITE
+	     || dt->dt_io_kind->value.iokind == M_PRINT))
+    gfc_value_used_expr (exp, VALUE_USED);
+
   if (exp == NULL || (exp->expr_type != EXPR_VARIABLE
 		      && exp->expr_type != EXPR_FUNCTION
 		      && exp->expr_type != EXPR_ARRAY
@@ -11900,10 +11909,6 @@ resolve_transfer (gfc_code *code)
 		 "an assumed-size array", &code->loc);
       return;
     }
-
-  if (dt && (dt->dt_io_kind->value.iokind == M_WRITE
-	     || dt->dt_io_kind->value.iokind == M_PRINT))
-    gfc_value_used_expr (exp, VALUE_USED);
 
 }
 
@@ -16402,13 +16407,8 @@ gfc_resolve_finalizers (gfc_symbol* derived, bool *finalizable)
 	      tmp = gfc_get_finalizer ();
 	      *tmp = *list;
 	      tmp->next = NULL;
-	      if (*prev_link)
-		{
-		  (*prev_link)->next = tmp;
-		  prev_link = &tmp;
-		}
-	      else
-		*prev_link = tmp;
+	      *prev_link = tmp;
+	      prev_link = &(tmp->next);
 	      list->proc_tree = gfc_find_sym_in_symtree (list->proc_sym);
 	    }
 	}
@@ -18498,6 +18498,7 @@ resolve_symbol (gfc_symbol *sym)
   gfc_component *c;
   symbol_attribute class_attr;
   gfc_array_spec *as;
+  bool declared_has_coarray_comp = false;
 
   if (sym->resolve_symbol_called >= 1)
     return;
@@ -18691,6 +18692,8 @@ skip_interfaces:
       as = CLASS_DATA (sym)->as;
       class_attr = CLASS_DATA (sym)->attr;
       class_attr.pointer = class_attr.class_pointer;
+      declared_has_coarray_comp = CLASS_DATA (sym)->ts.u.derived
+				  && CLASS_DATA (sym)->ts.u.derived->attr.coarray_comp;
     }
   else
     {
@@ -19158,9 +19161,8 @@ skip_interfaces:
   /* F2008, C541.  */
   if ((((sym->ts.type == BT_DERIVED && sym->ts.u.derived->attr.coarray_comp)
 	|| (sym->ts.type == BT_CLASS && sym->attr.class_ok
-	    && sym->ts.u.derived && CLASS_DATA (sym)
-	    && CLASS_DATA (sym)->attr.coarray_comp))
-       || (class_attr.codimension && class_attr.allocatable))
+	    && declared_has_coarray_comp))
+	|| (class_attr.codimension && class_attr.allocatable))
       && sym->attr.dummy && sym->attr.intent == INTENT_OUT)
     {
       gfc_error ("Variable %qs at %L is INTENT(OUT) and can thus not be an "
@@ -21000,7 +21002,12 @@ gfc_resolve (gfc_namespace *ns)
 
   if (warn_unused_but_set_variable || warn_unused_intent_out
       || warn_unused_read || warn_undefined_vars)
-    warn_unused_vs_set (ns);
+    {
+      int error_count;
+      gfc_get_errors (NULL, &error_count);
+      if (error_count == 0)
+	warn_unused_vs_set (ns);
+    }
 
   if (ns->omp_assumes)
     gfc_resolve_omp_assumptions (ns->omp_assumes);

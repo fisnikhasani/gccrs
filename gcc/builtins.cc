@@ -3589,7 +3589,7 @@ builtin_memcpy_read_str (void *data, void *, HOST_WIDE_INT offset,
    set it into PROBABLE_MAX_SIZE.  */
 
 static void
-determine_block_size (tree len, rtx len_rtx,
+determine_block_size (tree len, rtx &len_rtx,
 		      unsigned HOST_WIDE_INT *min_size,
 		      unsigned HOST_WIDE_INT *max_size,
 		      unsigned HOST_WIDE_INT *probable_max_size)
@@ -3650,9 +3650,13 @@ determine_block_size (tree len, rtx len_rtx,
 	    *probable_max_size = min.to_uhwi () - 1;
 	}
     }
-  gcc_checking_assert (*max_size <=
-		       (unsigned HOST_WIDE_INT)
-			  GET_MODE_MASK (GET_MODE (len_rtx)));
+
+  if (*min_size == *max_size)
+    len_rtx = GEN_INT (*min_size);
+  else
+    gcc_checking_assert (*max_size <=
+			 (unsigned HOST_WIDE_INT)
+			 GET_MODE_MASK (GET_MODE (len_rtx)));
 }
 
 /* Expand a call EXP to the memcpy builtin.
@@ -8092,6 +8096,18 @@ expand_builtin (tree exp, rtx target, rtx subtarget, machine_mode mode,
 	expand_builtin_return (expand_normal (CALL_EXPR_ARG (exp, 0)));
       return const0_rtx;
 
+    case BUILT_IN_CALL_CODE_ADDRESS:
+      /* All valid uses of __builtin_call_code_address () are removed in
+	 in tree-nested.cc or gimple-fold.cc.  */
+      error ("argument to %<__builtin_call_code_address%> must be a function");
+      return const0_rtx;
+
+    case BUILT_IN_CALL_STATIC_CHAIN:
+       /* All valid uses of __builtin_call_static_chain () are removed in
+	  in tree-nested.cc or gimple-fold.cc.  */
+      error ("argument to %<__builtin_call_static_chain%> must be a function");
+      return const0_rtx;
+
     case BUILT_IN_SAVEREGS:
       return expand_builtin_saveregs ();
 
@@ -12368,6 +12384,8 @@ is_simple_builtin (tree decl)
       case BUILT_IN_STACK_SAVE:
       case BUILT_IN_STACK_RESTORE:
       case BUILT_IN_DWARF_CFA:
+      case BUILT_IN_CALL_CODE_ADDRESS:
+      case BUILT_IN_CALL_STATIC_CHAIN:
 	/* Exception state returns or moves registers around.  */
       case BUILT_IN_EH_FILTER:
       case BUILT_IN_EH_POINTER:

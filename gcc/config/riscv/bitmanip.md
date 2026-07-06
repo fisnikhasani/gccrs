@@ -783,6 +783,49 @@
   { operands[2] = GEN_INT (INTVAL (operands[2]) & 0x1f); }
   [(set_attr "type" "bitmanip")])
 
+;; The goal here is to utilize the Zbs extension on SImode values when doing
+;; so is safe.  The problem is if we change the SI sign bit, the sign bit
+;; does not propagate to bits 32..63.  That makes preserving semantics of
+;; this kind of RTL harder and more generally makes using the Zbs extension
+;; harder.
+;;
+;; However, if we know the *other* operand has at least 33 sign bit copies,
+;; then we can use the Zbs intruction followed by an sign extension.  So the
+;; result is a 3->2 split and we'll still have a chance to eliminate the
+;; trailing sign extension.
+(define_split
+  [(set (match_operand:DI 0 "register_operand")
+	(any_or:DI
+	  (sign_extend:DI
+	    (ashift:SI
+	      (const_int 1)
+	      (match_operand:QI 1 "register_operand")))
+	  (match_operand:DI 2 "register_operand")))]
+  "(TARGET_64BIT
+    && TARGET_ZBS
+    && num_sign_bit_copies (operands[2], DImode) >= 33)"
+  [(set (match_dup 0) (any_or:DI (ashift:DI (const_int 1) (match_dup 1))
+				 (match_dup 2)))
+   (set (match_dup 0)
+	(sign_extend:DI (subreg:SI (match_dup 0) 0)))])
+
+(define_split
+  [(set (match_operand:DI 0 "register_operand")
+	(and:DI (not:DI
+	  (sign_extend:DI
+	    (ashift:SI
+	      (const_int 1)
+	      (match_operand:QI 1 "register_operand"))))
+	 (match_operand:DI 2 "register_operand")))]
+  "(TARGET_64BIT
+    && TARGET_ZBS
+    && num_sign_bit_copies (operands[2], DImode) >= 33)"
+  [(set (match_dup 0) (and:DI (rotate:DI (const_int -2) (match_dup 1))
+			      (match_dup 2)))
+   (set (match_dup 0)
+	(sign_extend:DI (subreg:SI (match_dup 0) 0)))])
+
+
 ;; Similarly two patterns for AND generating bclr to
 ;; manipulate a bit in a register
 (define_insn_and_split ""
@@ -1134,8 +1177,14 @@
 ;; If we have the ZBA extension, then we can clear the upper half of a 64
 ;; bit object with a zext.w.  So if we have AND where the constant would
 ;; require synthesis of two or more instructions, but 32->64 sign extension
-;; of the constant is a simm12, then we can use zext.w+andi.  If the adjusted
-;; constant is a single bit constant, then we can use zext.w+bclri
+;; of the constant is a simm12, then we can use zext.w+andi.
+;;
+;; If the adjusted constant is a single bit constant, then we can use
+;; zext.w+bclri
+;;
+;; If the original constant uppermost bit was bit 31 and is a consecutive
+;; run of bits, leave the original form alone since it compresses better
+;; a srliw+slli
 ;;
 ;; With the mvconst_internal pattern claiming a single insn to synthesize
 ;; constants, this must be a define_insn_and_split.
@@ -1154,7 +1203,9 @@
       implement with andi or bclri.  */
    && ((SMALL_OPERAND (sext_hwi (INTVAL (operands[2]), 32))
         || (TARGET_ZBS && popcount_hwi (INTVAL (operands[2])) == 31))
-       && INTVAL (operands[2]) != 0x7fffffff)"
+       && INTVAL (operands[2]) != 0x7fffffff)
+   && !(clz_hwi (UINTVAL (operands[2])) == 32
+        && consecutive_bits_operand (operands[2], word_mode))"
   "#"
   "&& 1"
   [(set (match_dup 0) (zero_extend:DI (match_dup 3)))

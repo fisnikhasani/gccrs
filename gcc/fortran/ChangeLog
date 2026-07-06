@@ -1,3 +1,59 @@
+2026-06-29  Paul Thomas  <pault@gcc.gnu.org>
+
+	PR fortran/84622
+	* resolve.cc (resolve_symbol): In detecting coarray components,
+	use the derived type of the class data component, not the data
+	component itself. New boolean 'declared_has_coarray_comp' to
+	detect this.
+
+2026-06-27  Thomas Koenig  <tkoenig@gcc.gnu.org>
+
+	PR fortran/30438
+	PR fortran/125801
+	* io.cc (gfc_resolve_dt): Set internal unit as used on read.o
+	* resolve.cc (resolve_transfer): Move setting value as used
+	before possible early return.
+	(gfc_resolve): Only call warn_unused_vs_set if there are no
+	pending errors.
+
+2026-06-26  Harald Anlauf  <anlauf@gmx.de>
+
+	PR fortran/125902
+	* dump-parse-tree.cc (needs_CFI_cdesc): New helper function to
+	determine when struct CFI_cdesc_t is used.
+	(has_cfi_cdesc): Use it here...
+	(get_c_type_name): ... and here.
+
+2026-06-26  Jerry DeLisle  <jvdelisle@gcc.gnu.org>
+
+	PR fortran/121972
+	* trans-array.cc (has_class_alloc_comp): Change to atte.class_pointer.
+
+2026-06-24  Jerry DeLisle  <jvdelisle@gcc.gnu.org>
+
+	PR fortran/125761
+	* trans-array.cc (build_array_ref): When the descriptor's
+	canonical type is a class type, pass the class container as
+	'decl' to gfc_build_array_ref for genuine array element
+	references (rank > 0), so the element size can be corrected
+	for an unlimited-polymorphic character payload.
+	* trans-types.cc (gfc_typenode_for_spec): Move setting the
+	GFC_CLASS_TYPE_P bit to..
+	(gfc_get_derived_type): .. and use attr.is_class.
+	(gfc_get_derived_type): Move setting the GFC_CLASS_TYPE_P bit
+	as the last step before returning the derived->backend_decl
+	if the derived->attr.is_class is true.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* trans-openmp.cc (gfc_trans_omp_barrier): Pass GOMP_BARRIER_EXPLICIT
+	to GOMP_barrier_ext.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* types.def (BT_COMPLEX_INT): New type.
+	(BT_FN_COMPLEX_INT): New function type.
+
 2026-06-23  Kwok Cheung Yeung  <kcyeung@baylibre.com>
 	    Sandra Loosemore  <sloosemore@baylibre.com>
 

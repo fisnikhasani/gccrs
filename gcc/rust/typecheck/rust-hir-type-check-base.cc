@@ -17,6 +17,7 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-hir-type-check-base.h"
+#include "options.h"
 #include "rust-compile-base.h"
 #include "rust-hir-item.h"
 #include "rust-hir-type-check-expr.h"
@@ -397,7 +398,43 @@ TypeCheckBase::resolve_literal (const Analysis::NodeMapping &expr_mappings,
 					   TyTy::Region::make_static ());
       }
       break;
+    case HIR::Literal::LitType::C_STRING:
+      {
+	// Throw error if C string literal contains null byte
+	if (literal.as_string ().find ('\0') != std::string::npos)
+	  {
+	    rust_error_at (
+	      locus, "null characters in C string literals are not supported");
+	    infered = new TyTy::ErrorType (expr_mappings.get_hirid (), locus);
+	    break;
+	  }
 
+	auto lang_item_defined
+	  = mappings.lookup_lang_item (LangItem::Kind::CSTR);
+
+	if (!lang_item_defined)
+	  {
+	    rust_error_at (locus, "unable to find lang item: %<c_str%>");
+	    infered = new TyTy::ErrorType (expr_mappings.get_hirid (), locus);
+	    break;
+	  }
+
+	DefId cstr_defid = lang_item_defined.value ();
+	HIR::Item *item = mappings.lookup_defid (cstr_defid).value ();
+
+	TyTy::BaseType *item_type = nullptr;
+	bool ok = context->lookup_type (item->get_mappings ().get_hirid (),
+					&item_type);
+
+	rust_assert (ok);
+	rust_assert (item_type->get_kind () == TyTy::TypeKind::ADT);
+
+	infered = new TyTy::ReferenceType (expr_mappings.get_hirid (),
+					   TyTy::TyVar (item_type->get_ref ()),
+					   Mutability::Imm,
+					   TyTy::Region::make_static ());
+      }
+      break;
     default:
       rust_unreachable ();
       break;
@@ -679,6 +716,18 @@ TypeCheckBase::resolve_generic_params (
       auto pty = static_cast<TyTy::ParamType *> (bpty);
 
       TypeResolveGenericParam::ApplyAnyTraitBounds (type_param, pty);
+
+      // The drop_bounds lint: a `T: Drop` bound is most likely a mistake, as
+      // `Drop` bounds do not constrain a generic parameter in a useful way.
+      if (flag_unused_check_2_0)
+	if (auto drop = mappings.lookup_lang_item (LangItem::Kind::DROP))
+	  for (auto &bound : pty->get_specified_bounds ())
+	    if (bound.get_id () == drop.value ())
+	      rust_warning_at (
+		type_param.get_locus (), OPT_Wunused_variable,
+		"bounds on %<Drop%> are most likely incorrect, "
+		"use %<core::mem::needs_drop%> to detect whether "
+		"a type has a destructor");
     }
 }
 

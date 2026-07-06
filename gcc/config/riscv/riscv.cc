@@ -884,6 +884,31 @@ static const struct riscv_tune_param spacemit_x60_tune_info= {
   true,						/* prefer-agnostic.  */
 };
 
+/* Costs to use when optimizing for Spacemit x100.  */
+static const struct riscv_tune_param spacemit_x100_tune_info = {
+  {COSTS_N_INSNS (3), COSTS_N_INSNS (3)},	/* fp_add */
+  {COSTS_N_INSNS (4), COSTS_N_INSNS (4)},	/* fp_mul */
+  {COSTS_N_INSNS (12), COSTS_N_INSNS (20)},	/* fp_div */
+  {COSTS_N_INSNS (2), COSTS_N_INSNS (3)},	/* int_mul */
+  {COSTS_N_INSNS (14), COSTS_N_INSNS (22)},	/* int_div */
+  4,						/* issue_rate */
+  3,						/* branch_cost */
+  3,						/* memory_cost */
+  3,						/* fmv_cost */
+  false,					/* slow_unaligned_access */
+  true,						/* vector_unaligned_access */
+  false,					/* use_divmod_expansion */
+  true,						/* overlap_op_by_pieces */
+  false,					/* use_zero_stride_load */
+  false,					/* speculative_sched_vsetvl */
+  RISCV_FUSE_NOTHING,				/* fusible_ops */
+  &generic_vector_cost,				/* vector cost */
+  NULL,						/* function_align */
+  NULL,						/* jump_align */
+  NULL,						/* loop_align */
+  true,						/* prefer-agnostic.  */
+};
+
 /* Costs to use when optimizing for Andes 23 series.  */
 static const struct riscv_tune_param andes_23_tune_info = {
   {COSTS_N_INSNS (4), COSTS_N_INSNS (5)},       /* fp_add */
@@ -13347,6 +13372,11 @@ bool
 riscv_support_vector_misalignment (machine_mode mode, int misalignment,
 				   bool is_packed, bool is_gather_scatter)
 {
+  /* For vectorization in scalar registers, consider slow unaligned
+     access.  */
+  if (!riscv_vector_mode_p (mode))
+    return !riscv_slow_unaligned_access_p;
+
   /* IS_PACKED is true if the corresponding scalar element is not naturally
      aligned.  If the misalignment is unknown and the access is packed
      we defer to the default hook which will check if movmisalign is present.
@@ -15806,6 +15836,32 @@ synthesize_ior_xor (rtx_code code, rtx operands[3])
      is complete. */
   if (budget < 0)
     {
+      /* We're going to have to synthesize the constant.  However, if
+	 we have Zbb, then we have XNOR and ORN.  So if the inverted constant
+	 is cheaper, invert it and use XNOR/ORN.  */
+      if (TARGET_ZBB
+	  && riscv_const_insns (GEN_INT (~UINTVAL (operands[2])), true) > 0
+	  && (riscv_const_insns (operands[2], true)
+	      > riscv_const_insns (GEN_INT (~UINTVAL (operands[2])), true)))
+	{
+	  rtx x = force_reg (word_mode, GEN_INT (~UINTVAL (operands[2])));
+
+	  /* Unfortunately canonical forms vary here.  */
+	  if (code == IOR)
+	    {
+	      x = gen_rtx_NOT (word_mode, x);
+	      x = gen_rtx_IOR (word_mode, x, operands[1]);
+	    }
+	  else
+	    {
+	      x = gen_rtx_XOR (word_mode, x, operands[1]);
+	      x = gen_rtx_NOT (word_mode, x);
+	    }
+
+	  emit_insn (gen_rtx_SET (operands[0], x));
+	  return true;
+	}
+
       rtx x = force_reg (word_mode, operands[2]);
       x = gen_rtx_fmt_ee (code, word_mode, operands[1], x);
       emit_insn (gen_rtx_SET (operands[0], x));
@@ -15926,6 +15982,32 @@ synthesize_and (rtx operands[3])
       return true;
     }
 
+  /* For RV64 we can exploit srlw to mask off bits on both the
+     high and low ends, then shift it back into position.  So
+     a two instruction sequence.  */
+  t = UINTVAL (operands[2]);
+  if (TARGET_64BIT
+      && consecutive_bits_operand (operands[2], word_mode)
+      && budget >= 2
+      && clz_hwi (t) == 32)
+    {
+      /* The srliw will wipe the upper 32 bits and low bits at the
+	 same time.  */
+      rtx x = gen_rtx_LSHIFTRT (SImode,
+				gen_lowpart (SImode, operands[1]),
+				GEN_INT (ctz_hwi (t)));
+      x = gen_rtx_SIGN_EXTEND (DImode, x);
+      output = gen_reg_rtx (word_mode);
+      emit_insn (gen_rtx_SET (output, x));
+      input = output;
+
+      /* Now shift it back to its proper position.  */
+      x = gen_rtx_ASHIFT (DImode, input, GEN_INT (ctz_hwi (t)));
+      emit_insn (gen_rtx_SET (operands[0], x));
+      return true;
+    }
+
+
   /* If we shift right to eliminate the trailing zeros and
      the result is a SMALL_OPERAND, then it's a shift right,
      andi and shift left.  */
@@ -16013,6 +16095,21 @@ synthesize_and (rtx operands[3])
      patch in the series is enabled.  */
   if (ival || budget < 0)
     {
+      /* We're going to have to synthesize the constant.  However, if
+	 we have Zbb, then we have ANDN.  So if the inverted constant
+	 is cheaper, invert it and use ANDN.  */
+      if (TARGET_ZBB
+	  && riscv_const_insns (GEN_INT (~UINTVAL (operands[2])), true) > 0
+	  && (riscv_const_insns (operands[2], true)
+	      > riscv_const_insns (GEN_INT (~UINTVAL (operands[2])), true)))
+	{
+	  rtx x = force_reg (word_mode, GEN_INT (~UINTVAL (operands[2])));
+	  x = gen_rtx_NOT (word_mode, x);
+	  x = gen_rtx_AND (word_mode, x, operands[1]);
+	  emit_insn (gen_rtx_SET (operands[0], x));
+	  return true;
+	}
+
       rtx x = force_reg (word_mode, operands[2]);
       x = gen_rtx_AND (word_mode, operands[1], x);
       emit_insn (gen_rtx_SET (operands[0], x));
@@ -16420,6 +16517,9 @@ riscv_memtag_tag_bitsize ()
 #define TARGET_FUNCTION_ARG_BOUNDARY riscv_function_arg_boundary
 #undef TARGET_FNTYPE_ABI
 #define TARGET_FNTYPE_ABI riscv_fntype_abi
+
+# undef  TARGET_SETJMP_PRESERVES_NONVOLATILE_REGS_P
+# define TARGET_SETJMP_PRESERVES_NONVOLATILE_REGS_P hook_bool_void_true
 
 #undef TARGET_SHRINK_WRAP_GET_SEPARATE_COMPONENTS
 #define TARGET_SHRINK_WRAP_GET_SEPARATE_COMPONENTS \

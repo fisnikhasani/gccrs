@@ -763,7 +763,10 @@ BaseType::contains_infer () const
     }
   else if (auto arr = x->try_as<const ArrayType> ())
     {
-      return arr->get_element_type ()->contains_infer ();
+      auto type_infer = (arr->get_element_type ()->contains_infer ());
+      if (type_infer)
+	return type_infer;
+      return arr->get_capacity ()->contains_infer ();
     }
   else if (auto slice = x->try_as<const SliceType> ())
     {
@@ -797,6 +800,13 @@ BaseType::contains_infer () const
   else if (x->is<InferType> ())
     {
       return x;
+    }
+  else if (x->get_kind () == TyTy::TypeKind::CONST)
+    {
+      if (x->as_const_type ()->const_kind () == BaseConstType::Infer)
+	{
+	  return x;
+	}
     }
 
   return nullptr;
@@ -3060,7 +3070,8 @@ ReferenceType::get_region () const
 bool
 ReferenceType::is_dyn_object () const
 {
-  return is_dyn_slice_type () || is_dyn_str_type () || is_dyn_obj_type ();
+  return is_dyn_slice_type () || is_dyn_str_type () || is_dyn_obj_type ()
+	 || is_dyn_cstr_type ();
 }
 
 static const TyTy::BaseType *
@@ -3119,6 +3130,27 @@ ReferenceType::is_dyn_obj_type (const TyTy::DynamicObjectType **dyn) const
     return true;
 
   *dyn = static_cast<const TyTy::DynamicObjectType *> (element);
+  return true;
+}
+
+bool
+ReferenceType::is_dyn_cstr_type (const TyTy::ADTType **adt) const
+{
+  if (get_base ()->get_kind () != TyTy::TypeKind::ADT)
+    return false;
+
+  const TyTy::ADTType *adt_ty
+    = static_cast<const TyTy::ADTType *> (get_base ());
+  auto &mappings = Analysis::Mappings::get ();
+  auto cstr_item = mappings.lookup_lang_item (LangItem::Kind::CSTR);
+
+  if (!cstr_item.has_value ())
+    return false;
+
+  if (cstr_item.value () != adt_ty->get_id ())
+    return false;
+
+  *adt = adt_ty;
   return true;
 }
 
@@ -4514,6 +4546,29 @@ DynamicObjectType::get_object_items () const
 	}
     }
   return items;
+}
+
+WARN_UNUSED_RESULT tl::optional<BaseType *>
+try_get_box_inner_type (BaseType *base)
+{
+  if (base->get_kind () != TypeKind::ADT)
+    return tl::nullopt;
+
+  ADTType *adt = static_cast<ADTType *> (base);
+  auto owned_box_lookup
+    = Analysis::Mappings::get ().lookup_lang_item (LangItem::Kind::OWNED_BOX);
+
+  if (owned_box_lookup && adt->get_id () == *owned_box_lookup)
+    {
+      auto args = adt->get_substitution_arguments ();
+      if (!args.is_empty ())
+	{
+	  auto inner = args.get_mappings ().front ().get_tyty ();
+	  rust_assert (inner != nullptr);
+	  return inner;
+	}
+    }
+  return tl::nullopt;
 }
 
 } // namespace TyTy

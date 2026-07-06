@@ -1976,7 +1976,7 @@ static bool
 has_class_alloc_comp (gfc_symbol *der)
 {
   for (gfc_component *c = der->components; c; c = c->next)
-    if (c->ts.type == BT_CLASS && !c->attr.pointer)
+    if (c->ts.type == BT_CLASS && !c->attr.class_pointer)
       return true;
   return false;
 }
@@ -4493,7 +4493,18 @@ build_array_ref (tree desc, tree offset, tree decl, tree vptr)
       type = TREE_TYPE (TREE_OPERAND (cdesc, 0));
       if (TYPE_CANONICAL (type)
 	  && GFC_CLASS_TYPE_P (TYPE_CANONICAL (type)))
-	vptr = gfc_class_vptr_get (TREE_OPERAND (cdesc, 0));
+	{
+	  vptr = gfc_class_vptr_get (TREE_OPERAND (cdesc, 0));
+	  /* Pass the class container as decl so that gfc_build_array_ref can
+	     correct the element size for an unlimited polymorphic character
+	     payload (the _len field), which the vptr size alone omits.  Only do
+	     this for a genuine array element reference; a scalar coarray has
+	     nothing to span-correct and gfc_build_array_ref asserts decl is null
+	     for it.  */
+	  if (decl == NULL_TREE
+	      && GFC_TYPE_ARRAY_RANK (TREE_TYPE (cdesc)) > 0)
+	    decl = TREE_OPERAND (cdesc, 0);
+	}
     }
 
   tmp = gfc_conv_array_data (desc);
@@ -7232,10 +7243,7 @@ gfc_conv_array_initializer (tree type, gfc_expr * expr)
 			       &expr->where, flag_max_array_constructor);
 	      return NULL_TREE;
 	    }
-          if (mpz_cmp_si (c->offset, 0) != 0)
-            index = gfc_conv_mpz_to_tree (c->offset, gfc_index_integer_kind);
-          else
-            index = NULL_TREE;
+	  index = gfc_conv_mpz_to_tree (c->offset, gfc_index_integer_kind);
 
 	  if (mpz_cmp_si (c->repeat, 1) > 0)
 	    {
@@ -7306,7 +7314,7 @@ gfc_conv_array_initializer (tree type, gfc_expr * expr)
 	    CONSTRUCTOR_APPEND_ELT (v, index, se.expr);
 	  else
 	    {
-	      if (index != NULL_TREE)
+	      if (!integer_zerop (index))
 		CONSTRUCTOR_APPEND_ELT (v, index, se.expr);
 	      CONSTRUCTOR_APPEND_ELT (v, range, se.expr);
 	    }

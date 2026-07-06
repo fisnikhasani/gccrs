@@ -1,3 +1,55 @@
+2026-06-29  Georg-Johann Lay  <avr@gjlay.de>
+
+	* mangle.cc (mangle_ctor_vtbl_for_type): Fix production in comment.
+
+2026-06-28  Kevin Stefanov  <kevinstefanov15@gmail.com>
+
+	PR middle-end/125274
+	* call.cc (conversion): Likewise.
+	* cp-tree.h (saved_scope): Likewise.
+	(language_function): Likewise.
+	(cp_decl_specifier_seq): Likewise.
+	(cp_declarator): Likewise.
+	* name-lookup.h (cp_binding_level): Likewise.
+
+2026-06-26  Marek Polacek  <polacek@redhat.com>
+
+	PR c++/125900
+	* reflect.cc (check_out_of_consteval_use_r): Don't walk
+	SPLICE_EXPR.
+
+2026-06-25  Marek Polacek  <polacek@redhat.com>
+
+	PR c++/125922
+	* parser.cc (cp_parser_reflect_expression): Temporarily set
+	parser->type_definition_forbidden_message.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	* module.cc (trees_out::decl_value): Adjust for enum class
+	tree_code.
+
+2026-06-24  Marek Polacek  <polacek@redhat.com>
+
+	PR c++/125939
+	* cp-tree.h (build_const_lref): Declare.
+	* method.cc (build_stub_type): Pass tf_ignore_bad_quals to
+	cp_build_qualified_type.
+	* reflect.cc (build_const_lref): New.
+	(get_range_elts): Use it.
+	(eval_is_copy_constructible_type): Likewise.
+	(eval_is_copy_assignable_type): Likewise.
+	(eval_is_trivially_copy_assignable_type): Likewise.
+	(eval_is_nothrow_copy_constructible_type): Likewise.
+	(eval_is_nothrow_copy_assignable_type): Likewise.
+	* tree.cc (trivially_copy_constructible_p): Likewise.
+	(handle_annotation_attribute): Likewise.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* semantics.cc (finish_omp_barrier): Push GOMP_BARRIER_EXPLICIT
+	onto the argument vector.
+
 2026-06-23  Jason Merrill  <jason@redhat.com>
 
 	PR c++/125334

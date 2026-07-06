@@ -2958,7 +2958,7 @@
 ;; -------------------------------------------------------------------------
 
 (define_expand "vec_init<mode><Vel>"
-  [(match_operand:SVE_FULL 0 "register_operand")
+  [(match_operand:SVE_ALL 0 "register_operand")
     (match_operand 1 "")]
   "TARGET_SVE"
   {
@@ -3002,17 +3002,17 @@
 
 ;; Shift an SVE vector left and insert a scalar into element 0.
 (define_insn "vec_shl_insert_<mode>"
-  [(set (match_operand:SVE_FULL 0 "register_operand")
-	(unspec:SVE_FULL
-	  [(match_operand:SVE_FULL 1 "register_operand")
+  [(set (match_operand:SVE_ALL 0 "register_operand")
+	(unspec:SVE_ALL
+	  [(match_operand:SVE_ALL 1 "register_operand")
 	   (match_operand:<VEL> 2 "aarch64_reg_or_zero")]
 	  UNSPEC_INSR))]
   "TARGET_SVE"
   {@ [ cons: =0 , 1 , 2  ; attrs: movprfx ]
-     [ ?w       , 0 , rZ ; *              ] insr\t%0.<Vetype>, %<vwcore>2
-     [ w        , 0 , w  ; *              ] insr\t%0.<Vetype>, %<Vetype>2
-     [ ??&w     , w , rZ ; yes            ] movprfx\t%0, %1\;insr\t%0.<Vetype>, %<vwcore>2
-     [ ?&w      , w , w  ; yes            ] movprfx\t%0, %1\;insr\t%0.<Vetype>, %<Vetype>2
+     [ ?w       , 0 , rZ ; *              ] insr\t%0.<Vctype>, %<vccore>2
+     [ w        , 0 , w  ; *              ] insr\t%0.<Vctype>, %<Vctype>2
+     [ ??&w     , w , rZ ; yes            ] movprfx\t%0, %1\;insr\t%0.<Vctype>, %<vccore>2
+     [ ?&w      , w , w  ; yes            ] movprfx\t%0, %1\;insr\t%0.<Vctype>, %<Vctype>2
   }
   [(set_attr "sve_type" "sve_int_general")]
 )
@@ -4897,7 +4897,7 @@
 )
 
 ;; Predicated highpart multiplication.
-(define_insn "@aarch64_pred_<optab><mode>"
+(define_insn_and_split "@aarch64_pred_<optab><mode>"
   [(set (match_operand:SVE_I 0 "register_operand")
 	(unspec:SVE_I
 	  [(match_operand:<VPRED> 1 "register_operand")
@@ -4911,6 +4911,13 @@
      [ w        , Upl , 0  , w ; *              ] <su>mulh\t%0.<Vetype>, %1/m, %0.<Vetype>, %3.<Vetype>
      [ ?&w      , Upl , w  , w ; yes            ] movprfx\t%0, %2\;<su>mulh\t%0.<Vetype>, %1/m, %0.<Vetype>, %3.<Vetype>
   }
+  "TARGET_SVE2"
+  [(set (match_dup 0)
+	(unspec:SVE_I
+	  [(match_dup 2)
+	   (match_dup 3)]
+	  MUL_HIGHPART))]
+  ""
   [(set_attr "sve_type" "sve_int_mul")]
 )
 

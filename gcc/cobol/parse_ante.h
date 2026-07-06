@@ -247,8 +247,12 @@ is_cobol_charset( const char name[] ) {
 }
 
 bool
-in_procedure_division(void) {
+in_procedure_division() {
   return current_division == procedure_div_e;
+}
+bool
+in_environment_division() {
+  return current_division == environment_div_e;
 }
 
 static inline bool
@@ -621,6 +625,9 @@ struct arith_t {
 static cbl_refer_t * ast_op( const cbl_loc_t& loc,
                              cbl_refer_t *lhs, char op, cbl_refer_t *rhs );
 
+static void ast_relop( const cbl_loc_t& loc, cbl_field_t *tgt,
+                       cbl_refer_t lhs, relop_t relop, cbl_refer_t rhs );
+
 static void ast_add( arith_t *arith );
 static bool ast_subtract( arith_t *arith );
 static bool ast_multiply( arith_t *arith );
@@ -691,7 +698,7 @@ class eval_subject_t {
 
   // compare sets result
   cbl_field_t * compare( int token );
-  cbl_field_t * compare( relop_t op,
+  cbl_field_t * compare( const cbl_loc_t& loc, relop_t op,
                          const cbl_refer_t& object, bool deciding = false);
   cbl_field_t * compare( const cbl_refer_t& object,
                          const cbl_refer_t& object2 = nullptr);
@@ -745,7 +752,7 @@ class eval_subject_t {
     if( pcol == columns.end() ) return false;
     dbgmsg("%s() if not %s goto %s", __func__, result->name, when()->name);
 
-    if( compare(op, object, true) ) {
+    if( compare(cbl_loc_t(), op, object, true) ) {
       if( invert ) {
         parser_logop( result, NULL, not_op, result );
       }
@@ -3201,10 +3208,10 @@ cbl_field_t::blank_initial( size_t nchar, cbl_figconst_t figconst ) {
   
   switch(codeset.stride()) {
   case 1: 
-    blankit( reinterpret_cast<uint8_t*>(init), nchar, uint8_t(space_char) );
+    blankit( reinterpret_cast<uint8_t*>(init), nchar, uint8_t(space_char%0x100) );
     break;
   case 2:
-    blankit( reinterpret_cast<uint16_t*>(init), nchar, uint16_t(space_char) );
+    blankit( reinterpret_cast<uint16_t*>(init), nchar, uint16_t(space_char%0x10000) );
     break;
   case 4:
     blankit( reinterpret_cast<uint32_t*>(init), nchar, uint32_t(space_char) );

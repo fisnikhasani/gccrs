@@ -13978,7 +13978,10 @@ safe.
 GCC implements taking the address of a nested function using a technique
 called @dfn{trampolines}.  This technique was described in
 @cite{Lexical Closures for C++} (Thomas M. Breuel, USENIX
-C++ Conference Proceedings, October 17-21, 1988).
+C++ Conference Proceedings, October 17-21, 1988).  It is also
+possible to use the built-in @code{__builtin_call_with_static_chain}
+(@pxref{Constructing Calls}) to invoke a nested function indirectly
+without the use of a trampoline.
 
 A nested function can jump to a label inherited from a containing
 function, provided the label is explicitly declared in the containing
@@ -16674,11 +16677,73 @@ myopen (const char *path, int oflag, ...)
 The @var{call_exp} expression must be a function call, and the
 @var{pointer_exp} expression must be a pointer.  The @var{pointer_exp}
 is passed to the function call in the target's static chain location.
-The result of builtin is the result of the function call.
+The result of the built-in is the result of the function call.
+This built-in can be used to call Go closures from C, and it can be
+used to call @xref{Nested Functions} using the code address and
+static chain obtained with @code{__builtin_call_code_address} and
+@code{__builtin_call_static_chain}, respectively.
 
-@emph{Note:} This builtin is only available for C@.
-This builtin can be used to call Go closures from C.
+@smallexample
+int process(int (*callback)(int, void *), void *data)
+@{
+  int value = 5;
+  return (*callback)(value, data);
+@}
 
+struct call_info @{
+  int (*code)(int);
+  void *chain;
+@};
+
+int callback(int arg, void *data)
+@{
+   struct call_info *ci = data;
+   return __builtin_call_with_static_chain(ci->code(arg), ci->chain);
+@}
+
+int doit(int x)
+@{
+  int worker(int y)
+  @{
+    return x + y;
+  @}
+
+  struct call_info ci = @{
+    ci.code = __builtin_call_code_address(worker),
+    ci.chain = __builtin_call_static_chain(worker),
+  @};
+
+  return process(callback, &ci);
+@}
+@end smallexample
+
+@emph{Note:} This built-in is only available for C@.
+@enddefbuiltin
+
+@defbuiltin{@var{type} __builtin_call_static_chain (@var{pointer_exp})}
+
+The @var{pointer_exp} expression must a function identifier.
+The result is the static chain pointer that can be used to call
+the function in its current context using the built-in
+@code{__builtin_call_with_static_chain}, or a null pointer if
+no static chain is needed.
+
+@emph{Note:} The lifetime of a nested function that accesses the
+environment of an enclosing function is limited.  Any use of the
+static chain after this lifetime has ended has undefined behavior.
+@enddefbuiltin
+
+@defbuiltin{@var{type} __builtin_call_code_address (@var{pointer_exp})}
+
+The @var{pointer_exp} expression must be a function identifier.
+The result is the static address of the function.  For a nested function,
+it represents the address of the underlying machine code and not of a
+trampoline that would otherwise be generated to setup the static chain.
+The code address can be used together with a static chain pointer to
+call the function with the built-in @code{__builtin_call_with_static_chain}.
+
+@emph{Note:} Calling a function that requires a static chain using the
+code address directly in a function call expression has undefined behavior.
 @enddefbuiltin
 
 @node Return Address
@@ -24015,6 +24080,29 @@ defined, then the @code{__builtin_set_fpscr_rn} built-in returns the FPSCR
 fields.  If not defined, the @code{__builtin_set_fpscr_rn} does not return a
 value.  If the @option{-msoft-float} option is used, the
 @code{__builtin_set_fpscr_rn} built-in will not return a value.
+@defbuiltin{bool __builtin_ppc_atomic_cas_local (@var{type} *@var{ptr}, @var{type} *@var{expected}, @var{type} *@var{desired}, bool @var{weak}, int @var{success_memorder}, int @var{failure_memorder})}
+This built-in function implements a PowerPC-specific atomic compare and
+exchange operation.  It behaves identically to the generic
+@code{__atomic_compare_exchange} built-in function, with one key difference:
+it uses an EH (Extended Hint) value of 1 in the @code{lbarx}, @code{lharx},
+@code{lwarx}, or @code{ldarx} instruction (load-and-reserve indexed).
+
+The EH bit provides a hint to the processor that the program will perform a
+subsequent store to the specified location.  This hint helps optimize lock
+contention on PowerPC systems by keeping the lock cacheline in the local
+processor longer, reducing performance penalties from cache coherence protocol
+traffic.
+
+For details on the behavior and semantics of the arguments, refer to the
+@code{__atomic_compare_exchange} documentation.
+
+The first three pointer arguments (@var{ptr}, @var{expected}, and
+@var{desired}) must point to complete types, and the size of the types they
+point to must be the same and known at compile time.  The types themselves may
+differ.  The supported type sizes are 1, 2, 4, 8, or 16 bytes.
+
+@enddefbuiltin
+
 
 @node Basic PowerPC Built-in Functions Available on ISA 2.05
 @subsubsection Basic PowerPC Built-in Functions Available on ISA 2.05
@@ -26761,6 +26849,105 @@ int vec_any_le (vector signed __int128, vector signed __int128);
 int vec_any_le (vector unsigned __int128, vector unsigned __int128);
 @end smallexample
 
+@subsubheading PowerPC Elliptic Curve Cryptography Assist Built-in-Functions
+
+The following additional built-in functions may be available for the
+PowerPC family of processors, on Future ISA.
+These instructions provide hardware acceleration for Elliptic Curve
+Cryptography (ECC) operations, specifically optimized for P-256 and P-384
+elliptic curves.
+
+The ECC built-in functions are organized into five categories:
+multiply-multiply operations, scaled multiply-sum operations,
+quadword add/subtract operations, merge operations and rebase operations.
+
+@smallexample
+vector unsigned __int128
+__builtin_vsx_xxmulmul (vector unsigned long long ,
+                        vector unsigned long long ,
+                        const int);
+vector unsigned __int128
+__builtin_vsx_xxmulmulhiadd (vector unsigned __int128 ,
+                             vector unsigned long long ,
+                             vector unsigned long long ,
+                             const int ,
+                             const int ,
+                             const int);
+vector unsigned __int128
+__builtin_vsx_xxmulmulloadd (vector unsigned __int128 ,
+                             vector unsigned long long ,
+                             vector unsigned long long ,
+                             const int ,
+                             const int);
+vector unsigned __int128
+__builtin_vsx_xxssumudm (vector unsigned __int128 ,
+                         vector unsigned long long ,
+                         vector unsigned long long ,
+                         const int);
+vector unsigned __int128
+__builtin_vsx_xxssumudmc (vector unsigned __int128 ,
+                          vector unsigned long long ,
+                          vector unsigned long long ,
+                          const int);
+vector unsigned __int128
+__builtin_vsx_xxssumudmcext (vector unsigned long long ,
+                             vector unsigned long long ,
+                             vector unsigned __int128 ,
+                             const int);
+vector unsigned __int128
+__builtin_vsx_xsaddadduqm (vector unsigned __int128 ,
+                           vector unsigned __int128 ,
+                           vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsaddaddsuqm (vector unsigned __int128 ,
+                            vector unsigned __int128 ,
+                            vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsaddsubuqm (vector unsigned __int128 ,
+                           vector unsigned __int128 ,
+                           vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsaddsubsuqm (vector unsigned __int128 ,
+                            vector unsigned __int128 ,
+                            vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsmerge2t1uqm (vector unsigned __int128 ,
+                             vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsmerge2t2uqm (vector unsigned __int128 ,
+                             vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsmerge2t3uqm (vector unsigned __int128 ,
+                             vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsmerge3t1uqm (vector unsigned __int128 ,
+                             vector unsigned __int128 ,
+                             vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase2t1uqm (vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase2t2uqm (vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase2t3uqm (vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase2t4uqm (vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase3t1uqm (vector unsigned __int128 ,
+                              vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase3t2uqm (vector unsigned __int128 ,
+                              vector unsigned __int128 ,
+                              vector unsigned __int128);
+vector unsigned __int128
+__builtin_vsx_xsrebase3t3uqm (vector unsigned __int128 ,
+                              vector unsigned __int128 ,
+                              vector unsigned __int128);
+@end smallexample
 
 The following instances are extension of the existing overloaded built-ins
 @code{vec_sld}, @code{vec_sldw}, @code{vec_slo}, @code{vec_sro}, @code{vec_srl}
@@ -26846,6 +27033,24 @@ vec_t __builtin_galois_field_mult_gcm (vec_t, vec_t);
 vec_t __builtin_galois_field_mult_xts (vec_t, vec_t);
 @end smallexample
 
+@subsubheading PowerPC Vector Integer Multiply High Built-in Functions
+
+Future PowerPC processors may add new instructions for vector integer
+multiply high for halfword. GCC provides support for these instructions through
+the following built-in functions.
+
+@findex vec_mulh
+@smallexample
+@exdent vector signed short
+@exdent vec_mulh (vector signed short @var{a}, vector signed short @var{b});
+@exdent vector unsigned short
+@exdent vec_mulh (vector unsigned short @var{a}, vector unsigned short @var{b});
+@end smallexample
+
+For each integer value @code{i} from 0 to 7, do the following. The integer
+value in halfword element @code{i} of @var{a} is multiplied by the integer
+value in halfword element @code{i} of @var{b}. The high-order 16 bits of the
+32-bit product are placed into halfword element @code{i} of the vector returned.
 
 @node PowerPC Hardware Transactional Memory Built-in Functions
 @subsection PowerPC Hardware Transactional Memory Built-in Functions

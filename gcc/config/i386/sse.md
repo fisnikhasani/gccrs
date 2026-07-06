@@ -4611,6 +4611,23 @@
    (set_attr "prefix" "orig,vex")
    (set_attr "mode" "<MODE>")])
 
+(define_insn "*<sse>_imaskcmp<mode>3_comm"
+  [(set (match_operand:<sseintvecmode> 0 "register_operand" "=x,x")
+	(match_operator:<sseintvecmode> 3 "sse_comparison_operator"
+	  [(match_operand:VF_128_256 1 "register_operand" "%0,x")
+	   (match_operand:VF_128_256 2 "vector_operand" "xBm,xjm")]))]
+  "TARGET_SSE
+   && GET_RTX_CLASS (GET_CODE (operands[3])) == RTX_COMM_COMPARE"
+  "@
+   cmp%D3<ssemodesuffix>\t{%2, %0|%0, %2}
+   vcmp%D3<ssemodesuffix>\t{%2, %1, %0|%0, %1, %2}"
+  [(set_attr "isa" "noavx,avx")
+   (set_attr "addr" "*,gpr16")
+   (set_attr "type" "ssecmp")
+   (set_attr "length_immediate" "1")
+   (set_attr "prefix" "orig,vex")
+   (set_attr "mode" "<MODE>")])
+
 (define_insn "<sse>_maskcmp<mode>3"
   [(set (match_operand:VF_128_256 0 "register_operand" "=x,x")
 	(match_operator:VF_128_256 3 "sse_comparison_operator"
@@ -5530,8 +5547,8 @@
 (define_expand "vcond_mask_<mode><sseintvecmodelower>"
   [(set (match_operand:VI_256_AVX2 0 "register_operand")
 	(vec_merge:VI_256_AVX2
-	  (match_operand:VI_256_AVX2 1 "nonimm_or_0_or_1s_operand")
-	  (match_operand:VI_256_AVX2 2 "nonimm_or_0_operand")
+	  (match_operand:VI_256_AVX2 1 "vector_or_const_vector_operand")
+	  (match_operand:VI_256_AVX2 2 "vector_or_const_vector_operand")
 	  (match_operand:<sseintvecmode> 3 "register_operand")))]
   "TARGET_AVX"
 {
@@ -5543,8 +5560,8 @@
 (define_expand "vcond_mask_<mode><sseintvecmodelower>"
   [(set (match_operand:VI_128 0 "register_operand")
 	(vec_merge:VI_128
-	  (match_operand:VI_128 1 "vector_or_0_or_1s_operand")
-	  (match_operand:VI_128 2 "nonimm_or_0_operand")
+	  (match_operand:VI_128 1 "vector_or_const_vector_operand")
+	  (match_operand:VI_128 2 "vector_or_const_vector_operand")
 	  (match_operand:<sseintvecmode> 3 "register_operand")))]
   "TARGET_SSE2"
 {
@@ -5556,8 +5573,8 @@
 (define_expand "vcond_mask_v1tiv1ti"
   [(set (match_operand:V1TI 0 "register_operand")
 	(vec_merge:V1TI
-	  (match_operand:V1TI 1 "vector_or_0_or_1s_operand")
-	  (match_operand:V1TI 2 "nonimm_or_0_operand")
+	  (match_operand:V1TI 1 "vector_or_const_vector_operand")
+	  (match_operand:V1TI 2 "vector_or_const_vector_operand")
 	  (match_operand:V1TI 3 "register_operand")))]
   "TARGET_SSE2"
 {
@@ -5569,8 +5586,8 @@
 (define_expand "vcond_mask_<mode><sseintvecmodelower>"
   [(set (match_operand:VF_256 0 "register_operand")
 	(vec_merge:VF_256
-	  (match_operand:VF_256 1 "nonimm_or_0_or_1s_operand")
-	  (match_operand:VF_256 2 "nonimm_or_0_operand")
+	  (match_operand:VF_256 1 "vector_or_const_vector_operand")
+	  (match_operand:VF_256 2 "vector_or_const_vector_operand")
 	  (match_operand:<sseintvecmode> 3 "register_operand")))]
   "TARGET_AVX"
 {
@@ -5582,8 +5599,8 @@
 (define_expand "vcond_mask_<mode><sseintvecmodelower>"
   [(set (match_operand:VF_128 0 "register_operand")
 	(vec_merge:VF_128
-	  (match_operand:VF_128 1 "vector_or_0_or_1s_operand")
-	  (match_operand:VF_128 2 "nonimm_or_0_operand")
+	  (match_operand:VF_128 1 "vector_or_const_vector_operand")
+	  (match_operand:VF_128 2 "vector_or_const_vector_operand")
 	  (match_operand:<sseintvecmode> 3 "register_operand")))]
   "TARGET_SSE"
 {
@@ -16204,11 +16221,7 @@
 	  (match_dup 0)
 	  (match_operand:QI 2 "register_operand" "Yk")))]
   "TARGET_AVX512VL"
-{
-  if (GET_MODE_SIZE (GET_MODE_INNER (<MODE>mode)) == 4)
-    return "vpmov<trunsuffix><pmov_suff_4>\t{%1, %0%{%2%}|%0%{%2%}, %1}";
-  return "vpmov<trunsuffix><pmov_suff_4>\t{%1, %0%{%2%}|%0%{%2%}, %1}";
-}
+  "vpmov<trunsuffix><pmov_suff_4>\t{%1, %0%{%2%}|%0%{%2%}, %1}"
   [(set_attr "type" "ssemov")
    (set_attr "memory" "store")
    (set_attr "prefix" "evex")
@@ -32624,15 +32637,17 @@
 })
 
 (define_insn "vpdp<vpdotprodtype>_<mode>"
-  [(set (match_operand:VI4_AVX 0 "register_operand" "=v")
+  [(set (match_operand:VI4_AVX 0 "register_operand" "=x,v")
 	(unspec:VI4_AVX
-	  [(match_operand:VI4_AVX 1 "register_operand" "0")
-	   (match_operand:VI4_AVX 2 "register_operand" "v")
-	   (match_operand:VI4_AVX 3 "nonimmediate_operand" "vm")]
+	  [(match_operand:VI4_AVX 1 "register_operand" "0,0")
+	   (match_operand:VI4_AVX 2 "register_operand" "x,v")
+	   (match_operand:VI4_AVX 3 "nonimmediate_operand" "xjm,vm")]
 	  VPDOTPROD))]
   "TARGET_AVXVNNIINT8 || TARGET_AVX10_2"
   "vpdp<vpdotprodtype>\t{%3, %2, %0|%0, %2, %3}"
-   [(set_attr "prefix" "maybe_evex")])
+   [(set_attr "prefix" "maybe_evex")
+    (set_attr "addr" "gpr16,*")
+    (set_attr "isa" "avxvnniint8,avx10_2")])
 
 (define_insn "vpdp<vpdotprodtype>_v16si"
   [(set (match_operand:V16SI 0 "register_operand" "=v")

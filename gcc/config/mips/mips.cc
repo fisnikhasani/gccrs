@@ -12388,7 +12388,7 @@ mips_output_function_epilogue (FILE *)
 static void
 mips_frame_barrier (void)
 {
-  emit_clobber (gen_frame_mem (BLKmode, stack_pointer_rtx));
+  emit_insn (gen_blockage ());
 }
 
 
@@ -22328,7 +22328,7 @@ mips_expand_msa_reduc (rtx (*fn) (rtx, rtx, rtx), rtx dest, rtx in)
 /* Implement TARGET_SCHED_REASSOCIATION_WIDTH.  */
 
 static int
-mips_sched_reassociation_width (unsigned int opc ATTRIBUTE_UNUSED,
+mips_sched_reassociation_width (tree_code opc ATTRIBUTE_UNUSED,
 				machine_mode mode)
 {
   if (MSA_SUPPORTED_MODE_P (mode))

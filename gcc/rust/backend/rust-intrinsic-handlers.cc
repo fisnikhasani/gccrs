@@ -1610,6 +1610,108 @@ sizeof_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 }
 
 /**
+ * pub fn size_of_val<T: ?Sized>(_: *const T) -> usize;
+ */
+tree
+size_of_val_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  rust_assert (fntype->get_params ().size () == 1);
+
+  tree lookup = NULL_TREE;
+  if (check_for_cached_intrinsic (ctx, fntype, &lookup))
+    return lookup;
+
+  auto fndecl = compile_intrinsic_function (ctx, fntype);
+
+  auto locus = fntype->get_locus ();
+
+  std::vector<Bvariable *> param_vars;
+  compile_fn_params (ctx, fntype, fndecl, &param_vars);
+
+  auto &__param = param_vars.at (0);
+  rust_assert (param_vars.size () == 1);
+  if (!Backend::function_set_parameters (fndecl, param_vars))
+    return error_mark_node;
+
+  rust_assert (fntype->get_num_substitutions () == 1);
+  auto &param_mapping = fntype->get_substs ().at (0);
+  const auto param_tyty = param_mapping.get_param_ty ();
+  auto resolved_tyty = param_tyty->resolve ();
+  tree template_parameter_type
+    = TyTyResolveCompile::compile (ctx, resolved_tyty);
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN size_of FN BODY BEGIN
+
+  tree size_expr = NULL_TREE;
+  if (RS_DST_FLAG_P (template_parameter_type))
+    {
+      tree param = Backend::var_expression (__param, UNDEF_LOCATION);
+      tree param_ty = TREE_TYPE (param);
+      tree data_field = TYPE_FIELDS (param_ty);
+      tree meta_field = DECL_CHAIN (data_field);
+      tree meta_field_expr
+	= build3_loc (locus, COMPONENT_REF, TREE_TYPE (meta_field), param,
+		      meta_field, NULL_TREE);
+
+      if (resolved_tyty->get_kind () == TyTy::TypeKind::SLICE
+	  || resolved_tyty->get_kind () == TyTy::TypeKind::STR)
+	{
+	  tree elem_type = NULL_TREE;
+	  if (resolved_tyty->get_kind () == TyTy::TypeKind::SLICE)
+	    {
+	      auto slice_tyty = static_cast<TyTy::SliceType *> (resolved_tyty);
+	      elem_type
+		= TyTyResolveCompile::compile (ctx,
+					       slice_tyty->get_element_type ());
+	    }
+	  else
+	    elem_type = char_type_node;
+
+	  tree elem_size = TYPE_SIZE_UNIT (elem_type);
+	  size_expr
+	    = build2_loc (locus, MULT_EXPR, size_type_node,
+			  fold_convert_loc (locus, size_type_node,
+					    meta_field_expr),
+			  fold_convert_loc (locus, size_type_node, elem_size));
+	}
+      else if (resolved_tyty->get_kind () == TyTy::TypeKind::DYNAMIC)
+	{
+	  tree vtable_ptr_ty = TREE_TYPE (meta_field_expr);
+	  tree vtable_ty = TREE_TYPE (vtable_ptr_ty);
+
+	  tree vtable_ref
+	    = build1_loc (locus, INDIRECT_REF, vtable_ty, meta_field_expr);
+
+	  tree vtable_field_0 = TYPE_FIELDS (vtable_ty);
+	  tree vtable_field_size = DECL_CHAIN (vtable_field_0);
+	  rust_assert (vtable_field_size != NULL_TREE);
+
+	  size_expr
+	    = build3_loc (locus, COMPONENT_REF, TREE_TYPE (vtable_field_size),
+			  vtable_ref, vtable_field_size, NULL_TREE);
+	}
+      else
+	{
+	  rust_unreachable ();
+	}
+    }
+  else
+    size_expr = TYPE_SIZE_UNIT (template_parameter_type);
+
+  auto return_statement
+    = Backend::return_statement (fndecl, size_expr, UNDEF_LOCATION);
+  ctx->add_statement (return_statement);
+
+  // BUILTIN size_of FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+
+  return fndecl;
+}
+
+/**
  * pub fn min_align_of<T>() -> usize;
  */
 tree
@@ -1642,6 +1744,106 @@ min_align_of_handler (Context *ctx, TyTy::FnType *fntype, location_t)
     = Backend::return_statement (fndecl, align_expr, UNDEF_LOCATION);
   ctx->add_statement (return_statement);
   // BUILTIN min_align_of FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+
+  return fndecl;
+}
+
+/**
+ * pub fn min_align_of_val<T: ?Sized>(_: *const T) -> usize;
+ */
+tree
+min_align_of_val_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  rust_assert (fntype->get_params ().size () == 1);
+
+  tree lookup = NULL_TREE;
+  if (check_for_cached_intrinsic (ctx, fntype, &lookup))
+    return lookup;
+
+  auto fndecl = compile_intrinsic_function (ctx, fntype);
+
+  auto locus = fntype->get_locus ();
+
+  std::vector<Bvariable *> param_vars;
+  compile_fn_params (ctx, fntype, fndecl, &param_vars);
+
+  auto &__param = param_vars.at (0);
+  rust_assert (param_vars.size () == 1);
+  if (!Backend::function_set_parameters (fndecl, param_vars))
+    return error_mark_node;
+
+  rust_assert (fntype->get_num_substitutions () == 1);
+  auto &param_mapping = fntype->get_substs ().at (0);
+  const auto param_tyty = param_mapping.get_param_ty ();
+  auto resolved_tyty = param_tyty->resolve ();
+  tree template_parameter_type
+    = TyTyResolveCompile::compile (ctx, resolved_tyty);
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN size_of FN BODY BEGIN
+
+  tree align_expr = NULL_TREE;
+  if (RS_DST_FLAG_P (template_parameter_type))
+    {
+      tree param = Backend::var_expression (__param, UNDEF_LOCATION);
+      tree param_ty = TREE_TYPE (param);
+      tree data_field = TYPE_FIELDS (param_ty);
+      tree meta_field = DECL_CHAIN (data_field);
+      tree meta_field_expr
+	= build3_loc (locus, COMPONENT_REF, TREE_TYPE (meta_field), param,
+		      meta_field, NULL_TREE);
+
+      if (resolved_tyty->get_kind () == TyTy::TypeKind::SLICE
+	  || resolved_tyty->get_kind () == TyTy::TypeKind::STR)
+	{
+	  tree elem_type = NULL_TREE;
+	  if (resolved_tyty->get_kind () == TyTy::TypeKind::SLICE)
+	    {
+	      auto slice_tyty = static_cast<TyTy::SliceType *> (resolved_tyty);
+	      elem_type
+		= TyTyResolveCompile::compile (ctx,
+					       slice_tyty->get_element_type ());
+	    }
+	  else
+	    elem_type = char_type_node;
+
+	  align_expr
+	    = build_int_cst (size_type_node, TYPE_ALIGN_UNIT (elem_type));
+	}
+      else if (resolved_tyty->get_kind () == TyTy::TypeKind::DYNAMIC)
+	{
+	  tree vtable_ptr_ty = TREE_TYPE (meta_field_expr);
+	  tree vtable_ty = TREE_TYPE (vtable_ptr_ty);
+
+	  tree vtable_ref
+	    = build1_loc (locus, INDIRECT_REF, vtable_ty, meta_field_expr);
+
+	  tree vtable_field_0 = TYPE_FIELDS (vtable_ty);
+	  tree vtable_field_1 = DECL_CHAIN (vtable_field_0);
+	  tree vtable_field_align = DECL_CHAIN (vtable_field_1);
+	  rust_assert (vtable_field_align != NULL_TREE);
+
+	  align_expr
+	    = build3_loc (locus, COMPONENT_REF, TREE_TYPE (vtable_field_align),
+			  vtable_ref, vtable_field_align, NULL_TREE);
+	}
+      else
+	{
+	  rust_unreachable ();
+	}
+    }
+  else
+    align_expr = build_int_cst (size_type_node,
+				TYPE_ALIGN_UNIT (template_parameter_type));
+
+  auto return_statement
+    = Backend::return_statement (fndecl, align_expr, UNDEF_LOCATION);
+  ctx->add_statement (return_statement);
+
+  // BUILTIN size_of FN BODY END
 
   finalize_intrinsic_block (ctx, fndecl);
 
@@ -1863,6 +2065,115 @@ tree
 cttz_nonzero_handler (Context *ctx, TyTy::FnType *fntype, location_t)
 {
   return inner::cttz_handler (ctx, fntype, true);
+}
+
+/**
+ * pub unsafe fn write_bytes<T>(dst: *mut T, val: u8, count: usize);
+ */
+tree
+write_bytes_handler (Context *ctx, TyTy::FnType *fntype, location_t)
+{
+  rust_assert (fntype->get_params ().size () == 3);
+
+  tree lookup = NULL_TREE;
+  if (check_for_cached_intrinsic (ctx, fntype, &lookup))
+    return lookup;
+
+  tree fndecl = compile_intrinsic_function (ctx, fntype);
+
+  auto locus = fntype->get_locus ();
+
+  std::vector<Bvariable *> param_vars;
+  compile_fn_params (ctx, fntype, fndecl, &param_vars);
+
+  auto &dst_param = param_vars.at (0);
+  auto &val_param = param_vars.at (1);
+  auto &count_param = param_vars.at (2);
+  rust_assert (param_vars.size () == 3);
+  if (!Backend::function_set_parameters (fndecl, param_vars))
+    return error_mark_node;
+
+  auto *monomorphized_type
+    = fntype->get_substs ().at (0).get_param_ty ()->resolve ();
+
+  tree template_parameter_type
+    = TyTyResolveCompile::compile (ctx, monomorphized_type);
+  tree dst_size_expr = TYPE_SIZE_UNIT (template_parameter_type);
+  rust_assert (dst_size_expr != NULL_TREE);
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN WRITE_BYTES FN BODY START
+
+  tree expr_dst = Backend::var_expression (dst_param, locus);
+  tree expr_val = Backend::var_expression (val_param, locus);
+  tree expr_count = Backend::var_expression (count_param, locus);
+
+  tree expr_count_final
+    = fold_build2_loc (locus, MULT_EXPR, size_type_node,
+		       fold_convert_loc (locus, size_type_node, expr_count),
+		       fold_convert_loc (locus, size_type_node, dst_size_expr));
+
+  tree write_bytes_raw = nullptr;
+  // void* memset( void* dest, int ch, size_t count );
+  bool ok = BuiltinsContext::get ().lookup_simple_builtin ("__builtin_memset",
+							   &write_bytes_raw);
+  rust_assert (ok);
+
+  tree write_bytes_fn = build_fold_addr_expr_loc (locus, write_bytes_raw);
+  tree write_bytes_call
+    = Backend::call_expression (write_bytes_fn,
+				{expr_dst, expr_val, expr_count_final},
+				NULL_TREE, locus);
+
+  ctx->add_statement (write_bytes_call);
+
+  // BUILTIN WRITE_BYTES FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+
+  TREE_READONLY (fndecl) = 0;
+
+  return fndecl;
+}
+
+/**
+ * pub fn arith_offset<T>(dst: *const T, offset: isize) -> *const T;
+ */
+tree
+arith_offset_handler (Context *ctx, TyTy::FnType *fntype, location_t expr_locus)
+{
+  rust_assert (fntype->get_params ().size () == 2);
+
+  auto fndecl = compile_intrinsic_function (ctx, fntype);
+
+  auto locus = fntype->get_locus ();
+
+  std::vector<Bvariable *> param_vars;
+  compile_fn_params (ctx, fntype, fndecl, &param_vars);
+
+  auto &dst_param = param_vars.at (0);
+  auto &size_param = param_vars.at (1);
+  rust_assert (param_vars.size () == 2);
+  if (!Backend::function_set_parameters (fndecl, param_vars))
+    return error_mark_node;
+
+  enter_intrinsic_block (ctx, fndecl);
+
+  // BUILTIN arith_offset FN BODY BEGIN
+
+  tree dst = Backend::var_expression (dst_param, locus);
+  tree size = Backend::var_expression (size_param, locus);
+  tree pointer_offset_expr = pointer_offset_expression (dst, size, expr_locus);
+  auto return_statement
+    = Backend::return_statement (fndecl, pointer_offset_expr, locus);
+  ctx->add_statement (return_statement);
+
+  // BUILTIN arith_offset FN BODY END
+
+  finalize_intrinsic_block (ctx, fndecl);
+
+  return fndecl;
 }
 
 } // namespace handlers

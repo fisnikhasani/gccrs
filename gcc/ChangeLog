@@ -1,3 +1,711 @@
+2026-06-29  Jeff Law  <jeffrey.law@oss.qualcomm.com>
+
+	* config/riscv/riscv.cc (synthesize_and): Use srliw to handle
+	clearing both upper and lower bits in some cases.
+	* config/riscv/bitmanip.md (ZBA splitter using sext.w): Do not
+	use in cases where we can use srliw to clear those upper bits.
+
+2026-06-29  Mark Zhuang  <zhuangqiubin@linux.spacemit.com>
+
+	* config/riscv/riscv-cores.def (RISCV_TUNE): Add spacemit-x100.
+	(RISCV_CORE): Add spacemit-x100.
+	* config/riscv/riscv.cc (spacemit_x100_tune_info): New.
+	* doc/riscv-mcpu.texi: Regenerate.
+	* doc/riscv-mtune.texi: Regenerate.
+
+2026-06-29  Matthew Fortune  <matthew.fortune@imgtec.com>
+
+	* config/mips/mips.h (ASM_SPEC): Add placeholders for -mmxu and
+	-mno-mxu.
+	* config/mips/mips.opt: New undocumented target option.
+
+2026-06-29  Matthew Fortune  <matthew.fortune@imgtec.com>
+
+	* config/mips/mips.cc (mips_frame_barrier): Upgrade to a full
+	blockage.
+
+2026-06-29  Roger Sayle  <roger@nextmovesoftware.com>
+
+	PR target/94871
+	* simplify-rtx.cc (simplify_unary_operation_1) <case NOT>:
+	Update (not (eq X Y)) -> (ne X Y) to support vector comparions
+	using VECTOR_STORE_FLAG_VALUE, and check SCALAR_INT_MODE_P
+	when checking STORE_FLAG_VALUE.  Add equivalent optimization
+	(not (neg (eq X Y))) -> (neg (ne X Y)) for targets with
+	STORE_FLAG_VALUE == 1 or VECTOR_STORE_FLAG_VALUE is const1_rtx.
+	* config/i386/sse.md (*<sse>_imaskcmp<mode>3_comm): Clone
+	of *<sse>_maskcmp<mode>3_comm pattern with integer vector
+	result.
+
+2026-06-29  Abhishek Kaushik  <abhishek.kaushik@arm.com>
+
+	* config/aarch64/aarch64-sve2.md: Add unpredicated high-part
+	multiplication section.
+	(@aarch64_sve2_<optab><mode>): New insn.
+	* config/aarch64/aarch64-sve.md (@aarch64_pred_<optab><mode>):
+	Change to define_insn_and_split and split SVE2 highpart
+	multiplication into unpredicated MUL_HIGHPART.
+
+2026-06-29  Jakub Jelinek  <jakub@redhat.com>
+
+	PR target/125469
+	* config/i386/i386.md (*add<mode>_1<nf_name>): Revert 2026-05-28
+	changes.
+	(define_split from *add<mode>_1_nf to *lea<mode>): Set INSN_CODE
+	to -1 if <LEAMODE> and <MODE> are the same.
+
+2026-06-29  Kyrylo Tkachov  <ktkachov@nvidia.com>
+
+	PR target/105116
+	* lra-constraints.cc (simplify_operand_subreg): Reload a
+	non-representable narrowing subreg of a hard register through
+	memory instead of resolving it lossily.
+
+2026-06-29  Kael Andrew Alonzo Franco  <kaelfandrew@gmail.com>
+
+	PR tree-optimization/125737
+	* match.pd: Optimize X % Y < Y -> Y >= 0 and X % Y >= Y -> Y < 0
+
+2026-06-29  H.J. Lu  <hjl.tools@gmail.com>
+
+	PR target/125968
+	* config/i386/i386-expand.cc (ix86_expand_movmem): Don't call
+	ix86_expand_n_overlapping_move_movmem when max size == 1.
+
+2026-06-29  Naveen  <naveen.siddegowda@oss.qualcomm.com>
+
+	PR tree-optimization/112390
+	* match.pd: Add simplifications for combined sign-bit and
+	magnitude checks:
+	((signed)A >= 0) &/&& ((A & INT_MAX) != 0) -> (signed)A > 0
+	((signed)A <  0) |/|| ((A & INT_MAX) == 0) -> (signed)A <= 0
+
+2026-06-29  liuhongt  <hongtao.liu@intel.com>
+
+	PR target/125907
+	* config/i386/i386.md (*cmov_bt<SWI248:mode>): New
+	define_insn_and_split handling a const_int false arm, forced into
+	a register by the splitter.  Leave the existing define_split for
+	the nonimmediate case unchanged.
+
+2026-06-29  Xi Ruoyao  <xry111@xry111.site>
+
+	PR target/125474
+	* config/loongarch/simd.md (usdot_prod<wvec_half><mode>): New
+	define_expand.
+	(usdot_prod<wvec_quarter><mode>): New define_expand.
+
+2026-06-29  Pan Li  <pan2.li@intel.com>
+
+	* match-sat-alu.pd: Add pattern for unsigned scalar
+	SAT_MUL form 14.
+
+2026-06-29  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* acinclude.m4: Replace AC_FOREACH with m4_foreach_w.  Replace
+	AC_TRY_LINK with AC_LINK_IFELSE.
+	* configure: Regenerate.
+	* configure.ac: Replace AC_HELP_STRING with AS_HELP_STRING.  Replace
+	AC_PROG_LIBTOOL with LT_INIT.
+
+2026-06-28  Kevin Stefanov  <kevinstefanov15@gmail.com>
+
+	PR middle-end/125274
+	* ctfc.h (ctf_dtdef): Likewise.
+	* dwarf2out.cc (die_struct): Likewise.
+	* dwarf2out.h (dw_cfa_location): Likewise.
+	* gengtype-lex.l (IWORD): Remove BOOL_BITFIELD.
+	* gimple-walk.h (walk_stmt_info): Replace BOOL_BITFIELD with bool.
+	* opts.h (cl_option): Likewise.
+	* config/i386/i386.h (machine_frame_state): Likewise.
+	(machine_function): Likewise.
+	* sched-int.h (deps_desc): Likewise.
+	* sel-sched-ir.h (_expr): Likewise.
+	(_fence): Likewise.
+	(transformed_insns): Likewise.
+	(_sel_insn_data): Likewise.
+	* sel-sched.cc (cmpd_local_params): Likewise.
+	* system.h: Remove #define for BOOL_BITFIELD.
+
+2026-06-28  Andrew Pinski  <andrew.pinski@oss.qualcomm.com>
+
+	PR tree-optimization/115571
+	* match.pd (`(float)(a CMP b)`): New pattern.
+
+2026-06-28  Kael Andrew Alonzo Franco  <kaelfandrew@gmail.com>
+
+	PR tree-optimization/125749
+	PR tree-optimization/125749
+	* match.pd: Use tree_expr_nonnegative_p for MAX (A, B) (==,!=) 0 ->
+	(A|B) (==,!=) 0.
+
+2026-06-27  Jakub Jelinek  <jakub@redhat.com>
+
+	PR target/125992
+	* config/s390/s390.md (*brx_stage1_<GPR:mode>): Add CC_REGNUM clobber.
+
+2026-06-27  Eikansh Gupta  <eikansh.gupta@oss.qualcomm.com>
+
+	PR tree-optimization/125385
+	* match.pd ((FTYPE) N CMP (FTYPE) M): Use range information
+	to decide whether integer operands are exactly representable.
+	((FTYPE) N CMP CST): Likewise.
+	* real.cc: Include backend.h and vr-values.h.
+	(format_helper::can_represent_range_value_p): New function.
+	* real.h (format_helper::can_represent_range_value_p): Declare.
+	* tree-core.h (class irange): Forward declare.
+
+2026-06-26  H.J. Lu  <hjl.tools@gmail.com>
+
+	PR middle-end/125977
+	* expr.cc (emit_block_move_via_pattern): Replace ops[6].value
+	in assert with GEN_INT (min_size).
+
+2026-06-26  H.J. Lu  <hjl.tools@gmail.com>
+	    Hongtao Liu  <hongtao.liu@intel.com>
+
+	PR target/125856
+	PR target/125865
+	* config/i386/i386-expand.cc (ix86_expand_set_or_cpymem):
+	Call ix86_expand_set_or_movmem for
+	TARGET_MISALIGNED_MOVE_STRING_PRO_EPILOGUES.
+	(ix86_expand_memset_val): New.
+	(ix86_expand_n_move_movmem): Renamed to ...
+	(ix86_expand_n_move_set_or_movmem): This.  Add a pointer to rtx
+	argument for memset.  Also expand memset.
+	(ix86_expand_n_overlapping_move_movmem): Renamed to ...
+	(ix86_expand_n_overlapping_move_set_or_movmem): This.  Add a
+	pointer to rtx argument for memset.  Also expand memset.
+	(ix86_expand_less_move_movmem): Renamed to ...
+	(ix86_expand_less_move_set_or_movmem): This.  Add a pointer to
+	rtx argument for memset.  Also expand memset.
+	(ix86_expand_movmem): Renamed to ...
+	(ix86_expand_set_or_movmem): This.  Add bool arguments for memcpy
+	and memset.  Also expand memcpy and memset.
+	* config/i386/i386-protos.h (ix86_expand_movmem): Renamed to ...
+	(ix86_expand_set_or_movmem): This.  Add bool arguments for memcpy
+	and memset.
+	* config/i386/i386.md (movmem<mode>): Replace ix86_expand_movmem
+	with ix86_expand_set_or_movmem.
+
+2026-06-26  Roger Sayle  <roger@nextmovesoftware.com>
+	    Hongtao Liu  <hongtao.liu@intel.com>
+
+	PR target/123238
+	* config/i386/i386-expand.cc: Delay calling force_reg on
+	op_true and op_false.  Generate an AND then XOR sequence
+	if op_true and op_false are both CONST_VECTOR_P.
+	* config/i386/mmx.md (vcond_mask_<mode>v4hi): Allow operands
+	1 and 2 to be vector_or_const_vector_operand.
+	(vcond_mask_<mode>v2hi): Likewise.
+	(vcond_mask_<mode><mmxintvecmodelower>): Likewise.
+	(vcond_mask_<mode><mode>): Likewise.
+	* config/i386/sse.md (vcond_mask_<mode><sseintvecmodelower>):
+	Likewise.
+	(vcond_mask_<mode><sseintvecmodelower>): Likewise.
+	(vcond_mask_v1tiv1ti): Likewise.
+	(vcond_mask_<mode><sseintvecmodelower>): Likewise.
+	(vcond_mask_<mode><sseintvecmodelower>): Likewise.
+	* config/i386/predicates.md (vector_or_0_or_1s_operand): Delete
+	predicate with no remaining uses.
+
+2026-06-26  vekumar  <Venkataramanan.Kumar@amd.com>
+
+	PR target/125949
+	* config/i386/i386.md ("isa"): Add avxvnniint8.
+	("enabled"): Adjust for avxvnniint8.
+	* config/i386/sse.md (vpdp<vpdotprodtype>_<mode>): Adjust for
+	AVXVNNIINT8.
+
+2026-06-26  Stefan Schulze Frielinghaus  <stefansf@gcc.gnu.org>
+
+	PR target/125972
+	* config/s390/s390.cc (s390_rtx_costs): Deal with non-compare
+	conditions during costing.  Also fix some indentation.
+
+2026-06-26  Richard Biener  <rguenther@suse.de>
+
+	PR middle-end/125875
+	* match.pd: When checking for !can_vec_perm_const_p also
+	allow variable permutes and use the vec_perm_indices CTOR
+	with the original tree operands.
+
+2026-06-26  Richard Biener  <rguenther@suse.de>
+
+	* vec-perm-indices.h (vec_perm_indices::new_vector): New overload.
+	(vec_perm_indices::input_bitwise_zero_p): New method.
+	(vec_perm_indices::m_input0_bitwise_zero_p,
+	vec_perm_indices::m_input1_bitwise_zero_p): New members.
+	(vec_perm_indices::vec_perm_indices): Adjust.
+	(tree_to_vec_perm_indices): Declare.
+	* vec-perm-indices.cc (vec_perm_indices::new_vector): New overload.
+	(vec_perm_indices::new_expanded_vector): Adjust.
+	(tree_to_vec_perm_indices): New function.
+	* optabs-query.cc (can_vec_perm_const_p): Handle permute
+	patterns mapping to vec_shl/vec_shr.
+	* tree-vect-generic.cc (lower_vec_perm): Move vec_shl/vec_shr
+	detection to can_vec_perm_const_p and simplify.
+
+2026-06-26  Andrew MacLeod  <amacleod@redhat.com>
+
+	PR tree-optimization/125979
+	* dbgcnt.def: Add ranger_cnt.
+	* gimple-range.cc (gimple_ranger::range_of_expr): Add debug_cnt.
+	(gimple_ranger::range_on_entry): Likewise.
+	(gimple_ranger::range_on_exit): Likewise.
+	(gimple_ranger::range_on_edge); Likewise.
+	(gimple_ranger::range_of_stmt): Likewise
+	(dom_ranger::range_of_expr): Likewise.
+	(dom_ranger::range_on_edge): Likewise.
+	(dom_ranger::range_of_stmt): Likewise.
+
+2026-06-26  H.J. Lu  <hjl.tools@gmail.com>
+
+	PR middle-end/125977
+	* builtins.cc (determine_block_size): Change len_rtx to reference
+	and set it to min size if min size == max size.
+	* expr.cc (emit_block_move_via_pattern): Assert count == min_size
+	if min_size == max_size.
+	(set_storage_via_setmem): Likewise.
+
+2026-06-26  Pengfei Li  <Pengfei.Li2@arm.com>
+
+	* config/aarch64/aarch64.cc
+	(aarch64_sched_first_cycle_multipass_dfa_lookahead): Return 0
+	when dispatch scheduling is enabled.
+
+2026-06-26  Rainer Orth  <ro@CeBiTec.Uni-Bielefeld.DE>
+
+	* configure.ac (gcc_cv_as_ix86_quad): Remove.
+	* configure: Regenerate.
+	* config.in: Likewise.
+	* config/i386/sol2.h [!HAVE_AS_IX86_QUAD] (ASM_QUAD): Don't undefine.
+
+2026-06-26  Rainer Orth  <ro@CeBiTec.Uni-Bielefeld.DE>
+
+	* configure.ac (gcc_cv_as_ix86_diff_sect_delta): Remove.
+	* configure: Regenerate.
+	* config.in: Likewise.
+	* config/i386/sol2.h [!HAVE_AS_IX86_DIFF_SECT_DELTA]
+	(ASM_PREFERRED_EH_DATA_FORMAT): Remove.
+	(JUMP_TABLES_IN_TEXT_SECTION): Likewise.
+	(ASM_OUTPUT_DWARF_PCREL): Likewise.
+
+2026-06-26  Jiahao Xu  <xujiahao@loongson.cn>
+
+	* config/loongarch/loongarch.cc (loongarch_sched_reassociation_width):
+	Get a tree_code instead of unsigned int.
+
+2026-06-25  Jeff Law  <jeffrey.law@oss.qualcomm.com>
+
+	* config/riscv/riscv.md (seq_sne_qi): Mark name for debugging purposes
+	only.
+
+2026-06-25  Peter Bergner  <bergner@tenstorrent.com>
+
+	PR target/87466
+	* config/riscv/riscv.cc (TARGET_SETJMP_PRESERVES_NONVOLATILE_REGS_P):
+	Define.
+
+2026-06-25  Manjunath Matti  <mmatti@linux.ibm.com>
+
+	* config/rs6000/predicates.md (const_0_to_6_operand): New predicate.
+	* config/rs6000/rs6000-builtins.def (__builtin_vsx_xxmulmul): Add new
+	builtin definitions under [future] stanza.
+	(__builtin_vsx_xxmulmulhiadd): Likewise.
+	(__builtin_vsx_xxmulmulloadd): Likewise.
+	(__builtin_vsx_xxssumudm): Likewise.
+	(__builtin_vsx_xxssumudmc): Likewise.
+	(__builtin_vsx_xxssumudmcext): Likewise.
+	(__builtin_vsx_xsaddadduqm): Likewise.
+	(__builtin_vsx_xsaddaddsuqm): Likewise.
+	(__builtin_vsx_xsaddsubuqm): Likewise.
+	(__builtin_vsx_xsaddsubsuqm): Likewise.
+	(__builtin_vsx_xsmerge2t1uqm): Likewise.
+	(__builtin_vsx_xsmerge2t2uqm): Likewise.
+	(__builtin_vsx_xsmerge2t3uqm): Likewise.
+	(__builtin_vsx_xsmerge3t1uqm): Likewise.
+	(__builtin_vsx_xsrebase2t1uqm): Likewise.
+	(__builtin_vsx_xsrebase2t2uqm): Likewise.
+	(__builtin_vsx_xsrebase2t3uqm): Likewise.
+	(__builtin_vsx_xsrebase2t4uqm): Likewise.
+	(__builtin_vsx_xsrebase3t1uqm): Likewise.
+	(__builtin_vsx_xsrebase3t2uqm): Likewise.
+	(__builtin_vsx_xsrebase3t3uqm): Likewise.
+	* config/rs6000/vsx.md (UNSPEC_XXMULMUL): Add UNSPEC entry.
+	(UNSPEC_XXMULMULHIADD): Likewise.
+	(UNSPEC_XXMULMULLOADD): Likewise.
+	(UNSPEC_XXSSUMUDM): Likewise.
+	(UNSPEC_XXSSUMUDMC): Likewise.
+	(UNSPEC_XXSSUMUDMCEXT): Likewise.
+	(UNSPEC_XSADDADDUQM): Likewise.
+	(UNSPEC_XSADDADDSUQM): Likewise.
+	(UNSPEC_XSADDSUBUQM): Likewise.
+	(UNSPEC_XSADDSUBSUQM): Likewise.
+	(UNSPEC_XSMERGE2T1UQM): Likewise.
+	(UNSPEC_XSMERGE2T2UQM): Likewise.
+	(UNSPEC_XSMERGE2T3UQM): Likewise.
+	(UNSPEC_XSMERGE3T1UQM): Likewise.
+	(UNSPEC_XSREBASE2T1UQM): Likewise.
+	(UNSPEC_XSREBASE2T2UQM): Likewise.
+	(UNSPEC_XSREBASE2T3UQM): Likewise.
+	(UNSPEC_XSREBASE2T4UQM): Likewise.
+	(UNSPEC_XSREBASE3T1UQM): Likewise.
+	(UNSPEC_XSREBASE3T2UQM): Likewise.
+	(UNSPEC_XSREBASE3T3UQM): Likewise.
+	(vsx_xxmulmul): New define_insn.
+	(vsx_xxmulmulhiadd): Likewise.
+	(vsx_xxmulmulloadd): Likewise.
+	(vsx_xxssumudm): Likewise.
+	(vsx_xxssumudmc): Likewise.
+	(vsx_xxssumudmcext): Likewise.
+	(vsx_xsaddadduqm): Likewise.
+	(vsx_xsaddaddsuqm): Likewise.
+	(vsx_xsaddsubuqm): Likewise.
+	(vsx_xsaddsubsuqm): Likewise.
+	(vsx_xsmerge2t1uqm): Likewise.
+	(vsx_xsmerge2t2uqm): Likewise.
+	(vsx_xsmerge2t3uqm): Likewise.
+	(vsx_xsmerge3t1uqm): Likewise.
+	(vsx_xsrebase2t1uqm): Likewise.
+	(vsx_xsrebase2t2uqm): Likewise.
+	(vsx_xsrebase2t3uqm): Likewise.
+	(vsx_xsrebase2t4uqm): Likewise.
+	(vsx_xsrebase3t1uqm): Likewise.
+	(vsx_xsrebase3t2uqm): Likewise.
+	(vsx_xsrebase3t3uqm): Likewise.
+	* doc/extend.texi (PowerPC AltiVec/VSX Built-in Functions): Add
+	documentation for ECC cryptography builtins available on
+	future ISA.
+
+2026-06-25  Milan Tripkovic  <Milan.Tripkovic@rt-rk.com>
+	    Jeff Law   <jeffrey.law@oss.qualcomm.com>
+
+	PR target/123884
+	PR target/106585
+	* config/riscv/bitmanip.md: Add new splits for single bit manipulation
+	cases followed by a sign extension.
+
+2026-06-25  Jeff Law  <jeffrey.law@oss.qualcomm.com>
+	     Daniel Barboza  <daniel.barboza@oss.qualcomm.com>
+
+	PR target/124019
+	* config/riscv/riscv.md (seq_sne_qi): New define_insn_and_split.
+
+2026-06-25  Konstantinos Eleftheriou  <konstantinos.eleftheriou@vrull.eu>
+
+	PR tree-optimization/102793
+	* tree-ssa-ifcombine.cc (bb_guards_loop_p): New function.
+	(ifcombine_ifandif): Use it to avoid combining the conditions
+	guarding a loop.
+	* tree-ssa-tail-merge.cc: Include tree-ssa-ifcombine.h and
+	tree-ssa.h.
+	(ifcombine_candidate_bbs): New static bitmap.
+	(apply_clusters): Collect the merged block's predecessors as
+	ifcombine candidates.
+	(tail_merge_optimize): Run tree_ssa_ifcombine_bb on the candidates;
+	return TODO_cleanup_cfg when it changed the CFG.
+
+2026-06-25  Konstantinos Eleftheriou  <konstantinos.eleftheriou@vrull.eu>
+
+	* gimple-predicate-analysis.cc (get_pred_info_from_cond_edge):
+	New function.
+	(predicate::init_from_control_deps): Use it.
+	(predicate::drop_conjuncts_implied_by): New method.
+	(uninit_analysis::is_use_guarded): Retry the superset test
+	after relaxing the definition predicate by the maybe-undef
+	edge conditions.
+	* gimple-predicate-analysis.h (class predicate): Declare
+	drop_conjuncts_implied_by.
+
+2026-06-25  Konstantinos Eleftheriou  <konstantinos.eleftheriou@vrull.eu>
+
+	* tree-ssa-ifcombine.cc: Include tree-ssa-ifcombine.h.
+	(recognize_if_then_else): Removed 'static'.
+	(tree_ssa_ifcombine_bb): Removed 'static'.
+	* tree-ssa-ifcombine.h: New file.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	PR middle-end/125977
+	* cfgexpand.cc (pass_expand::execute): Guard ranger use
+	on optimize.
+
+2026-06-25  Artemiy Volkov  <artemiy.volkov@arm.com>
+
+	PR target/125716
+	* config/aarch64/aarch64-simd.md (*aarch64_simd_mov<mode>): Add
+	(?w,r) alternative for VSUB64 types.
+
+2026-06-25  Xi Ruoyao  <xry111@xry111.site>
+
+	Revert:
+	2026-06-25  Xi Ruoyao  <xry111@xry111.site>
+
+	PR target/125077
+	* config/mips/predicates.md (ssp_gp_operand): New
+	define_predicate.
+	(ssp_operand): New define_predicate.
+	(ssp_normal_operand): New define_predicate.
+	* config/mips/constraints.md (ZA): New define_constraint.
+	(ZB): New define_constraint.
+	* config/mips/mips.md (UNSPEC_SSP): New unspec.
+	(UNSPEC_SSP_GP): New unspec.
+	(cbranch<mode>4): Add '@' to generate the helper function taking
+	mode as a parameter.
+	(@stack_protect_combined_set_normal_<mode>): New define_insn.
+	(stack_protect_combined_set_abs64): New define_insn.
+	(@stack_protect_combined_test_internal_<mode>): New define_insn.
+	(stack_protect_combined_set): New define_expand.
+	(stack_protect_combined_test): New define_expand.
+	* config/mips/mips-protos.h (mips_canary_expose_gp_use):
+	Declare.
+	(mips_output_asm_load_canary): Declare.
+	* config/mips/mips.cc (mips_small_data_pattern_1): Don't rewrite
+	GP-relative symbol wrapped in UNSPEC_SSP_GP.
+	(mips_canary_expose_gp_use): Implement.
+	(mips_output_asm_load_canary): Implement.
+	(mips_print_operand): Allow 'w' to print d/w for DImode/SImode.
+
+2026-06-25  Xi Ruoyao  <xry111@xry111.site>
+
+	PR target/125628
+	* config/mips/sync.md (sync_old_<optab><mode>): Fix
+	uninitialized operand use.
+	(sync_new_<optab><mode>): Fix uninitialized operand use, use the
+	same expression for the set source of operand 0 and 1.
+
+2026-06-25  Xi Ruoyao  <xry111@xry111.site>
+
+	PR target/125077
+	* config/mips/predicates.md (ssp_gp_operand): New
+	define_predicate.
+	(ssp_operand): New define_predicate.
+	(ssp_normal_operand): New define_predicate.
+	* config/mips/constraints.md (ZA): New define_constraint.
+	(ZB): New define_constraint.
+	* config/mips/mips.md (UNSPEC_SSP): New unspec.
+	(UNSPEC_SSP_GP): New unspec.
+	(cbranch<mode>4): Add '@' to generate the helper function taking
+	mode as a parameter.
+	(@stack_protect_combined_set_normal_<mode>): New define_insn.
+	(stack_protect_combined_set_abs64): New define_insn.
+	(@stack_protect_combined_test_internal_<mode>): New define_insn.
+	(stack_protect_combined_set): New define_expand.
+	(stack_protect_combined_test): New define_expand.
+	* config/mips/mips-protos.h (mips_canary_expose_gp_use):
+	Declare.
+	(mips_output_asm_load_canary): Declare.
+	* config/mips/mips.cc (mips_small_data_pattern_1): Don't rewrite
+	GP-relative symbol wrapped in UNSPEC_SSP_GP.
+	(mips_canary_expose_gp_use): Implement.
+	(mips_output_asm_load_canary): Implement.
+	(mips_print_operand): Allow 'w' to print d/w for DImode/SImode.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	* target.def (reassociation_width): Use default_reassociation_width.
+	* targhooks.h (default_reassociation_width): Declare.
+	* targhooks.cc (default_reassociation_width): Define.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	PR tree-optimization/125953
+	* gimple-range.cc (gimple_ranger::range_of_expr): Document.
+	Fall back to global ranges if 'stmt' is not in the IL.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	* tree-vect-patterns.cc (vect_recog_divmod_pattern): Pass
+	the division stmt as context for the range query on op0.
+	Use the active ranger.
+
+2026-06-25  Richard Biener  <rguenther@suse.de>
+
+	* coretypes.h (enum tree_code): Declare.
+	* tree-core.h (enum tree_code): Adjust.
+	* target.def (reassociation_width): Get a tree_code instead
+	of unsigned int.
+	* doc/tm.texi: Regenerate.
+	* genmatch.cc (enum tree_code): Adjust.
+	* gimple-loop-versioning.cc (address_info_hasher::hash): Likewise.
+	* config/aarch64/aarch64.cc (aarch64_reassociation_width):
+	Likewise.
+	* config/loongarch/loongarch.cc
+	(loongarch_cpu_sched_reassociation_width): Likewise.
+	* config/mips/mips.cc (mips_sched_reassociation_width): Likewise.
+	* config/rs6000/rs6000.cc (rs6000_reassociation_width): Likewise.
+	* config/i386/i386.cc (ix86_reassociation_width): Likewise
+	and fix bogus compares.
+
+2026-06-25  Martin Uecker  <uecker@tugraz.at>
+
+	* doc/extend.texi (Constructing Calls): Document
+	__builtin_call_static_chain and __builtin_call_code_address
+	and update __builtin_call_with_static_chain.
+	(Nested Functions): Update.
+
+2026-06-25  Martin Uecker  <uecker@tugraz.at>
+
+	* builtins.def (BUILT_IN_CALL_CODE_ADDRESS,
+	BUILT_IN_CALL_STATIC_CHAIN): New.
+	* builtins.cc (expand_builtin): Emit errors for invalid uses.
+	(is_simple_builtin): Add new built-in functions.
+	* gimple-fold.cc (gimple_fold_builtin_call_info): New function.
+	(gimple_fold_builtin): Expand new built-ins for non-nested functions.
+	* tree-nested.cc (convert_tramp_reference_stmt): Ingore new built-ins.
+	(convert_gimple_call): Expand built-ins for nested functions.
+	* tree-inline.cc (initialize_inlined_parameters): Set a missing
+	static chain to NULL.
+
+2026-06-25  Jan Beulich  <jbeulich@suse.com>
+
+	* config/riscv/arch-canonicalize: Avoid f"..." strings.
+
+2026-06-24  Oleg Tolmatcev  <oleg.tolmatcev@gmail.com>
+
+	* config/i386/prfchwintrin.h (_m_prefetchw): Take
+	volatile const void * instead of void *.
+
+2026-06-24  Andrew MacLeod  <amacleod@redhat.com>
+
+	PR tree-optimization/125910
+	* value-range.cc (prange::set_pt): Do not set PT when zero.
+	(prange::intersect): If the result is zero_p, clear PT.
+	(prange::verify_range): Verify points-to range is valid.
+	* value-range.h (zero_p): Do not assert, move to verify range.
+	(prange::set_pt): Only set PT when the range valid.
+
+2026-06-24  Vineet Gupta  <vineet.gupta@linux.dev>
+
+	PR debug/125421
+	* dwarf2out.cc (modified_type_die): Handle qualified_type being
+	a variant of dtype as if they were identical to avoid peeling a
+	typdef.
+	For named types, use dentry unconditionally as that is valid for
+	both cases of qualified_type == and  != dentry.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* omp-builtins.def (BUILT_IN_GOMP_REDUCTION_START): New builtin.
+	(BUILT_IN_GOMP_REDUCTION_END): New builtin.
+	* omp-low.cc (lower_reduction_clauses): Replace
+	BUILT_IN_GOMP_ATOMIC_START / BUILT_IN_GOMP_ATOMIC_END with
+	BUILT_IN_GOMP_REDUCTION_START / BUILT_IN_GOMP_REDUCTION_END.
+	(lower_omp_sections): Likewise.
+	(lower_omp_scope): Likewise.
+	(lower_omp_for): Likewise.
+	* tree-ssa-alias.cc (check_fnspec): Handle
+	BUILT_IN_GOMP_REDUCTION_START and BUILT_IN_GOMP_REDUCTION_END as
+	memory barriers.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* omp-builtins.def (BUILT_IN_GOMP_BARRIER): Change function to
+	GOMP_barrier_ext and type to BT_FN_VOID_INT.
+	(BUILT_IN_GOMP_BARRIER_CANCEL): Change function to
+	GOMP_barrier_cancel_ext and type to BT_FN_VOID_INT.
+	* omp-expand.cc (expand_omp_for_static_nochunk): Pass
+	GOMP_BARRIER_IMPLICIT_WORKSHARE to omp_build_barrier.
+	(expand_omp_for_static_chunk): Likewise.
+	(expand_omp_single): Likewise.
+	* omp-general.cc (omp_build_barrier): Add kind parameter; pass it
+	to GOMP_barrier_ext or GOMP_barrier_cancel_ext.
+	* omp-general.h (omp_build_barrier): Update declaration to add
+	kind parameter.
+	* omp-low.cc (lower_rec_input_clauses): Determine barrier kind from
+	the enclosing gimple statement code and pass it to omp_build_barrier.
+	(lower_omp_for_scan): Pass GOMP_BARRIER_IMPLICIT_WORKSHARE to
+	omp_build_barrier.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* builtin-types.def (BT_COMPLEX_INT, BT_FN_COMPLEX_INT): New types.
+	* omp-builtins.def (BUILT_IN_GOMP_LOOP_STATIC_WORKSHARING): New
+	builtin.
+	(BUILT_IN_GOMP_DISTRIBUTE_STATIC_WORKSHARING): Likewise.
+	* omp-expand.cc (expand_omp_for_static_nochunk): Replace separate calls
+	to public API functions with a single call to
+	GOMP_loop_static_worksharing or GOMP_distribute_static_worksharing, then
+	unpack id and count.
+	(expand_omp_for_static_chunk): Likewise.
+
+2026-06-24  Paul-Antoine Arras  <parras@baylibre.com>
+
+	* omp-builtins.def (BUILT_IN_GOMP_HAS_MASKED_THREAD_NUM): New builtin.
+	* omp-low.cc (lower_omp_master): Call it.
+
+2026-06-24  Filip Kastl  <fkastl@suse.cz>
+
+	* gimple-ssa-pta-constraints.cc (handle_call_arg): Mention in
+	comment that the function can get called in IPA mode.
+
+2026-06-24  Richard Biener  <rguenther@suse.de>
+
+	PR tree-optimization/110743
+	* tree-ssa-uninit.cc (maybe_warn_operand): Also cover
+	VIEW_CONVERT_EXPR uses for RMW bit clear/set pattern
+	detection.
+
+2026-06-24  Jeevitha Palanisamy  <jeevitha@linux.ibm.com>
+
+	* config/rs6000/altivec.md (V16QI_V2DI): New mode iterator.
+	(add<mode>3): Split into two patterns to support future ISA
+	alternatives.
+	(sub<mode>3): Likewise.
+	* config/rs6000/vsx.md (VIArith): New mode iterator.
+	(vsx_mul<mode>3): New insn pattern.
+	(smul<mode>3_highpart): Split into mode-specific patterns.
+	(umul<mode>3_highpart): Likewise.
+	(smulv8hi3_highpart): New insn pattern.
+	(smulv4si3_highpart): Likewise.
+	(smulv2di3_highpart): Likewise.
+	(umulv8hi3_highpart): Likewise.
+	(umulv4si3_highpart): Likewise.
+	(umulv2di3_highpart): Likewise.
+	* config/rs6000/rs6000-builtins.def (__builtin_vsx_xvmulhuh): New
+	builtin.
+	(__builtin_vsx_xvmulhsh): Likewise.
+	* config/rs6000/rs6000-overload.def (__builtin_vec_mulh): Add
+	overloads for vector multiply-high signed/unsigned halfword.
+	* config/rs6000/rs6000-gen-builtins.cc (enum bif_stanza): Add entry for
+	BSTZ_FUTURE_VSX.
+	(stanza_map): Add future-vsx stanza mapping.
+	(enable_string): Add ENB_FUTURE_VSX.
+	(write_decls): Add ENB_FUTURE_VSX to the bif_enable enum in the
+	generated header file.
+	* config/rs6000/rs6000.md (define_attr "isa"): Add future to the list
+	of ISA values.
+	(define_attr "enabled"): Add check for future ISA.
+	* config/rs6000/rs6000-builtin.cc (rs6000_invalid_builtin): Handle
+	ENB_FUTURE_VSX and issue a diagnostic requiring -mcpu=future and -mvsx.
+	(rs6000_builtin_is_supported): Return TARGET_FUTURE && TARGET_VSX
+	for ENB_FUTURE_VSX built-ins.
+	* doc/extend.texi (PowerPC AltiVec/VSX Built-in Functions Available
+	on Future ISA): Document new functions.
+
+2026-06-24  Christopher Bazley  <chris.bazley@arm.com>
+
+	* config/aarch64/aarch64-sve.md: Update
+	vec_init<mode><Vel> and vec_shl_insert_<mode> to
+	accept all SVE vector modes.
+
+2026-06-24  H.J. Lu  <hjl.tools@gmail.com>
+
+	PR target/125958
+	* config/i386/i386-expand.cc (ix86_expand_lcp_stall_peephole):
+	Replace !REG_P (dest) with !GENERAL_REG_P (dest).
+
+2026-06-24  Lili Cui  <lili.cui@intel.com>
+
+	* config/i386/x86-tune-costs.h (generic_cost): Increase branch
+	mispredict scale from COSTS_N_INSNS (2) to COSTS_N_INSNS (2) + 3.
+
+2026-06-24  Jan Beulich  <jbeulich@suse.com>
+
+	* doc/ifn.texi: Drop blanks after @code.
+
 2026-06-23  Kwok Cheung Yeung  <kcyeung@baylibre.com>
 	    Sandra Loosemore  <sloosemore@baylibre.com>
 

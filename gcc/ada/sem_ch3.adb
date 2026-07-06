@@ -8421,13 +8421,15 @@ package body Sem_Ch3 is
                and then not Is_Generic_Type (Root_Type (Full_Parent)))
          then
             --  Copy and adjust declaration to provide a completion for what
-            --  is originally a private declaration. Indicate that full view
-            --  is internally generated.
+            --  is originally a private declaration. Indicate that the full
+            --  view is internally generated, and set Is_Implicit_Full_View
+            --  now for the sake of Build_Derived_Record_Type.
 
             Set_Comes_From_Source (Full_N, False);
             Set_Comes_From_Source (Full_Der, False);
             Set_Parent (Full_Der, Full_N);
             Set_Defining_Identifier (Full_N, Full_Der);
+            Set_Is_Implicit_Full_View (Full_Der);
 
             --  If there are no constraints, adjust the subtype mark
 
@@ -10188,10 +10190,12 @@ package body Sem_Ch3 is
       --  Set fields for tagged types
 
       if Is_Tagged then
-         --  Minor optimization: there is no need to generate the class-wide
-         --  entity associated with an underlying record view.
+         --  Small optimization: there is no need to generate the class-wide
+         --  entity for either an implicit full or an underlying record view.
 
-         if not Is_Underlying_Record_View (Derived_Type) then
+         if not Is_Implicit_Full_View (Derived_Type)
+           and then not Is_Underlying_Record_View (Derived_Type)
+         then
             Make_Class_Wide_Type (Derived_Type);
          end if;
 
@@ -10423,10 +10427,11 @@ package body Sem_Ch3 is
       end if;
 
       --  Update the class-wide type, which shares the now-completed entity
-      --  list with its specific type. In case of underlying record views,
-      --  we do not generate the corresponding class wide entity.
+      --  list with its specific type. But in the cases of implicit full or
+      --  underlying record views, we do not generate the class-wide type.
 
       if Is_Tagged
+        and then not Is_Implicit_Full_View (Derived_Type)
         and then not Is_Underlying_Record_View (Derived_Type)
       then
          Set_First_Entity
@@ -16562,7 +16567,10 @@ package body Sem_Ch3 is
       --  is normally just a copy of the parent name. An exception arises for
       --  type support subprograms, where the name is changed to reflect the
       --  name of the derived type, e.g. if type foo is derived from type bar,
-      --  then a procedure barDA is derived with a name fooDA.
+      --  then a procedure barDA is derived with name fooDA. Another exception
+      --  is for the case of attribute subprograms, where the name is changed
+      --  to substitute the derived type's name for the parent type's name
+      --  (e.g., changing "parent'put_image" to "derived'put_image").
 
       ---------------------------
       -- Is_Private_Overriding --
@@ -16734,7 +16742,38 @@ package body Sem_Ch3 is
       procedure Set_Derived_Name is
          Nm : constant TSS_Name_Type := Get_TSS_Name (Parent_Subp);
       begin
-         if Nm = TSS_Null then
+         if Is_Direct_Attribute_Subp_Name (Chars (Parent_Subp)) then
+            declare
+               Derived_Type_Name : constant String :=
+                 Get_Name_String (Chars (Derived_Type));
+
+               Parent_Subp_Name : constant String :=
+                 Get_Name_String (Chars (Parent_Subp));
+
+               Att_Buf : Bounded_String
+                           (Max_Length => Derived_Type_Name'Length
+                             + Parent_Subp_Name'Length);
+            begin
+               for J in 2 .. Parent_Subp_Name'Length loop
+
+                  --  J is at the position separating the prefix from the
+                  --  attribute name.
+
+                  if Parent_Subp_Name (J) = ''' then
+                     Append (Att_Buf, Derived_Type_Name);
+                     Append (Att_Buf, "'");
+                     Append
+                       (Att_Buf,
+                        Parent_Subp_Name (J + 1 .. Parent_Subp_Name'Length));
+
+                     exit;
+                  end if;
+               end loop;
+
+               Set_Chars (New_Subp, Name_Find (Att_Buf));
+            end;
+
+         elsif Nm = TSS_Null then
             Set_Chars (New_Subp, Chars (Parent_Subp));
          else
             Set_Chars (New_Subp, Make_TSS_Name (Base_Type (Derived_Type), Nm));
@@ -19156,9 +19195,6 @@ package body Sem_Ch3 is
       elsif Nkind (P) /= N_Component_Declaration
         and then Def_Kind = N_Subtype_Indication
       then
-         --  Base name of subtype on object name, which will be unique in
-         --  the current scope.
-
          --  If this is a duplicate declaration, return base type, to avoid
          --  generating duplicate anonymous types.
 
@@ -19167,53 +19203,28 @@ package body Sem_Ch3 is
             return Entity (Subtype_Mark (Obj_Def));
          end if;
 
+         --  During preanalysis, for example within a pre/postcondition,
+         --  provide just enough information to use the subtype.
+
+         if Preanalysis_Active then
+            return
+              Process_Subtype
+                (Obj_Def,
+                 Related_Nod,
+                 Excludes_Null => Null_Exclusion_Present (P));
+         end if;
+
+         --  Base name of subtype on object name, which will be unique in
+         --  the current scope.
+
          Nam :=
             New_External_Name
              (Chars (Defining_Identifier (Related_Nod)), 'S', 0, 'T');
 
          T := Make_Defining_Identifier (Sloc (P), Nam);
 
-         --  If In_Spec_Expression, for example within a pre/postcondition,
-         --  provide enough information for use of the subtype without
-         --  depending on full analysis and freezing, which will happen when
-         --  building the corresponding subprogram.
-
-         if In_Spec_Expression then
-            Analyze (Subtype_Mark (Obj_Def));
-
-            declare
-               Base_T  : constant Entity_Id := Entity (Subtype_Mark (Obj_Def));
-               New_Def : constant Node_Id   := New_Copy_Tree (Obj_Def);
-               Decl    : constant Node_Id   :=
-                 Make_Subtype_Declaration (Sloc (P),
-                   Defining_Identifier => T,
-                   Subtype_Indication  => New_Def);
-
-            begin
-               Set_Etype  (T, Base_T);
-               Mutate_Ekind  (T, Subtype_Kind (Ekind (Base_T)));
-               Set_Parent (T, Decl);
-               Set_Scope (T, Current_Scope);
-
-               if Ekind (T) = E_Array_Subtype then
-                  Constrain_Array (T, New_Def, Related_Nod, T, 'P');
-
-               elsif Ekind (T) = E_Record_Subtype then
-                  Set_First_Entity (T, First_Entity (Base_T));
-                  Set_Has_Discriminants (T, Has_Discriminants (Base_T));
-                  Set_Is_Constrained (T);
-               end if;
-
-               Insert_Before (Related_Nod, Decl);
-            end;
-
-            return T;
-         end if;
-
          --  When generating code, insert subtype declaration ahead of
-         --  declaration that generated it. Similar behavior required under
-         --  preanalysis (including strict preanalysis) to perform the
-         --  minimum decoration, and avoid reporting spurious errors.
+         --  declaration that generated it.
 
          Insert_Action (Obj_Def,
            Make_Subtype_Declaration (Sloc (P),
@@ -21304,9 +21315,9 @@ package body Sem_Ch3 is
 
    procedure Preanalyze_And_Resolve_Assert_Expression (N : Node_Id) is
    begin
-      In_Assertion_Expr  := In_Assertion_Expr + 1;
+      In_Assertion_Expr := In_Assertion_Expr + 1;
       Preanalyze_And_Resolve_Spec_Expression (N);
-      In_Assertion_Expr  := In_Assertion_Expr - 1;
+      In_Assertion_Expr := In_Assertion_Expr - 1;
    end Preanalyze_And_Resolve_Assert_Expression;
 
    -----------------------------------------------
