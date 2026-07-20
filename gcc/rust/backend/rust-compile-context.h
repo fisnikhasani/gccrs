@@ -107,20 +107,11 @@ public:
     block_drop_candidates.emplace_back ();
   }
 
-  tree pop_block ()
+  tree pop_block () { return pop_block_impl (NULL_TREE, UNKNOWN_LOCATION); }
+
+  tree pop_block_with_cleanup (tree cleanup, location_t cleanup_locus)
   {
-    auto block = scope_stack.back ();
-    scope_stack.pop_back ();
-
-    auto stmts = statements.back ();
-    statements.pop_back ();
-
-    rust_assert (!block_drop_candidates.empty ());
-    block_drop_candidates.pop_back ();
-
-    Backend::block_add_statements (block, stmts);
-
-    return block;
+    return pop_block_impl (cleanup, cleanup_locus);
   }
 
   tree peek_enclosing_scope ()
@@ -428,6 +419,40 @@ public:
 private:
   friend class DropBuilder;
   Context ();
+
+  tree pop_block_impl (tree cleanup, location_t cleanup_locus)
+  {
+    auto block = scope_stack.back ();
+    scope_stack.pop_back ();
+
+    auto stmts = statements.back ();
+    statements.pop_back ();
+
+    rust_assert (!block_drop_candidates.empty ());
+    block_drop_candidates.pop_back ();
+
+    if (cleanup != NULL_TREE)
+      {
+	tree body = Backend::statement_list (stmts);
+	if (body == NULL_TREE)
+	  body = build_empty_stmt (cleanup_locus);
+
+	tree exceptional_cleanup = build_empty_stmt (cleanup_locus);
+	tree cleanup_selector
+	  = build2_loc (cleanup_locus, EH_ELSE_EXPR, void_type_node, cleanup,
+			exceptional_cleanup);
+
+	tree try_finally
+	  = Backend::exception_handler_statement (body, NULL_TREE,
+						  cleanup_selector,
+						  cleanup_locus);
+	Backend::block_add_statements (block, {try_finally});
+      }
+    else
+      Backend::block_add_statements (block, stmts);
+
+    return block;
+  }
 
   Resolver::TypeCheckContext *tyctx;
   Analysis::Mappings &mappings;

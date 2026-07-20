@@ -24,6 +24,7 @@
 #include "rust-compile-pattern.h"
 #include "rust-compile-resolve-path.h"
 #include "rust-compile-block.h"
+#include "rust-compile-drop.h"
 #include "rust-compile-implitem.h"
 #include "rust-constexpr.h"
 #include "rust-compile-type.h"
@@ -769,10 +770,22 @@ CompileExpr::visit (HIR::StructExprStructFields &struct_expr)
 
   if (!adt->is_enum ())
     {
-      translated
-	= Backend::constructor_expression (compiled_adt_type, adt->is_enum (),
-					   arguments, union_disriminator,
-					   struct_expr.get_locus ());
+      auto repr_kind = adt->get_repr_options ().repr_kind;
+      if (repr_kind == TyTy::ADTType::ReprKind::TRANSPARENT)
+	{
+	  translated
+	    = fold_build1_loc (struct_expr.get_locus (), VIEW_CONVERT_EXPR,
+			       compiled_adt_type, arguments.front ());
+	}
+      else
+	{
+	  translated
+	    = Backend::constructor_expression (compiled_adt_type,
+					       adt->is_enum (), arguments,
+					       union_disriminator,
+					       struct_expr.get_locus ());
+	}
+
       return;
     }
 
@@ -843,6 +856,15 @@ CompileExpr::visit (HIR::FieldAccessExpr &expr)
       bool ok = variant->lookup_field (expr.get_field_name ().as_string (),
 				       nullptr, &field_index);
       rust_assert (ok);
+
+      auto repr_kind = adt->get_repr_options ().repr_kind;
+      if (repr_kind == TyTy::ADTType::ReprKind::TRANSPARENT)
+	{
+	  translated
+	    = compile_transparent_field_access (variant, expr.get_locus (),
+						receiver_ref);
+	  return;
+	}
     }
   else if (receiver->get_kind () == TyTy::TypeKind::REF)
     {
@@ -859,16 +881,12 @@ CompileExpr::visit (HIR::FieldAccessExpr &expr)
 				       nullptr, &field_index);
       rust_assert (ok);
 
-      // TODO this check is only used for CStr, test again when we support
-      // compilation of #[repr(transparent)] structs
-      if (RS_DST_FLAG_P (TREE_TYPE (receiver_ref)))
+      auto repr_kind = adt->get_repr_options ().repr_kind;
+      if (repr_kind == TyTy::ADTType::ReprKind::TRANSPARENT)
 	{
-	  const TyTy::StructFieldType *field
-	    = variant->get_field_at_index (field_index);
-	  tree field_type
-	    = TyTyResolveCompile::compile (ctx, field->get_field_type ());
-	  translated = fold_build1_loc (expr.get_locus (), VIEW_CONVERT_EXPR,
-					field_type, receiver_ref);
+	  translated
+	    = compile_transparent_field_access (variant, expr.get_locus (),
+						receiver_ref);
 	  return;
 	}
       else
@@ -2115,6 +2133,16 @@ CompileExpr::compile_c_string_literal (const HIR::LiteralExpr &expr,
 }
 
 tree
+CompileExpr::compile_transparent_field_access (TyTy::VariantDef *variant,
+					       location_t locus,
+					       tree source_expr)
+{
+  const TyTy::StructFieldType *field = variant->get_field_at_index (0);
+  tree field_type = TyTyResolveCompile::compile (ctx, field->get_field_type ());
+  return fold_build1_loc (locus, VIEW_CONVERT_EXPR, field_type, source_expr);
+}
+
+tree
 CompileExpr::type_cast_expression (tree type_to_cast_to, tree expr_tree,
 				   location_t location)
 {
@@ -2880,7 +2908,9 @@ CompileExpr::generate_closure_function (HIR::ClosureExpr &expr,
       ctx->add_statement (return_expr);
     }
 
-  tree bind_tree = ctx->pop_block ();
+  tree cleanup = CompileDrop (ctx).build_current_scope_drop_cleanup ();
+  tree bind_tree
+    = ctx->pop_block_with_cleanup (cleanup, function_body.get_locus ());
 
   gcc_assert (TREE_CODE (bind_tree) == BIND_EXPR);
   DECL_SAVED_TREE (fndecl) = bind_tree;
