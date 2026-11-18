@@ -2,7 +2,7 @@
 # aclocal && autoconf && autoheader && automake
 
 AC_INIT([GCC Quad-precision Math Library], 0.1,,[libquadmath])
-AC_CONFIG_HEADER(config.h)
+AC_CONFIG_HEADERS([config.h])
 
 # Gets build, host, target, *_vendor, *_cpu, *_os, etc.
 #
@@ -16,16 +16,12 @@ AC_CONFIG_HEADER(config.h)
 #
 # Also, if this library is being configured as part of a cross compiler, the
 # top-level configure script will pass the "real" host as $with_cross_host.
-#
-# Do not delete or change the following two lines.  For why, see
-# http://gcc.gnu.org/ml/libstdc++/2003-07/msg00451.html
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 ACX_NONCANONICAL_TARGET
 
 AM_ENABLE_MULTILIB(, ..)
 
 target_alias=${target_alias-$host_alias}
-AC_SUBST(target_alias)
 
 AM_INIT_AUTOMAKE([1.9.0 foreign subdir-objects no-dist -Wall -Wno-override -Werror])
 

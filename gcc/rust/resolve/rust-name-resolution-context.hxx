@@ -33,7 +33,7 @@ bool
 NameResolutionContext::should_search_prelude (
   const typename ForeverStack<N>::Node *current_node,
   const typename ForeverStack<N>::SegIterator &iterator,
-  const std::vector<ResolutionPath::Segment> &segments)
+  const std::vector<ResolutionPathSegment> &segments)
 {
   // Check whether the current_node is a root node
   if (current_node->is_root ())
@@ -192,7 +192,7 @@ NameResolutionContext::resolve_path (
   auto iterator = segments.begin ();
   if (can_descend)
     {
-      if (auto res = stack.find_starting_point (segments, starting_point,
+      if (auto res = stack.find_starting_point (path, starting_point,
 						insert_segment_resolution,
 						collect_errors))
 	iterator = *res;
@@ -213,9 +213,8 @@ NameResolutionContext::resolve_path (
   // gives us a node in which to resolve the last segment of the path.
 
   // nodes are shared between stacks
-  auto node
-    = resolve_segments (types, starting_point.get (), segments, iterator,
-			insert_segment_resolution, collect_errors);
+  auto node = resolve_segments (types, starting_point.get (), path, iterator,
+				insert_segment_resolution, collect_errors);
 
   if (!node)
     return tl::nullopt;
@@ -249,12 +248,13 @@ template <Namespace N>
 tl::optional<typename ForeverStack<N>::Node &>
 NameResolutionContext::resolve_segments (
   ForeverStack<N> &stack, typename ForeverStack<N>::Node &starting_point,
-  const std::vector<ResolutionPath::Segment> &segments,
+  const RawPath<ResolutionPathSegment> &path,
   typename ForeverStack<N>::SegIterator iterator,
   std::function<void (Usage, Definition, Namespace)> insert_segment_resolution,
   std::vector<Error> &collect_errors)
 {
   auto *current_node = &starting_point;
+  auto &segments = path.get_segments ();
   for (; !is_last (iterator, segments); iterator++)
     {
       auto &seg = *iterator;
@@ -345,6 +345,10 @@ NameResolutionContext::resolve_segments (
 		}
 	      else
 		{
+		  // Non glob containers such as structures, we insert the
+		  // segment but we let the type checker handle the rest since
+		  // it has to resolve methode resolution & cie
+
 		  // FIXME: Resolve segments always resolves in the Types NS
 		  // correct? If so, we should remove the template parameter for
 		  // this function - and use NS::Types directly here instead of

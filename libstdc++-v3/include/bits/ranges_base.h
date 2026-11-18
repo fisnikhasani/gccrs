@@ -88,6 +88,25 @@ namespace ranges
       using __make_unsigned_like_t
 	= decltype(__detail::__to_unsigned_like(std::declval<_Tp>()));
 
+    template<typename _Wp>
+      constexpr auto __to_signed_like(_Wp __w) noexcept
+      {
+	if constexpr (!integral<_Wp>)
+	  return iter_difference_t<_Wp>();
+	else if constexpr (sizeof(iter_difference_t<_Wp>) > sizeof(_Wp))
+	  return iter_difference_t<_Wp>(__w);
+	else if constexpr (sizeof(ptrdiff_t) > sizeof(_Wp))
+	  return ptrdiff_t(__w);
+	else if constexpr (sizeof(long long) > sizeof(_Wp))
+	  return (long long)(__w);
+#ifdef __SIZEOF_INT128__
+	else if constexpr (__SIZEOF_INT128__ > sizeof(_Wp))
+	  return __int128(__w);
+#endif
+	else
+	  return __max_diff_type(__w);
+      }
+
     // Part of the constraints of ranges::borrowed_range
     template<typename _Tp>
       concept __maybe_borrowed_range
@@ -994,6 +1013,17 @@ namespace ranges
       constexpr iter_difference_t<_It>
       operator()[[nodiscard]](_It __first, _Sent __last) const
       {
+	if constexpr (__segmented_iterator<_It> && same_as<_It, _Sent>)
+	  {
+	    iter_difference_t<_It> __n = 0;
+	    auto __func = [this, &__n](auto __sfirst, auto __slast) {
+	      __n += iter_difference_t<_It>(this->operator()(__sfirst, __slast));
+	      return __slast;
+	    };
+	    std::__for_each_segment(__first, __last, __func);
+	    return __n;
+	  }
+
 	iter_difference_t<_It> __n = 0;
 	while (__first != __last)
 	  {

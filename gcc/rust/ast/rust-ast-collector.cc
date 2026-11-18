@@ -610,7 +610,7 @@ TokenCollector::visit (PathInExpression &path)
 	return;
       }
 
-    if (path.opening_scope_resolution ())
+    if (path.has_opening_scope_resolution ())
       push (Rust::Token::make (SCOPE_RESOLUTION, path.get_locus ()));
 
     visit_items_joined_by_separator (path.get_segments (), SCOPE_RESOLUTION);
@@ -757,7 +757,7 @@ TokenCollector::visit (TypePath &path)
   // Syntax:
   //    `::`? TypePathSegment (`::` TypePathSegment)*
   describe_node (std::string ("TypePath"), [this, &path] () {
-    if (path.has_opening_scope_resolution_op ())
+    if (path.has_opening_scope_resolution ())
       push (Rust::Token::make (SCOPE_RESOLUTION, path.get_locus ()));
 
     visit_items_joined_by_separator (path.get_segments (), SCOPE_RESOLUTION);
@@ -1869,37 +1869,66 @@ TokenCollector::visit (LlvmInlineAsm &expr)
   push (Rust::Token::make_identifier (expr.get_locus (), "llvm_asm"));
   push (Rust::Token::make (EXCLAM, expr.get_locus ()));
   push (Rust::Token::make (LEFT_PAREN, expr.get_locus ()));
-  for (auto &template_str : expr.get_templates ())
-    push (Rust::Token::make_string (template_str.get_locus (),
-				    std::move (template_str.symbol)));
+  push (Rust::Token::make_string (expr.get_template ().get_locus (),
+				  std::move (expr.get_template ().symbol)));
 
   push (Rust::Token::make (COLON, expr.get_locus ()));
+
+  bool needs_comma = false;
+
   for (auto output : expr.get_outputs ())
     {
+      if (needs_comma)
+	push (Rust::Token::make (COMMA, expr.get_locus ()));
+      needs_comma = true;
       push (Rust::Token::make_string (expr.get_locus (),
 				      std::move (output.constraint)));
+      push (Rust::Token::make (LEFT_PAREN, expr.get_locus ()));
       visit (output.expr);
-      push (Rust::Token::make (COMMA, expr.get_locus ()));
+      push (Rust::Token::make (RIGHT_PAREN, expr.get_locus ()));
     }
 
   push (Rust::Token::make (COLON, expr.get_locus ()));
+  needs_comma = false;
   for (auto input : expr.get_inputs ())
     {
+      if (needs_comma)
+	push (Rust::Token::make (COMMA, expr.get_locus ()));
+      needs_comma = true;
       push (Rust::Token::make_string (expr.get_locus (),
 				      std::move (input.constraint)));
+      push (Rust::Token::make (LEFT_PAREN, expr.get_locus ()));
       visit (input.expr);
-      push (Rust::Token::make (COMMA, expr.get_locus ()));
+      push (Rust::Token::make (RIGHT_PAREN, expr.get_locus ()));
     }
 
   push (Rust::Token::make (COLON, expr.get_locus ()));
+  needs_comma = false;
   for (auto &clobber : expr.get_clobbers ())
     {
+      if (needs_comma)
+	push (Rust::Token::make (COMMA, expr.get_locus ()));
+      needs_comma = true;
       push (Rust::Token::make_string (expr.get_locus (),
 				      std::move (clobber.symbol)));
-      push (Rust::Token::make (COMMA, expr.get_locus ()));
     }
   push (Rust::Token::make (COLON, expr.get_locus ()));
-  // Dump options
+
+#define X(code, s)                                                             \
+  if (expr.code)                                                               \
+    {                                                                          \
+      if (needs_comma)                                                         \
+	push (Rust::Token::make (COMMA, expr.get_locus ()));                   \
+      needs_comma = true;                                                      \
+      push (Rust::Token::make_string (expr.get_locus (), s));                  \
+    }
+
+  needs_comma = false;
+  X (is_volatile (), "volatile")
+  X (is_stack_aligned (), "alignstack")
+  X (get_dialect () == LlvmInlineAsm::Dialect::Intel, "intel")
+
+#undef X
 
   push (Rust::Token::make (RIGHT_PAREN, expr.get_locus ()));
 }
@@ -2200,6 +2229,35 @@ TokenCollector::visit (TypeAlias &type_alias)
 
     push (Rust::Token::make (EQUAL, UNDEF_LOCATION));
     visit (type_alias.get_type_aliased ());
+    push (Rust::Token::make (SEMICOLON, UNDEF_LOCATION));
+  });
+}
+
+void
+TokenCollector::visit (TraitAlias &trait_alias)
+{
+  // Syntax:
+  // Visibility? trait IDENTIFIER GenericParams? = TypeBounds? WhereClause?;
+  // https://github.com/rust-lang/rfcs/blob/main/text/1733-trait-alias.md
+  describe_node (std::string ("TraitAlias"), [this, &trait_alias] () {
+    visit_items_as_lines (trait_alias.get_outer_attrs ());
+    if (trait_alias.has_visibility ())
+      visit (trait_alias.get_visibility ());
+    auto alias_name = trait_alias.get_alias_name ().as_string ();
+    push (Rust::Token::make (TRAIT, trait_alias.get_locus ()));
+    push (
+      Rust::Token::make_identifier (UNDEF_LOCATION, std::move (alias_name)));
+
+    if (trait_alias.has_generics ())
+      visit (trait_alias.get_generic_params ());
+
+    push (Rust::Token::make (EQUAL, UNDEF_LOCATION));
+
+    visit_items_joined_by_separator (trait_alias.get_alias_bounds (), PLUS);
+
+    if (trait_alias.has_where_clause ())
+      visit (trait_alias.get_where_clause ());
+
     push (Rust::Token::make (SEMICOLON, UNDEF_LOCATION));
   });
 }
@@ -3056,35 +3114,11 @@ TokenCollector::visit (GroupedPattern &pattern)
 }
 
 void
-TokenCollector::visit (SlicePatternItemsNoRest &items)
-{
-  visit_items_joined_by_separator (items.get_patterns (), COMMA);
-}
-
-void
-TokenCollector::visit (SlicePatternItemsHasRest &items)
-{
-  if (!items.get_lower_patterns ().empty ())
-    {
-      visit_items_joined_by_separator (items.get_lower_patterns (), COMMA);
-      push (Rust::Token::make (COMMA, UNDEF_LOCATION));
-    }
-
-  push (Rust::Token::make (DOT_DOT, UNDEF_LOCATION));
-
-  if (!items.get_upper_patterns ().empty ())
-    {
-      push (Rust::Token::make (COMMA, UNDEF_LOCATION));
-      visit_items_joined_by_separator (items.get_upper_patterns (), COMMA);
-    }
-}
-
-void
 TokenCollector::visit (SlicePattern &pattern)
 {
   describe_node (std::string ("SlicePattern"), [this, &pattern] () {
     push (Rust::Token::make (LEFT_SQUARE, pattern.get_locus ()));
-    visit (pattern.get_items ());
+    visit_items_joined_by_separator (pattern.get_patterns (), COMMA);
     push (Rust::Token::make (RIGHT_SQUARE, UNDEF_LOCATION));
   });
 }

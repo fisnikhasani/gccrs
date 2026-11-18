@@ -26,6 +26,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "rust-parse-utils.h"
 #include "rust-feature.h"
 #include "rust-feature-store.h"
+#include "rust-session-manager.h"
 
 #include "expected.h"
 #include "options.h"
@@ -460,8 +461,8 @@ private:
   parse_const_item (AST::Visibility vis, AST::AttrVec outer_attrs);
   std::unique_ptr<AST::StaticItem> parse_static_item (AST::Visibility vis,
 						      AST::AttrVec outer_attrs);
-  std::unique_ptr<AST::Trait> parse_trait (AST::Visibility vis,
-					   AST::AttrVec outer_attrs);
+  std::unique_ptr<AST::VisItem> parse_trait (AST::Visibility vis,
+					     AST::AttrVec outer_attrs);
   std::unique_ptr<AST::TraitItemType>
   parse_trait_type (AST::AttrVec outer_attrs, AST::Visibility);
   std::unique_ptr<AST::ConstantItem>
@@ -896,12 +897,6 @@ public:
   // Get a reference to the list of errors encountered
   std::vector<Error> &get_errors () { return error_table; }
 
-  std::vector<std::pair<Feature::Name, Error>> &
-  get_potential_feature_gate_errors ()
-  {
-    return gating_errors;
-  }
-
   const ManagedTokenSource &get_token_source () const { return lexer; }
 
   const_TokenPtr peek_current_token () { return lexer.peek_token (0); }
@@ -913,7 +908,6 @@ private:
   // The error list.
   std::vector<Error> error_table;
 
-  std::vector<std::pair<Feature::Name, Error>> gating_errors;
   // The names of inline modules while parsing.
   std::vector<std::string> inline_module_stack;
 

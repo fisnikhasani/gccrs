@@ -411,11 +411,11 @@ struct c_declspecs {
   enum c_storage_class storage_class;
   /* Any type specifier keyword used such as "int", not reflecting
      modifiers such as "short", or cts_none if none.  */
-  ENUM_BITFIELD (c_typespec_keyword) typespec_word : 8;
+  enum c_typespec_keyword typespec_word : 8;
   /* The kind of type specifier if one has been seen, ctsk_none
      otherwise.  */
-  ENUM_BITFIELD (c_typespec_kind) typespec_kind : 4;
-  ENUM_BITFIELD (c_declspec_il) declspec_il : 3;
+  enum c_typespec_kind typespec_kind : 4;
+  enum c_declspec_il declspec_il : 3;
   /* Whether any expressions in typeof specifiers may appear in
      constant expressions.  */
   bool expr_const_operands : 1;
@@ -567,7 +567,7 @@ struct c_declarator {
       /* The array dimension, or NULL for [] and [*].  */
       tree dimen;
       /* The qualifiers inside [].  */
-      int quals;
+      qualifier_set quals;
       /* The attributes (currently ignored) inside [].  */
       tree attrs;
       /* Whether [static] was used.  */
@@ -576,7 +576,7 @@ struct c_declarator {
       bool vla_unspec_p : 1;
     } array;
     /* For pointers, the qualifiers on the pointer type.  */
-    int pointer_quals;
+    qualifier_set pointer_quals;
     /* For attributes.  */
     tree attrs;
   } u;
@@ -685,7 +685,7 @@ extern void record_inline_static (location_t, tree, tree,
 				  enum c_inline_static_type);
 extern void c_init_decl_processing (void);
 extern void c_print_identifier (FILE *, tree, int);
-extern int quals_from_declspecs (const struct c_declspecs *);
+extern qualifier_set quals_from_declspecs (const struct c_declspecs *);
 extern struct c_declarator *build_array_declarator (location_t, tree,
     						    struct c_declspecs *,
 						    bool, bool);
@@ -846,6 +846,7 @@ c_type_unspecified_p (tree t)
 	 && integer_zerop (TREE_OPERAND (TYPE_MAX_VALUE (TYPE_DOMAIN (t)), 1));
 }
 
+extern bool zero_length_array_type_p (const_tree type);
 extern bool char_type_p (tree);
 extern tree c_type_tag (const_tree t);
 extern tree c_objc_common_truthvalue_conversion (location_t, tree,
@@ -960,6 +961,7 @@ extern tree c_build_type_attribute_variant (tree ntype, tree attrs);
 extern tree c_build_pointer_type (tree type);
 extern tree c_build_array_type (tree type, tree domain);
 extern tree c_build_array_type_unspecified (tree type);
+extern tree c_build_array_type_zero_size (tree type);
 extern tree c_build_function_type (tree type, tree args, bool no = false);
 extern tree c_build_pointer_type_for_mode (tree type, machine_mode mode, bool m);
 

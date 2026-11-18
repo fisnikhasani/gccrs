@@ -258,6 +258,11 @@ Classes used:
 #endif
 #endif
 
+/* Provide fallback.  */
+#ifndef EOPNOTSUPP
+#define EOPNOTSUPP ENOTSUP
+#endif
+
 /* Some open(2) flag differences, what a colourful world it is!  */
 #if defined (O_CLOEXEC)
 // OK
@@ -1506,6 +1511,7 @@ class elf_out : public elf, public data::allocator {
 private:
   ptr_int_hash_map identtab;	/* Map of IDENTIFIERS to strtab offsets. */
   unsigned pos;			/* Write position in file.  */
+  bool began;			/* True if begin initialized output state.  */
 #if MAPPED_WRITING
   unsigned offset;		/* Offset of the mapping.  */
   unsigned extent;		/* Length of mapping.  */
@@ -1514,7 +1520,7 @@ private:
 
 public:
   elf_out (int fd, int e)
-    :parent (fd, e), identtab (500), pos (0)
+    :parent (fd, e), identtab (500), pos (0), began (false)
   {
 #if MAPPED_WRITING
     offset = extent = 0;
@@ -1912,7 +1918,7 @@ elf_out::create_mapping (unsigned ext, bool extending)
     {
 #ifdef HAVE_POSIX_FALLOCATE
       int result = posix_fallocate (fd, offset, length);
-      if (result != EINVAL && result != ENOTSUP)
+      if (result != EINVAL && result != ENOTSUP && result != EOPNOTSUPP)
 	return result == 0;
       /* Not supported by the underlying filesystem, fallback to ftruncate.  */
 #endif
@@ -2226,7 +2232,10 @@ elf_out::begin ()
   memset (h, 0, sizeof (header));
   hdr.pos = hdr.size;
   write (hdr);
-  return !get_error ();
+  if (get_error ())
+    return false;
+  began = true;
+  return true;
 }
 
 /* Finish writing the file.  Write out the string & section tables.
@@ -2235,7 +2244,7 @@ elf_out::begin ()
 bool
 elf_out::end ()
 {
-  if (fd >= 0)
+  if (fd >= 0 && began)
     {
       /* Write the string table.  */
       unsigned strnam = name (".strtab");
@@ -3800,7 +3809,7 @@ class GTY((chain_next ("%h.parent"), for_user)) module_state {
   bool visited_p : 1;    /* A walk-once flag. */
   /* Record extensions emitted or permitted.  */
   unsigned extensions : SE_BITS;
-  /* 14 bits used, 2 bits remain  */
+  /* 16 bits used, 0 bits remain.  */
 
  public:
   module_state (tree name, module_state *, bool);
@@ -6541,16 +6550,21 @@ trees_out::core_vals (tree t)
       unsigned limit = (vl ? VL_EXP_OPERAND_LENGTH (t)
 			: TREE_OPERAND_LENGTH (t));
       unsigned ix = unsigned (vl);
-      if (code == REQUIRES_EXPR)
-	{
-	  /* The first operand of a REQUIRES_EXPR is a tree chain
-	     of PARM_DECLs.  We need to stream this separately as
-	     otherwise we would only stream the first one.  */
-	  chained_decls (REQUIRES_EXPR_PARMS (t));
-	  ++ix;
-	}
       for (; ix != limit; ix++)
 	WT (TREE_OPERAND (t, ix));
+    }
+  else if (code == REQUIRES_EXPR)
+    {
+      if (state)
+	state->write_location (*this, REQUIRES_EXPR_LOCATION (t));
+
+      if (streaming_p ())
+	if (has_warning_spec (t))
+	  u (get_warning_spec (t));
+
+      chained_decls (REQUIRES_EXPR_PARMS (t));
+      WT (REQUIRES_EXPR_REQS (t));
+      WT (REQUIRES_EXPR_EXTRA_ARGS (t));
     }
   else
     /* The CODE_CONTAINS tables were inaccurate when I started.  */
@@ -7136,13 +7150,18 @@ trees_in::core_vals (tree t)
       unsigned limit = (vl ? VL_EXP_OPERAND_LENGTH (t)
 			: TREE_OPERAND_LENGTH (t));
       unsigned ix = unsigned (vl);
-      if (code == REQUIRES_EXPR)
-	{
-	  REQUIRES_EXPR_PARMS (t) = chained_decls ();
-	  ++ix;
-	}
       for (; ix != limit; ix++)
 	RTU (TREE_OPERAND (t, ix));
+    }
+  else if (code == REQUIRES_EXPR)
+    {
+      REQUIRES_EXPR_LOCATION (t) = state->read_location (*this);
+      if (has_warning_spec (t))
+	put_warning_spec (t, u ());
+
+      REQUIRES_EXPR_PARMS (t) = chained_decls ();
+      RTU (REQUIRES_EXPR_REQS (t));
+      RTU (REQUIRES_EXPR_EXTRA_ARGS (t));
     }
 
   /* Then by CODE.  Special cases and/or 1:1 tree shape
@@ -8367,6 +8386,7 @@ trees_out::decl_value (tree decl, depset *dep)
       int use_tpl = -1;
       if (tree ti = node_template_info (decl, use_tpl))
 	gcc_checking_assert (TREE_CODE (TI_TEMPLATE (ti)) == OVERLOAD
+			     || TREE_CODE (TI_TEMPLATE (ti)) == IDENTIFIER_NODE
 			     || TREE_CODE (TI_TEMPLATE (ti)) == FIELD_DECL
 			     || (DECL_TEMPLATE_RESULT (TI_TEMPLATE (ti))
 				 != decl));
@@ -9870,8 +9890,11 @@ trees_out::type_node (tree type)
 	}
       break;
 
-    case META_TYPE:
-      /* No additional data.  */
+    case OPAQUE_TYPE:
+      /* No additional data.  OPAQUE_TYPEs created by the rs6000 backend
+	 are registered as built-in types and are recorded in fixed_trees
+	 so they will not get here.  */
+      gcc_checking_assert (REFLECTION_TYPE_P (type));
       break;
 
     case SPLICE_SCOPE:
@@ -10725,7 +10748,10 @@ trees_in::tree_node (bool is_use)
 	    }
 	    break;
 
-	  case META_TYPE:
+	  /* OPAQUE_TYPE can be more things, but here we assume it represents
+	     std::meta::info.  Unfortunately here it's not possible to check
+	     REFLECTION_TYPE_P.  */
+	  case OPAQUE_TYPE:
 	    if (!get_overrun ())
 	      res = meta_info_type_node;
 	    break;
@@ -10793,7 +10819,8 @@ trees_in::tree_node (bool is_use)
 
 	int quals = i ();
 	if (quals >= 0 && !get_overrun ())
-	  res = cp_build_qualified_type (res, quals);
+	  res = cp_build_qualified_type (res,
+					 static_cast<cv_qualifier> (quals));
 
 	int tag = i ();
 	if (!tag)
@@ -11344,9 +11371,9 @@ trees_out::fn_parms_init (tree fn)
     {
       /* We must walk contract specifiers so the dependency graph is
 	 complete.  */
-      tree contract = get_fn_contract_specifiers (fn);
-      for (; contract; contract = TREE_CHAIN (contract))
-	tree_node (contract);
+      if (tree contracts = get_fn_contract_specifiers (fn))
+	for (tree contract : tree_vec_range (contracts))
+	  tree_node (contract);
     }
 
   /* Write a reference to contracts pre/post functions, if any, to avoid
@@ -13946,7 +13973,7 @@ trees_in::read_class_def (tree defn, tree maybe_template)
 
   /* Propagate to all variants.  */
   if (installing)
-    fixup_type_variants (type);
+    fixup_type_variants (type, /*update_align=*/true);
 
   /* IS_FAKE_BASE_TYPE is inaccurate at this point, because if this is
      the fake base, we've not hooked it into the containing class's
@@ -15187,6 +15214,12 @@ depset::hash::add_namespace_entities (tree ns, bitmap partitions)
   for (tree udir : NAMESPACE_LEVEL (ns)->using_directives)
     if (TREE_CODE (udir) == USING_DECL && DECL_MODULE_PURVIEW_P (udir))
       {
+	/* Unless it's a (TU-local) anonymous namespace.
+
+	   FIXME instead of checking here, they should be
+	   is_tu_local_entity.  */
+	if (!TREE_PUBLIC (USING_DECL_DECLS (udir)))
+	  continue;
 	make_dependency (USING_DECL_DECLS (udir), depset::EK_NAMESPACE);
 	if (DECL_MODULE_EXPORT_P (udir))
 	  count++;
@@ -21893,7 +21926,7 @@ get_originating_module_decl (tree decl)
 	  if (TREE_CODE (decl) != TEMPLATE_DECL)
 	    {
 	      /* A friend template specialization.  */
-	      gcc_checking_assert (OVL_P (decl));
+	      gcc_checking_assert (OVL_P (decl) || identifier_p (decl));
 	      return global_namespace;
 	    }
 	}
@@ -22190,6 +22223,37 @@ set_originating_module (tree decl, bool friend_p ATTRIBUTE_UNUSED)
     DECL_MODULE_EXPORT_P (decl) = true;
 }
 
+/* True if it's OK to redefine DECL under P1811 because it is attached to the
+   global module and its definition was imported; [basic.def.odr]/12 "there can
+   be more than one definition...provided that each definition appears in a
+   different translation unit"
+
+   This does not depend on whether DECL was already defined, so that for
+   instance it can affect redefinition of default arguments.  This should only
+   be used when we notice a redefinition.  */
+
+bool
+redefinable_import_p (tree decl)
+{
+  if (!modules_p () || named_module_attach_p ())
+    return false;
+
+  decl = STRIP_TEMPLATE (decl);
+
+  if (TREE_CODE (decl) == TYPE_DECL
+      && !DECL_IMPLICIT_TYPEDEF_P (decl)
+      && !TYPE_DECL_FOR_LINKAGE_PURPOSES_P (decl))
+    /* Typedefs are always redefinable, use normal handling.  */
+    return false;
+
+  return (DECL_LANG_SPECIFIC (decl)
+	  && DECL_MODULE_ENTITY_P (decl)
+	  /* Use this instead of DECL_MODULE_IMPORT_P so we don't get confused
+	     by partitions or set_instantiating_module.  */
+	  /* FIXME this also means we allow multiple redefinitions.  */
+	  && get_importing_module (decl, /*flexible*/true) > 0);
+}
+
 /* Checks whether DECL within a module unit has valid linkage for its kind.
    Must be called after visibility for DECL has been finalised.  */
 
@@ -22390,7 +22454,7 @@ transfer_defining_module (tree olddecl, tree newdecl)
 
   if (DECL_LANG_SPECIFIC (new_inner))
     {
-      gcc_checking_assert (DECL_LANG_SPECIFIC (old_inner));
+      retrofit_lang_decl (old_inner);
       if (DECL_MODULE_PURVIEW_P (new_inner))
 	DECL_MODULE_PURVIEW_P (old_inner) = true;
       if (!DECL_MODULE_IMPORT_P (new_inner))
@@ -23141,7 +23205,7 @@ static char *
 maybe_translate_include (cpp_reader *reader, line_maps *lmaps, location_t loc,
 			 _cpp_file *file, bool angle, const char **alternate)
 {
-  if (!modules_p ())
+  if (!modules_p () || !flag_module_include_translate)
     {
       /* Turn off.  */
       cpp_get_callbacks (reader)->translate_include = NULL;

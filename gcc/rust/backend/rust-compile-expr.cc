@@ -17,6 +17,8 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-compile-expr.h"
+#include "line-map.h"
+#include "optional.h"
 #include "rust-backend.h"
 #include "rust-compile-context.h"
 #include "rust-compile-type.h"
@@ -26,6 +28,7 @@
 #include "rust-compile-block.h"
 #include "rust-compile-drop.h"
 #include "rust-compile-implitem.h"
+#include "rust-compile-platform-intrinsic.h"
 #include "rust-constexpr.h"
 #include "rust-compile-type.h"
 #include "rust-finalized-name-resolution-context.h"
@@ -38,7 +41,6 @@
 #include "rust-hir-bound.h"
 #include "rust-hir-expr.h"
 #include "rust-rib.h"
-#include "rust-system.h"
 #include "rust-tree.h"
 #include "rust-tyty.h"
 #include "tree-core.h"
@@ -100,12 +102,6 @@ compile_box (Context *ctx, TyTy::BaseType *box_tyty, TyTy::BaseType *inner_tyty,
 {
   tree inner_type_tree = TyTyResolveCompile::compile (ctx, inner_tyty);
 
-  if (!COMPLETE_TYPE_P (inner_type_tree))
-    {
-      rust_sorry_at (locus,
-		     "dynamically sized types in boxes are not supported yet");
-      return error_mark_node;
-    }
   tree size_tree = TYPE_SIZE_UNIT (inner_type_tree);
   tree align_tree
     = build_int_cst (size_type_node, TYPE_ALIGN_UNIT (inner_type_tree));
@@ -144,6 +140,9 @@ build_box_inner_ptr (tree main_expr, location_t locus)
   // custom allocator is placed as the first field in the RECORD_TYPE.
   while (TREE_CODE (TREE_TYPE (main_expr)) == RECORD_TYPE)
     {
+      if (RS_DST_FLAG_P (TREE_TYPE (main_expr)))
+	break;
+
       tree first_field = TYPE_FIELDS (TREE_TYPE (main_expr));
       if (first_field == NULL_TREE)
 	break;
@@ -185,6 +184,13 @@ CompileExpr::visit (HIR::TupleIndexExpr &expr)
     {
       tree indirect = indirect_expression (receiver_ref, expr.get_locus ());
       receiver_ref = indirect;
+    }
+  else if (auto inner_expr_ty = TyTy::try_get_box_inner_type (tuple_expr_ty))
+    {
+      rust_assert (inner_expr_ty.value ()->get_kind ()
+		   == TyTy::TypeKind::TUPLE);
+      receiver_ref = build_box_inner_ptr (receiver_ref, expr.get_locus ());
+      receiver_ref = indirect_expression (receiver_ref, expr.get_locus ());
     }
 
   translated
@@ -271,9 +277,32 @@ CompileExpr::visit (HIR::ReturnExpr &expr)
 				    lvalue_locus, rvalue_locus);
     }
 
+  if (fncontext.retty->is_unit ())
+    {
+      if (expr.has_return_expr ())
+	{
+	  ctx->add_statement (return_value);
+	  return_value = unit_expression (expr.get_locus ());
+	}
+    }
+  else if (expr.has_return_expr ())
+    {
+      tree result_reference
+	= Backend::var_expression (fncontext.ret_addr, expr.get_locus ());
+
+      tree assignment
+	= Backend::assignment_statement (result_reference, return_value,
+					 expr.get_locus ());
+
+      ctx->add_statement (assignment);
+      return_value
+	= Backend::var_expression (fncontext.ret_addr, expr.get_locus ());
+    }
+
   tree return_stmt = Backend::return_statement (fncontext.fndecl, return_value,
 						expr.get_locus ());
-  ctx->add_statement (return_stmt);
+
+  translated = return_stmt;
 }
 
 void
@@ -480,7 +509,7 @@ CompileExpr::visit (HIR::TypeCastExpr &expr)
   if (ok)
     {
       casted_expr
-	= resolve_adjustements (*adjustments, casted_expr, expr.get_locus ());
+	= resolve_adjustments (*adjustments, casted_expr, expr.get_locus ());
     }
 
   translated
@@ -891,6 +920,15 @@ CompileExpr::visit (HIR::FieldAccessExpr &expr)
 	}
       else
 	{
+	  if (RS_DST_FLAG_P (TREE_TYPE (receiver_ref)))
+	    {
+	      tree data_ptr_field = TYPE_FIELDS (TREE_TYPE (receiver_ref));
+	      tree data_ptr_expr
+		= build3_loc (expr.get_locus (), COMPONENT_REF,
+			      TREE_TYPE (data_ptr_field), receiver_ref,
+			      data_ptr_field, NULL_TREE);
+	      receiver_ref = data_ptr_expr;
+	    }
 	  tree indirect = indirect_expression (receiver_ref, expr.get_locus ());
 	  receiver_ref = indirect;
 	}
@@ -944,29 +982,21 @@ CompileExpr::visit (HIR::LoopExpr &expr)
   ctx->add_statement (ret_var_stmt);
   ctx->push_loop_context (tmp);
 
+  tl::optional<HIR::LoopLabel> loop_label = tl::nullopt;
   if (expr.has_loop_label ())
     {
-      HIR::LoopLabel &loop_label = expr.get_loop_label ();
-      tree label
-	= Backend::label (fnctx.fndecl, loop_label.get_lifetime ().get_name (),
-			  loop_label.get_locus ());
-      tree label_decl = Backend::label_definition_statement (label);
-      ctx->add_statement (label_decl);
-      ctx->insert_label_decl (
-	loop_label.get_lifetime ().get_mappings ().get_hirid (), label);
-      // Associate the loop's result temporary with the label so that a
-      // `break 'label value` can locate it (see visit (HIR::BreakExpr)).
+      loop_label = expr.get_loop_label ();
       ctx->insert_var_decl (
-	loop_label.get_lifetime ().get_mappings ().get_hirid (), tmp);
+	loop_label.value ().get_lifetime ().get_mappings ().get_hirid (), tmp);
     }
+  std::pair<tree, tree> loop_labels = construct_loop_labels (loop_label);
+  tree loop_begin_label = loop_labels.first;
+  tree loop_end_label = loop_labels.second;
 
-  tree loop_begin_label
-    = Backend::label (fnctx.fndecl, tl::nullopt, expr.get_locus ());
-  tree loop_begin_label_decl
-    = Backend::label_definition_statement (loop_begin_label);
-  ctx->add_statement (loop_begin_label_decl);
-  ctx->push_loop_begin_label (loop_begin_label);
+  // label before the loop - continue should goto here
+  ctx->add_statement (loop_begin_label);
 
+  // loop body
   tree code_block
     = CompileBlock::compile (expr.get_loop_block (), ctx, nullptr);
   tree loop_expr = Backend::loop_expression (code_block, expr.get_locus ());
@@ -975,40 +1005,34 @@ CompileExpr::visit (HIR::LoopExpr &expr)
   ctx->pop_loop_context ();
   translated = Backend::var_expression (tmp, expr.get_locus ());
 
+  // label after the loop - break should goto here
+  ctx->add_statement (loop_end_label);
+
+  // in construct_loop fn we push these labels
   ctx->pop_loop_begin_label ();
+  ctx->pop_loop_end_label ();
 }
 
 void
 CompileExpr::visit (HIR::WhileLoopExpr &expr)
 {
   fncontext fnctx = ctx->peek_fn ();
+  tree enclosing_scope = ctx->peek_enclosing_scope ();
+  ctx->push_loop_context (nullptr);
+  tl::optional<HIR::LoopLabel> loop_label = tl::nullopt;
   if (expr.has_loop_label ())
-    {
-      HIR::LoopLabel &loop_label = expr.get_loop_label ();
-      tree label
-	= Backend::label (fnctx.fndecl, loop_label.get_lifetime ().get_name (),
-			  loop_label.get_locus ());
-      tree label_decl = Backend::label_definition_statement (label);
-      ctx->add_statement (label_decl);
-      ctx->insert_label_decl (
-	loop_label.get_lifetime ().get_mappings ().get_hirid (), label);
-    }
-
+    loop_label = tl::optional<HIR::LoopLabel> (expr.get_loop_label ());
+  std::pair<tree, tree> loop_labels = construct_loop_labels (loop_label);
+  tree loop_begin_label = loop_labels.first;
+  tree loop_end_label = loop_labels.second;
   std::vector<Bvariable *> locals;
   location_t start_location = expr.get_loop_block ().get_locus ();
   location_t end_location = expr.get_loop_block ().get_locus (); // FIXME
 
-  tree enclosing_scope = ctx->peek_enclosing_scope ();
   tree loop_block = Backend::block (fnctx.fndecl, enclosing_scope, locals,
 				    start_location, end_location);
   ctx->push_block (loop_block);
-
-  tree loop_begin_label
-    = Backend::label (fnctx.fndecl, tl::nullopt, expr.get_locus ());
-  tree loop_begin_label_decl
-    = Backend::label_definition_statement (loop_begin_label);
-  ctx->add_statement (loop_begin_label_decl);
-  ctx->push_loop_begin_label (loop_begin_label);
+  ctx->add_statement (loop_begin_label);
 
   HIR::Expr &predicate = expr.get_predicate_expr ();
   TyTy::BaseType *predicate_type = nullptr;
@@ -1037,6 +1061,9 @@ CompileExpr::visit (HIR::WhileLoopExpr &expr)
 
   tree loop_expr = Backend::loop_expression (loop_block, expr.get_locus ());
   ctx->add_statement (loop_expr);
+  ctx->add_statement (loop_end_label);
+  ctx->pop_loop_end_label ();
+
   translated = unit_expression (expr.get_locus ());
 }
 
@@ -1051,8 +1078,12 @@ CompileExpr::visit (HIR::BreakExpr &expr)
       tree assign
 	= Backend::assignment_statement (tvar->get_tree (label.get_locus ()),
 					 value, label.get_locus ());
-      tree block_label = lookup_label (label.get_mappings ().get_nodeid ());
-      tree go_to = Backend::goto_statement (block_label, label.get_locus ());
+      HirId label_hirid = resolve_nodeid (label.get_mappings ().get_nodeid (),
+					  Resolver2_0::Namespace::Labels);
+      tl::optional<tree> block_label = ctx->lookup_break_label (label_hirid);
+      rust_assert (block_label.has_value ());
+      tree go_to
+	= Backend::goto_statement (block_label.value (), label.get_locus ());
       ctx->add_statement (assign);
       ctx->add_statement (go_to);
       return;
@@ -1066,6 +1097,9 @@ CompileExpr::visit (HIR::BreakExpr &expr)
 	return;
 
       Bvariable *loop_result_holder = ctx->peek_loop_context ();
+      if (loop_result_holder == nullptr)
+	return;
+
       tree result_reference
 	= Backend::var_expression (loop_result_holder,
 				   expr.get_expr ().get_locus ());
@@ -1104,23 +1138,17 @@ CompileExpr::visit (HIR::BreakExpr &expr)
 	}
       auto ref = hid.value ();
 
-      tree label = NULL_TREE;
-      if (!ctx->lookup_label_decl (ref, &label))
-	{
-	  rust_error_at (expr.get_label ().get_locus (),
-			 "failed to lookup compiled label");
-	  return;
-	}
-
-      tree goto_label = Backend::goto_statement (label, expr.get_locus ());
+      tl::optional<tree> label = ctx->lookup_break_label (ref);
+      rust_assert (label.has_value ());
+      tree goto_label
+	= Backend::goto_statement (label.value (), expr.get_locus ());
       ctx->add_statement (goto_label);
     }
   else
     {
-      tree exit_expr
+      translated
 	= Backend::exit_expression (Backend::boolean_constant_expression (true),
 				    expr.get_locus ());
-      ctx->add_statement (exit_expr);
     }
 }
 
@@ -1128,8 +1156,7 @@ void
 CompileExpr::visit (HIR::ContinueExpr &expr)
 {
   translated = error_mark_node;
-  if (!ctx->have_loop_context ())
-    return;
+  rust_assert (ctx->have_loop_context () && "continue is outside of loop");
 
   tree label = ctx->peek_loop_begin_label ();
   if (expr.has_label ())
@@ -1160,13 +1187,9 @@ CompileExpr::visit (HIR::ContinueExpr &expr)
 	  return;
 	}
       auto ref = hid.value ();
-
-      if (!ctx->lookup_label_decl (ref, &label))
-	{
-	  rust_error_at (expr.get_label ().get_locus (),
-			 "failed to lookup compiled label");
-	  return;
-	}
+      tl::optional<tree> opt_label = ctx->lookup_continue_label (ref);
+      rust_assert (opt_label.has_value ());
+      label = opt_label.value ();
     }
 
   translated = Backend::goto_statement (label, expr.get_locus ());
@@ -1182,12 +1205,70 @@ CompileExpr::visit (HIR::BorrowExpr &expr)
       return;
     }
 
+  // const expr needs these to be addressable temps otherwise it cant cope. We
+  // get away with this during regular compilation because gcc middle end
+  // optimizes it
+  if (TREE_CODE (main_expr) == CONSTRUCTOR && !TREE_CONSTANT (main_expr))
+    {
+      tree init_stmt = NULL_TREE;
+      Bvariable *tmp
+	= Backend::temporary_variable (ctx->peek_fn ().fndecl,
+				       ctx->peek_enclosing_scope (),
+				       TREE_TYPE (main_expr), main_expr, true,
+				       expr.get_locus (), &init_stmt);
+      ctx->add_statement (init_stmt);
+      main_expr = Backend::var_expression (tmp, expr.get_locus ());
+    }
+
   TyTy::BaseType *tyty = nullptr;
   if (!ctx->get_tyctx ()->lookup_type (expr.get_mappings ().get_hirid (),
 				       &tyty))
     return;
 
   tree expected_type = TyTyResolveCompile::compile (ctx, tyty);
+
+  bool is_fat_ptr
+    = tyty->is<TyTy::ReferenceType> ()
+	? tyty->as<TyTy::ReferenceType> ()->get_base ()->is_unsized ()
+      : tyty->is<TyTy::PointerType> ()
+	? tyty->as<TyTy::PointerType> ()->get_base ()->is_unsized ()
+	: false;
+
+  if (is_fat_ptr)
+    {
+      tree data_ptr
+	= address_expression (main_expr, expr.get_locus (), NULL_TREE);
+      tree meta = error_mark_node;
+      if (TREE_CODE (main_expr) == COMPONENT_REF)
+	{
+	  tree indirect = TREE_OPERAND (main_expr, 0);
+	  if (TREE_CODE (indirect) == INDIRECT_REF)
+	    {
+	      tree data_ptr_expr = TREE_OPERAND (indirect, 0);
+	      if (TREE_CODE (data_ptr_expr) == COMPONENT_REF)
+		{
+		  tree fat_ptr = TREE_OPERAND (data_ptr_expr, 0);
+		  if (RS_DST_FLAG_P (TREE_TYPE (fat_ptr)))
+		    {
+		      tree meta_field
+			= DECL_CHAIN (TYPE_FIELDS (TREE_TYPE (fat_ptr)));
+		      meta = build3_loc (expr.get_locus (), COMPONENT_REF,
+					 TREE_TYPE (meta_field), fat_ptr,
+					 meta_field, NULL_TREE);
+		    }
+		}
+	    }
+	}
+      if (meta != error_mark_node)
+	{
+	  std::vector<tree> constructor_elements = {data_ptr, meta};
+	  translated = Backend::constructor_expression (expected_type, false,
+							constructor_elements,
+							-1, expr.get_locus ());
+	  return;
+	}
+    }
+
   translated = address_expression (main_expr, expr.get_locus (), expected_type);
 }
 
@@ -1449,6 +1530,19 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       CompilePatternBindings::Compile (*kase_pattern, match_scrutinee_expr,
 				       ctx);
 
+      // The guard is evaluated once the bindings are set up. The arm body
+      // goes into its own block that only runs when the guard holds, and
+      // when it does not the arm falls through to the next one.
+      tree guard_expr = NULL_TREE;
+      tree guarded_block = NULL_TREE;
+      if (kase_arm.has_match_arm_guard ())
+	{
+	  guard_expr = CompileExpr::Compile (kase_arm.get_guard_expr (), ctx);
+	  guarded_block = Backend::block (fndecl, ctx->peek_enclosing_scope (),
+					  {}, start_location, end_location);
+	  ctx->push_block (guarded_block);
+	}
+
       // compile the expr and setup the assignment if required when tmp !=
       // NULL
       location_t arm_locus = kase_arm.get_locus ();
@@ -1474,6 +1568,16 @@ CompileExpr::visit (HIR::MatchExpr &expr)
       tree goto_end_label
 	= build1_loc (arm_locus, GOTO_EXPR, void_type_node, end_label);
       ctx->add_statement (goto_end_label);
+
+      if (guarded_block != NULL_TREE)
+	{
+	  ctx->pop_block ();
+	  tree guard_stmt
+	    = Backend::if_statement (NULL_TREE, guard_expr, guarded_block,
+				     NULL_TREE,
+				     kase_arm.get_guard_expr ().get_locus ());
+	  ctx->add_statement (guard_stmt);
+	}
 
       ctx->pop_block ();
 
@@ -1616,6 +1720,23 @@ CompileExpr::visit (HIR::CallExpr &expr)
     return true;
   };
 
+  // special check for platform-intrinsic functions
+  TyTy::FnType *platform_intrinsic = nullptr;
+  if (tyty->get_kind () == TyTy::TypeKind::FNDEF)
+    {
+      auto *fn_ty = static_cast<TyTy::FnType *> (tyty);
+      if (fn_ty->get_abi () == ABI::PLATFORM_INTRINSIC)
+	platform_intrinsic = fn_ty;
+    }
+
+  if (ctx->const_context_p () && platform_intrinsic != nullptr)
+    {
+      rust_sorry_at (
+	expr.get_locus (),
+	"platform intrinsic calls in consts are not supported yet");
+      return;
+    }
+
   auto fn_address = CompileExpr::Compile (expr.get_fnexpr (), ctx);
   if (ctx->const_context_p ())
     {
@@ -1662,12 +1783,18 @@ CompileExpr::visit (HIR::CallExpr &expr)
     }
 
   std::vector<tree> args;
-  for (size_t i = 0; i < expr.get_arguments ().size (); i++)
+  for (size_t source_argument_index = 0;
+       source_argument_index < expr.get_arguments ().size ();
+       source_argument_index++)
     {
-      auto &argument = expr.get_arguments ().at (i);
+      if (expr.is_const_argument (source_argument_index))
+	continue;
+
+      auto &argument = expr.get_arguments ().at (source_argument_index);
+      size_t runtime_argument_index = args.size ();
       auto rvalue = CompileExpr::Compile (*argument, ctx);
 
-      if (is_variadic && i >= required_num_args)
+      if (is_variadic && runtime_argument_index >= required_num_args)
 	{
 	  args.push_back (rvalue);
 	  continue;
@@ -1677,7 +1804,8 @@ CompileExpr::visit (HIR::CallExpr &expr)
       // necessary
       bool ok;
       TyTy::BaseType *expected = nullptr;
-      ok = get_parameter_tyty_at_index (tyty, i, &expected);
+      ok
+	= get_parameter_tyty_at_index (tyty, runtime_argument_index, &expected);
       rust_assert (ok);
 
       TyTy::BaseType *actual = nullptr;
@@ -1694,6 +1822,13 @@ CompileExpr::visit (HIR::CallExpr &expr)
 
       // add it to the list
       args.push_back (rvalue);
+    }
+
+  if (platform_intrinsic != nullptr)
+    {
+      translated = PlatformIntrinsic::compile_call (ctx, platform_intrinsic,
+						    args, expr.get_locus ());
+      return;
     }
 
   // must be a regular call to a function
@@ -1720,29 +1855,6 @@ CompileExpr::visit (HIR::MethodCallExpr &expr)
     expr.get_receiver ().get_mappings ().get_hirid (), &receiver);
   rust_assert (ok);
 
-  bool is_dyn_dispatch
-    = receiver->get_root ()->get_kind () == TyTy::TypeKind::DYNAMIC;
-  bool is_generic_receiver = receiver->get_kind () == TyTy::TypeKind::PARAM;
-  if (is_generic_receiver)
-    {
-      TyTy::ParamType *p = static_cast<TyTy::ParamType *> (receiver);
-      receiver = p->resolve ();
-    }
-
-  tree fn_expr = error_mark_node;
-  if (is_dyn_dispatch)
-    {
-      const TyTy::DynamicObjectType *dyn
-	= static_cast<const TyTy::DynamicObjectType *> (receiver->get_root ());
-      fn_expr
-	= get_fn_addr_from_dyn (dyn, receiver, fntype, self, expr.get_locus ());
-      self = get_receiver_from_dyn (dyn, receiver, fntype, self,
-				    expr.get_locus ());
-    }
-  else
-    // lookup compiled functions since it may have already been compiled
-    fn_expr = resolve_method_address (fntype, receiver, expr.get_locus ());
-
   // lookup the autoderef mappings
   HirId autoderef_mappings_id
     = expr.get_receiver ().get_mappings ().get_hirid ();
@@ -1752,8 +1864,60 @@ CompileExpr::visit (HIR::MethodCallExpr &expr)
   rust_assert (ok);
 
   // apply adjustments for the fn call
-  self = resolve_adjustements (*adjustments, self,
-			       expr.get_receiver ().get_locus ());
+  self = resolve_adjustments (*adjustments, self,
+			      expr.get_receiver ().get_locus ());
+
+  if (adjustments != nullptr && !adjustments->empty ())
+    receiver = adjustments->back ().get_expected ();
+
+  enum
+  {
+    DYN,
+    DYN_BOX,
+    NOT_DYN,
+  } is_dyn_dispatch
+    = NOT_DYN;
+  const TyTy::DynamicObjectType *dyn = nullptr;
+  if (receiver->get_root ()->get_kind () == TyTy::TypeKind::DYNAMIC)
+    {
+      is_dyn_dispatch = DYN;
+      dyn
+	= static_cast<const TyTy::DynamicObjectType *> (receiver->get_root ());
+    }
+  else if (auto inner = TyTy::try_get_box_inner_type (receiver->get_root ()))
+    {
+      if ((*inner)->get_root ()->get_kind () == TyTy::TypeKind::DYNAMIC)
+	{
+	  is_dyn_dispatch = DYN_BOX;
+	  dyn = static_cast<const TyTy::DynamicObjectType *> (
+	    (*inner)->get_root ());
+	}
+    }
+
+  bool is_generic_receiver = receiver->get_kind () == TyTy::TypeKind::PARAM;
+  if (is_generic_receiver)
+    {
+      TyTy::ParamType *p = static_cast<TyTy::ParamType *> (receiver);
+      receiver = p->resolve ();
+    }
+
+  tree fn_expr = error_mark_node;
+  if (is_dyn_dispatch == NOT_DYN)
+    // lookup compiled functions since it may have already been compiled
+    fn_expr = resolve_method_address (fntype, receiver, expr.get_locus ());
+  else
+    {
+      tree target_self
+	= is_dyn_dispatch == DYN
+	    ? self
+	    : build_box_inner_ptr (self, expr.get_receiver ().get_locus ());
+
+      fn_expr = get_fn_addr_from_dyn (dyn, receiver, fntype, target_self,
+				      expr.get_locus ());
+
+      self = get_receiver_from_dyn (dyn, receiver, fntype, target_self,
+				    expr.get_locus ());
+    }
 
   std::vector<tree> args;
   args.push_back (self); // adjusted self
@@ -1886,7 +2050,7 @@ CompileExpr::resolve_operator_overload (
   rust_assert (ok);
 
   // apply adjustments for the fn call
-  tree self = resolve_adjustements (*adjustments, lhs, lhs_expr.get_locus ());
+  tree self = resolve_adjustments (*adjustments, lhs, lhs_expr.get_locus ());
 
   std::vector<tree> args;
   args.push_back (self); // adjusted self
@@ -2389,7 +2553,7 @@ CompileExpr::array_copied_expr (location_t expr_locus,
 }
 
 tree
-HIRCompileBase::resolve_adjustements (
+HIRCompileBase::resolve_adjustments (
   std::vector<Resolver::Adjustment> &adjustments, tree expression,
   location_t locus)
 {
@@ -2440,12 +2604,14 @@ HIRCompileBase::resolve_deref_adjustment (Resolver::Adjustment &adjustment,
 	       || adjustment.is_deref_mut_adjustment ());
   if (!adjustment.has_operator_overload ())
     {
-      TyTy::BaseType *receiver = adjustment.get_actual ();
-      if (TyTy::try_get_box_inner_type (receiver))
+      if (TyTy::try_get_box_inner_type (adjustment.get_actual ()))
 	{
-	  tree receiver_ref = expression;
-	  receiver_ref = build_box_inner_ptr (receiver_ref, locus);
-	  return indirect_expression (receiver_ref, locus);
+	  expression = build_box_inner_ptr (expression, locus);
+	  if (TREE_CODE (TREE_TYPE (expression)) == POINTER_TYPE
+	      || TREE_CODE (TREE_TYPE (expression)) == REFERENCE_TYPE)
+	    expression = indirect_expression (expression, locus);
+	  return expression;
+	  ;
 	}
       rust_assert (false);
     }
@@ -2483,6 +2649,8 @@ HIRCompileBase::resolve_unsized_adjustment (Resolver::Adjustment &adjustment,
     = adjustment.get_expected ()->get_kind () == TyTy::TypeKind::SLICE;
   bool expect_dyn
     = adjustment.get_expected ()->get_kind () == TyTy::TypeKind::DYNAMIC;
+  bool expect_adt
+    = adjustment.get_expected ()->get_kind () == TyTy::TypeKind::ADT;
 
   // assumes this is an array
   tree expr_type = TREE_TYPE (expression);
@@ -2491,6 +2659,9 @@ HIRCompileBase::resolve_unsized_adjustment (Resolver::Adjustment &adjustment,
       rust_assert (TREE_CODE (expr_type) == ARRAY_TYPE);
       return resolve_unsized_slice_adjustment (adjustment, expression, locus);
     }
+
+  if (expect_adt)
+    return resolve_unsized_adt_adjustment (adjustment, expression, locus);
 
   rust_assert (expect_dyn);
   return resolve_unsized_dyn_adjustment (adjustment, expression, locus);
@@ -2526,6 +2697,199 @@ HIRCompileBase::resolve_unsized_slice_adjustment (
 
   return Backend::constructor_expression (fat_pointer, false, {data, size}, -1,
 					  locus);
+}
+
+tree
+HIRCompileBase::resolve_unsized_adt_adjustment (
+  Resolver::Adjustment &adjustment, tree expression, location_t locus)
+{
+  /*
+   * FIXME: This method is implemented as a temporary workaround to enable the
+   * compilation of intra-ADT conversions for the `coerce_unsized` lang item.
+   */
+
+  auto source_adt
+    = static_cast<const TyTy::ADTType *> (adjustment.get_actual ());
+  auto target_adt
+    = static_cast<const TyTy::ADTType *> (adjustment.get_expected ());
+
+  if (target_adt->is_unsized ())
+    {
+      TyTy::TyVar t_tyvar = TyTy::TyVar::get_implicit_infer_var (locus);
+      TyTy::BaseType *cloned_target = target_adt->clone ();
+      cloned_target->set_ref (t_tyvar.get_ref ());
+      Analysis::NodeMapping pseudo_mapping (
+	ctx->get_mappings ().crate.get_current_crate (), 0, t_tyvar.get_ref (),
+	0);
+      ctx->get_tyctx ()->insert_type (pseudo_mapping, cloned_target);
+
+      const TyTy::ReferenceType r (ctx->get_mappings ().get_next_hir_id (),
+				   t_tyvar, Mutability::Imm);
+
+      tree fat_pointer = TyTyResolveCompile::compile (ctx, &r);
+      rust_assert (fat_pointer != error_mark_node);
+      tree data_ptr = address_expression (expression, locus);
+
+      size_t tail_idx = source_adt->get_variants ().front ()->num_fields () - 1;
+      tree tail_expr
+	= Backend::struct_field_expression (expression, tail_idx, locus);
+
+      auto s_tail_ty = source_adt->get_variants ()
+			 .front ()
+			 ->get_field_at_index (tail_idx)
+			 ->get_field_type ();
+      auto t_tail_ty = target_adt->get_variants ()
+			 .front ()
+			 ->get_field_at_index (tail_idx)
+			 ->get_field_type ();
+
+      Resolver::Adjustment tail_adj (
+	Resolver::Adjustment::AdjustmentType::UNSIZE, s_tail_ty, t_tail_ty);
+      tree inner_fat_ptr
+	= resolve_unsized_adjustment (tail_adj, tail_expr, locus);
+      rust_assert (inner_fat_ptr != error_mark_node);
+      tree meta = error_mark_node;
+      if (TREE_CODE (inner_fat_ptr) == CONSTRUCTOR)
+	{
+	  unsigned HOST_WIDE_INT ix;
+	  tree field ATTRIBUTE_UNUSED, val;
+	  FOR_EACH_CONSTRUCTOR_ELT (CONSTRUCTOR_ELTS (inner_fat_ptr), ix, field,
+				    val)
+	    if (ix == 1)
+	      {
+		meta = val;
+		break;
+	      }
+	}
+      else
+	{
+	  tree meta_field_decl
+	    = DECL_CHAIN (TYPE_FIELDS (TREE_TYPE (inner_fat_ptr)));
+	  meta = fold_build3_loc (locus, COMPONENT_REF,
+				  TREE_TYPE (meta_field_decl), inner_fat_ptr,
+				  meta_field_decl, NULL_TREE);
+	}
+
+      std::vector<tree> constructor_elements = {data_ptr, meta};
+      tree result
+	= Backend::constructor_expression (fat_pointer, false,
+					   constructor_elements, -1, locus);
+      rust_assert (result != error_mark_node);
+      RS_DST_FLAG (TREE_TYPE (result)) = 1;
+      return result;
+    }
+  else
+    {
+      tree target = TyTyResolveCompile::compile (ctx, target_adt);
+      size_t coerce_idx = -1;
+      auto s_variant = source_adt->get_variants ().front ();
+      auto t_variant = target_adt->get_variants ().front ();
+
+      for (size_t idx = 0; idx < s_variant->num_fields (); idx++)
+	{
+	  auto s_field_ty
+	    = s_variant->get_field_at_index (idx)->get_field_type ();
+	  auto t_field_ty
+	    = t_variant->get_field_at_index (idx)->get_field_type ();
+	  if (!s_field_ty->is_equal (*t_field_ty))
+	    {
+	      bool is_phantom = false;
+	      if (s_field_ty->is<TyTy::ADTType> ())
+		if (auto phantom_data
+		    = Analysis::Mappings::get ().lookup_lang_item (
+		      LangItem::Kind::PHANTOM_DATA))
+		  if (s_field_ty->as<TyTy::ADTType> ()->get_id ()
+		      == phantom_data)
+		    is_phantom = true;
+
+	      if (!is_phantom)
+		{
+		  coerce_idx = idx;
+		  break;
+		}
+	    }
+	}
+      rust_assert (coerce_idx != (size_t) -1);
+      std::vector<tree> constructor_elements;
+      for (size_t i = 0; i < s_variant->num_fields (); i++)
+	{
+	  tree field_expr
+	    = Backend::struct_field_expression (expression, i, locus);
+
+	  if (i != coerce_idx)
+	    {
+	      constructor_elements.push_back (field_expr);
+	    }
+	  else
+	    {
+	      auto s_coerce_ty
+		= s_variant->get_field_at_index (i)->get_field_type ();
+	      auto t_coerce_ty
+		= t_variant->get_field_at_index (i)->get_field_type ();
+
+	      Resolver::Adjustment adj (adjustment.get_type (), s_coerce_ty,
+					t_coerce_ty);
+	      tree coerced_inner_expr = error_mark_node;
+
+	      if (t_coerce_ty->get_kind () == TyTy::TypeKind::SLICE
+		  || t_coerce_ty->get_kind () == TyTy::TypeKind::STR)
+		coerced_inner_expr
+		  = resolve_unsized_slice_adjustment (adj, field_expr, locus);
+	      else if (t_coerce_ty->get_kind () == TyTy::TypeKind::DYNAMIC)
+		coerced_inner_expr
+		  = resolve_unsized_dyn_adjustment (adj, field_expr, locus);
+	      else if (t_coerce_ty->get_kind () == TyTy::TypeKind::ADT)
+		coerced_inner_expr
+		  = resolve_unsized_adt_adjustment (adj, field_expr, locus);
+	      else if (t_coerce_ty->get_kind () == TyTy::TypeKind::POINTER
+		       || t_coerce_ty->get_kind () == TyTy::TypeKind::REF)
+		{
+		  bool is_ptr
+		    = t_coerce_ty->get_kind () == TyTy::TypeKind::POINTER;
+
+		  TyTy::BaseType *s_base
+		    = is_ptr ? s_coerce_ty->as<TyTy::PointerType> ()
+				 ->get_base ()
+				 ->monomorphized_clone ()
+			     : s_coerce_ty->as<TyTy::ReferenceType> ()
+				 ->get_base ()
+				 ->monomorphized_clone ();
+		  TyTy::BaseType *t_base
+		    = is_ptr ? t_coerce_ty->as<TyTy::PointerType> ()
+				 ->get_base ()
+				 ->monomorphized_clone ()
+			     : t_coerce_ty->as<TyTy::ReferenceType> ()
+				 ->get_base ()
+				 ->monomorphized_clone ();
+
+		  Resolver::Adjustment::AdjustmentType ref_adj_type
+		    = Resolver::Adjustment::AdjustmentType::IMM_REF;
+
+		  std::vector<Resolver::Adjustment> inner_adjs;
+		  inner_adjs.push_back (Resolver::Adjustment (
+		    Resolver::Adjustment::AdjustmentType::INDIRECTION,
+		    s_coerce_ty, s_base));
+		  inner_adjs.push_back (Resolver::Adjustment (
+		    Resolver::Adjustment::AdjustmentType::UNSIZE, s_base,
+		    t_base));
+		  inner_adjs.push_back (
+		    Resolver::Adjustment (ref_adj_type, t_base, t_coerce_ty));
+
+		  coerced_inner_expr
+		    = resolve_adjustments (inner_adjs, field_expr, locus);
+		}
+	      else
+		rust_unreachable ();
+
+	      constructor_elements.push_back (coerced_inner_expr);
+	    }
+	}
+
+      return Backend::constructor_expression (target, false,
+					      constructor_elements, -1, locus);
+    }
+
+  return error_mark_node;
 }
 
 tree
@@ -2627,32 +2991,9 @@ CompileExpr::visit (HIR::RangeFullExpr &expr)
 }
 
 void
-CompileExpr::visit (HIR::RangeFromToInclExpr &expr)
-{
-  tree from = CompileExpr::Compile (expr.get_from_expr (), ctx);
-  tree to = CompileExpr::Compile (expr.get_to_expr (), ctx);
-  if (from == error_mark_node || to == error_mark_node)
-    {
-      translated = error_mark_node;
-      return;
-    }
-
-  TyTy::BaseType *tyty = nullptr;
-  bool ok
-    = ctx->get_tyctx ()->lookup_type (expr.get_mappings ().get_hirid (), &tyty);
-  rust_assert (ok);
-
-  tree adt = TyTyResolveCompile::compile (ctx, tyty);
-
-  // make the constructor
-  translated = Backend::constructor_expression (adt, false, {from, to}, -1,
-						expr.get_locus ());
-}
-
-void
 CompileExpr::visit (HIR::ArrayIndexExpr &expr)
 {
-  tree array_reference = CompileExpr::Compile (expr.get_array_expr (), ctx);
+  tree reference = CompileExpr::Compile (expr.get_array_expr (), ctx);
   tree index = CompileExpr::Compile (expr.get_index_expr (), ctx);
 
   // this might be an core::ops::index lang item situation
@@ -2663,8 +3004,8 @@ CompileExpr::visit (HIR::ArrayIndexExpr &expr)
     {
       auto lang_item_type = LangItem::Kind::INDEX;
       tree operator_overload_call
-	= resolve_operator_overload (lang_item_type, expr, array_reference,
-				     index, expr.get_array_expr (),
+	= resolve_operator_overload (lang_item_type, expr, reference, index,
+				     expr.get_array_expr (),
 				     expr.get_index_expr ());
 
       tree actual_type = TREE_TYPE (operator_overload_call);
@@ -2683,22 +3024,52 @@ CompileExpr::visit (HIR::ArrayIndexExpr &expr)
       return;
     }
 
-  // lets check if the array is a reference type then we can add an
+  // lets check if the array/slice is a reference type then we can add an
   // indirection if required
-  TyTy::BaseType *array_expr_ty = nullptr;
+  TyTy::BaseType *base_ty = nullptr;
   bool ok = ctx->get_tyctx ()->lookup_type (
-    expr.get_array_expr ().get_mappings ().get_hirid (), &array_expr_ty);
+    expr.get_array_expr ().get_mappings ().get_hirid (), &base_ty);
   rust_assert (ok);
-
   // do we need to add an indirect reference
-  if (array_expr_ty->get_kind () == TyTy::TypeKind::REF)
+  if (base_ty->get_kind () == TyTy::TypeKind::REF)
     {
-      array_reference
-	= indirect_expression (array_reference, expr.get_locus ());
+      auto ref = static_cast<TyTy::ReferenceType *> (base_ty);
+      base_ty = ref->get_base ();
+
+      if (base_ty->get_kind () == TyTy::TypeKind::ARRAY)
+	{
+	  // only array box is further deferenced to the underlying array
+	  // slice always uses fat ptr, which is handled in
+	  // slice_index_expression
+	  reference = indirect_expression (reference, expr.get_locus ());
+	}
+    }
+  else if (auto inner = TyTy::try_get_box_inner_type (base_ty))
+    {
+      base_ty = *inner;
+      reference = build_box_inner_ptr (reference, expr.get_locus ());
+
+      if (base_ty->get_kind () == TyTy::TypeKind::ARRAY)
+	{
+	  // only array box is further deferenced to the underlying array
+	  // slice always uses fat ptr, which is handled in
+	  // slice_index_expression
+	  reference = indirect_expression (reference, expr.get_locus ());
+	}
     }
 
-  translated = Backend::array_index_expression (array_reference, index,
-						expr.get_locus ());
+  if (base_ty->get_kind () == TyTy::TypeKind::ARRAY)
+    {
+      translated
+	= Backend::array_index_expression (reference, index, expr.get_locus ());
+    }
+  else
+    {
+      // it must be a slice here
+      rust_assert (base_ty->get_kind () == TyTy::TypeKind::SLICE);
+      translated
+	= Backend::slice_index_expression (reference, index, expr.get_locus ());
+    }
 }
 
 void
@@ -3001,7 +3372,7 @@ CompileExpr::generate_possible_fn_trait_call (HIR::CallExpr &expr,
   rust_assert (ok);
 
   // apply adjustments for the fn call
-  tree self = resolve_adjustements (*adjustments, receiver, expr.get_locus ());
+  tree self = resolve_adjustments (*adjustments, receiver, expr.get_locus ());
 
   // resolve the arguments
   std::vector<tree> tuple_arg_vals;
@@ -3046,7 +3417,7 @@ CompileExpr::construct_block_label (HIR::BlockExpr &expr)
       tree label_decl
 	= Backend::label (fnctx.fndecl, label_name, label.get_locus ());
       tree label_expr = Backend::label_definition_statement (label_decl);
-      ctx->insert_label_decl (label_id, label_decl);
+      ctx->insert_break_label (label_id, label_decl);
       return label_expr;
     }
   return NULL_TREE;
@@ -3085,6 +3456,44 @@ CompileExpr::resolve_nodeid (NodeId to_be_resolved, Resolver2_0::Namespace ns)
   HirId ref
     = ctx->get_mappings ().lookup_node_to_hir (resolved_node_id).value ();
   return ref;
+}
+
+std::pair<tree, tree>
+CompileExpr::construct_loop_labels (tl::optional<HIR::LoopLabel> opt_loop_label)
+{
+  fncontext fnctx = ctx->peek_fn ();
+  tree break_label_decl = NULL_TREE;
+  tree break_label_expr = NULL_TREE;
+  tree continue_label_decl = NULL_TREE;
+  tree continue_label_expr = NULL_TREE;
+  location_t label_locus = UNKNOWN_LOCATION;
+  tl::optional<std::string> continue_label_name = tl::nullopt;
+  tl::optional<std::string> break_label_name = tl::nullopt;
+  tl::optional<HirId> label_hirid = tl::nullopt;
+  if (opt_loop_label.has_value ())
+    {
+      label_locus = opt_loop_label.value ().get_locus ();
+      HIR::LoopLabel &loop_label = opt_loop_label.value ();
+      std::string label_name = loop_label.get_lifetime ().get_name ();
+      continue_label_name = label_name + "_continue";
+      break_label_name = label_name + "_break";
+      label_hirid = loop_label.get_lifetime ().get_mappings ().get_hirid ();
+    }
+  continue_label_decl
+    = Backend::label (fnctx.fndecl, continue_label_name, label_locus);
+  continue_label_expr
+    = Backend::label_definition_statement (continue_label_decl);
+  break_label_decl
+    = Backend::label (fnctx.fndecl, break_label_name, label_locus);
+  break_label_expr = Backend::label_definition_statement (break_label_decl);
+  if (label_hirid.has_value ())
+    {
+      ctx->insert_continue_label (label_hirid.value (), continue_label_decl);
+      ctx->insert_break_label (label_hirid.value (), break_label_decl);
+    }
+  ctx->push_loop_begin_label (continue_label_decl);
+  ctx->push_loop_end_label (break_label_decl);
+  return std::make_pair (continue_label_expr, break_label_expr);
 }
 
 } // namespace Compile

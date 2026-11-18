@@ -592,7 +592,7 @@ advance_one_cycle (fence_t fence)
 /* Returns true when SUCC in a fallthru bb of INSN, possibly
    skipping empty basic blocks.  */
 static bool
-in_fallthru_bb_p (rtx_insn *insn, rtx succ)
+in_fallthru_bb_p (rtx_insn *insn, rtx_insn *succ)
 {
   basic_block bb = BLOCK_FOR_INSN (insn);
   edge e;
@@ -840,7 +840,7 @@ create_insn_rtx_with_rhs (vinsn_t vi, rtx rhs_rtx)
   lhs_rtx = copy_rtx (VINSN_LHS (vi));
 
   pattern = gen_rtx_SET (lhs_rtx, rhs_rtx);
-  insn_rtx = create_insn_rtx_from_pattern (pattern, NULL_RTX);
+  insn_rtx = create_insn_rtx_from_pattern (pattern, nullptr);
 
   return insn_rtx;
 }
@@ -921,7 +921,7 @@ create_insn_rtx_with_lhs (vinsn_t vi, rtx lhs_rtx)
   rhs_rtx = copy_rtx (VINSN_RHS (vi));
 
   pattern = gen_rtx_SET (lhs_rtx, rhs_rtx);
-  insn_rtx = create_insn_rtx_from_pattern (pattern, NULL_RTX);
+  insn_rtx = create_insn_rtx_from_pattern (pattern, nullptr);
 
   return insn_rtx;
 }
@@ -1816,7 +1816,7 @@ create_speculation_check (expr_t c_expr, ds_t check_ds, insn_t orig_insn)
       rtx twin_rtx;
 
       twin_rtx = copy_rtx (PATTERN (EXPR_INSN_RTX (c_expr)));
-      twin_rtx = create_insn_rtx_from_pattern (twin_rtx, NULL_RTX);
+      twin_rtx = create_insn_rtx_from_pattern (twin_rtx, nullptr);
       sel_gen_recovery_insn_from_rtx_after (twin_rtx,
 					    INSN_EXPR (orig_insn),
 					    INSN_SEQNO (insn),
@@ -3673,7 +3673,7 @@ vinsn_vec_free (vinsn_vec_t &vinsn_vec)
 
 /* Increase EXPR_PRIORITY_ADJ for INSN by AMOUNT.  */
 
-void sel_add_to_insn_priority (rtx insn, int amount)
+void sel_add_to_insn_priority (rtx_insn *insn, int amount)
 {
   EXPR_PRIORITY_ADJ (INSN_EXPR (insn)) += amount;
 

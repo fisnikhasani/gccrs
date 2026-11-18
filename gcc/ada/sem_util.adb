@@ -5076,7 +5076,7 @@ package body Sem_Util is
            and then Is_Public_Operation
            and then Scope_Depth (Pref_Encl_Typ)
                       >= Static_Accessibility_Level
-                           (Context, Object_Decl_Level)
+                           (Context, Object_Decl_Level => True)
          then
             Error_Msg_N
               ("??possible unprotected access to protected data", Expr);
@@ -15091,28 +15091,6 @@ package body Sem_Util is
       return False;
    end In_Return_Value;
 
-   -------------------------------------
-   -- In_Reverse_Storage_Order_Object --
-   -------------------------------------
-
-   function In_Reverse_Storage_Order_Object (N : Node_Id) return Boolean is
-      Pref : Node_Id;
-      Btyp : Entity_Id;
-
-   begin
-      if Nkind (N) in N_Indexed_Component | N_Selected_Component then
-         Pref := Prefix (N);
-         Btyp := Base_Type (Etype (Pref));
-
-         return Present (Btyp)
-           and then (Is_Record_Type (Btyp) or else Is_Array_Type (Btyp))
-           and then Reverse_Storage_Order (Btyp);
-
-      else
-         return False;
-      end if;
-   end In_Reverse_Storage_Order_Object;
-
    ------------------------------
    -- In_Same_Declarative_Part --
    ------------------------------
@@ -21720,6 +21698,34 @@ package body Sem_Util is
       return False;
    end Is_Renamed_Entry;
 
+   -------------------------------------
+   -- Is_Reverse_Storage_Order_Object --
+   -------------------------------------
+
+   function Is_Reverse_Storage_Order_Object (N : Node_Id) return Boolean is
+      Btyp : Entity_Id;
+
+   begin
+      if not Is_Elementary_Type (Etype (N)) then
+         return False;
+      end if;
+
+      case Nkind (N) is
+         when N_Indexed_Component | N_Selected_Component =>
+            Btyp := Base_Type (Etype (Prefix (N)));
+
+         when N_Unchecked_Type_Conversion =>
+            Btyp := Base_Type (Etype (Expression (N)));
+
+         when others =>
+            return False;
+      end case;
+
+      return Present (Btyp)
+        and then (Is_Record_Type (Btyp) or else Is_Array_Type (Btyp))
+        and then Reverse_Storage_Order (Btyp);
+   end Is_Reverse_Storage_Order_Object;
+
    ----------------------------
    -- Is_Reversible_Iterator --
    ----------------------------
@@ -23824,9 +23830,19 @@ package body Sem_Util is
          return False;
 
       --  Class-wide types are treated as controlled because derivations from
-      --  the root type may introduce controlled components.
+      --  the root type may introduce controlled components, unless the root
+      --  type is declared with the No_Controlled_Parts aspect.
 
-      elsif Is_Class_Wide_Type (Typ) then
+      elsif (Is_Class_Wide_Type (Typ)
+              and then not
+                Has_Enabled_Aspect
+                  (Root_Type (Typ), Aspect_No_Controlled_Parts))
+        or else (Is_Mutably_Tagged_CW_Equivalent_Type (Typ)
+                  and then not
+                    Has_Enabled_Aspect
+                      (Root_Type (Corresponding_Mutably_Tagged_Type (Typ)),
+                       Aspect_No_Controlled_Parts))
+      then
          return True;
 
       --  Concurrent types are controlled as long as their corresponding record
@@ -26243,7 +26259,7 @@ package body Sem_Util is
          if not Report then
             return False;
 
-         elsif not Within_Init_Proc then
+         elsif not Inside_Init_Proc then
             return True;
 
          elsif Is_Init_Proc (Entity (Name (N))) then
@@ -30914,26 +30930,6 @@ package body Sem_Util is
          end if;
       end if;
    end Warn_On_Hiding_Entity;
-
-   ----------------------
-   -- Within_Init_Proc --
-   ----------------------
-
-   function Within_Init_Proc return Boolean is
-      S : Entity_Id;
-
-   begin
-      S := Current_Scope;
-      while not Is_Overloadable (S) loop
-         if S = Standard_Standard then
-            return False;
-         else
-            S := Scope (S);
-         end if;
-      end loop;
-
-      return Is_Init_Proc (S);
-   end Within_Init_Proc;
 
    ---------------------------
    -- Within_Protected_Type --

@@ -131,6 +131,7 @@ enum required_ext
   ZVFBFMIN_EXT,		/* Zvfbfmin extension */
   ZVFBFWMA_EXT,		/* Zvfbfwma extension */
   ZVFOFP8MIN_EXT,	/* Zvfofp8min extension */
+  ZVABD_EXT,		/* Zvabd extension */
   XSFVQMACCQOQ_EXT,	/* XSFVQMACCQOQ extension */
   XSFVQMACCDOD_EXT,	/* XSFVQMACCDOD extension */
   XSFVFNRCLIPXFQF_EXT,	/* XSFVFNRCLIPXFQF extension */
@@ -139,6 +140,7 @@ enum required_ext
   XANDESVSINTLOAD_EXT,	/* XANDESVSINTLOAD extension */
   XANDESVPACKFPH_EXT,	/* XANDESVPACKFPH extension */
   XANDESVDOT_EXT,	/* XANDESVDOT extension */
+  XXTVARITH_EXT,	/* XXTVARITH extension */
   /* Please update required_ext_to_isa_name and required_extensions_specified
      when adding or removing enum values.  */
 };
@@ -162,6 +164,7 @@ enum rvv_builtin_partition
   RVV_PARTITION_ZVFHMIN,
   RVV_PARTITION_ZVFH,
   RVV_PARTITION_ZVFOFP8MIN,
+  RVV_PARTITION_ZVABD,
   RVV_PARTITION_XSFVQMACCQOQ,
   RVV_PARTITION_XSFVQMACCDOD,
   RVV_PARTITION_XSFVFNRCLIPXFQF,
@@ -170,6 +173,7 @@ enum rvv_builtin_partition
   RVV_PARTITION_XANDESVSINTLOAD,
   RVV_PARTITION_XANDESVPACKFPH,
   RVV_PARTITION_XANDESVDOT,
+  RVV_PARTITION_XXTVARITH,
   NUM_RVV_EXT_PARTITIONS
 };
 
@@ -216,6 +220,8 @@ static inline const char * required_ext_to_isa_name (enum required_ext required)
       return "zvfbfwma";
     case ZVFOFP8MIN_EXT:
       return "zvfofp8min";
+    case ZVABD_EXT:
+      return "zvabd";
     case XSFVQMACCQOQ_EXT:
       return "xsfvqmaccqoq";
     case XSFVQMACCDOD_EXT:
@@ -232,6 +238,8 @@ static inline const char * required_ext_to_isa_name (enum required_ext required)
       return "xandesvpackfph";
     case XANDESVDOT_EXT:
       return "xandesvdot";
+    case XXTVARITH_EXT:
+      return "xxtvarith";
     default:
       gcc_unreachable ();
   }
@@ -273,6 +281,8 @@ static inline bool required_extensions_specified (enum required_ext required)
       return TARGET_ZVFBFWMA;
     case ZVFOFP8MIN_EXT:
       return TARGET_ZVFOFP8MIN;
+    case ZVABD_EXT:
+      return TARGET_ZVABD;
     case XSFVQMACCQOQ_EXT:
       return TARGET_XSFVQMACCQOQ;
     case XSFVQMACCDOD_EXT:
@@ -289,6 +299,8 @@ static inline bool required_extensions_specified (enum required_ext required)
       return TARGET_XANDESVPACKFPH;
     case XANDESVDOT_EXT:
       return TARGET_XANDESVDOT;
+    case XXTVARITH_EXT:
+      return TARGET_XXTVARITH;
     default:
       gcc_unreachable ();
   }
@@ -361,7 +373,7 @@ struct function_type_info
 /* RVV Builtin argument information.  */
 struct rvv_arg_type_info
 {
-  CONSTEXPR rvv_arg_type_info (rvv_base_type base_type_in)
+  constexpr rvv_arg_type_info (rvv_base_type base_type_in)
     : base_type (base_type_in)
   {}
   enum rvv_base_type base_type;

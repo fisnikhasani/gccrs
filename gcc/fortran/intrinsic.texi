@@ -4611,9 +4611,6 @@ Degrees function: @*
 @section @code{COSD} --- Cosine function, degrees
 @fnindex COSD
 @fnindex DCOSD
-@fnindex CCOSD
-@fnindex ZCOSD
-@fnindex CDCOSD
 @cindex trigonometric function, cosine, degrees
 @cindex cosine, degrees
 
@@ -4649,9 +4646,6 @@ end program test_cosd
 @headitem Name            @tab Argument            @tab Return type       @tab Standard
 @item @code{COSD(X)}   @tab @code{REAL(4) X}    @tab @code{REAL(4)}    @tab Fortran 2023
 @item @code{DCOSD(X)}  @tab @code{REAL(8) X}    @tab @code{REAL(8)}    @tab GNU extension
-@item @code{CCOSD(X)}  @tab @code{COMPLEX(4) X} @tab @code{COMPLEX(4)} @tab GNU extension
-@item @code{ZCOSD(X)}  @tab @code{COMPLEX(8) X} @tab @code{COMPLEX(8)} @tab GNU extension
-@item @code{CDCOSD(X)} @tab @code{COMPLEX(8) X} @tab @code{COMPLEX(8)} @tab GNU extension
 @end multitable
 
 @item @emph{Standard}:
@@ -8781,19 +8775,29 @@ GNU extension
 
 @table @asis
 @item @emph{Synopsis}:
-@code{RESULT = IMAGE_INDEX(COARRAY, SUB)}
+@multitable @columnfractions .80
+@item @code{RESULT = IMAGE_INDEX(COARRAY, SUB)}
+@item @code{RESULT = IMAGE_INDEX(COARRAY, SUB, TEAM)}
+@item @code{RESULT = IMAGE_INDEX(COARRAY, SUB, TEAM_NUMBER)}
+@end multitable
 
 @item @emph{Description}:
 Returns the image index belonging to a cosubscript.
 
 @item @emph{Class}:
-Inquiry function.
+Transformational function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
 @item @var{COARRAY} @tab Coarray of any type.
 @item @var{SUB}     @tab default integer rank-1 array of a size equal to
 the corank of @var{COARRAY}.
+@item @var{TEAM}    @tab (optional, intent(in)) Scalar of type
+@code{TEAM_TYPE} identifying the current or an ancestor team.  If present,
+the image index is that in the given team.
+@item @var{TEAM_NUMBER} @tab (optional, intent(in)) Integer scalar
+identifying the initial team (@code{-1}) or a sibling team of the current
+team.  @var{TEAM} and @var{TEAM_NUMBER} are mutually exclusive.
 @end multitable
 
 @item @emph{Return value}:
@@ -8808,7 +8812,8 @@ WRITE (*,*) IMAGE_INDEX (array, [2,0,3,1])
 @end smallexample
 
 @item @emph{Standard}:
-Fortran 2008 and later
+Fortran 2008 and later.  With @var{TEAM} or @var{TEAM_NUMBER} argument,
+Fortran 2018 and later.
 
 @item @emph{See also}:
 @ref{THIS_IMAGE}, @*
@@ -9768,7 +9773,7 @@ Elemental function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
-@item @var{I} @tab Shall be of type @code{INTEGER}.
+@item @var{I} @tab Shall be of type @code{INTEGER} or @code{UNSIGNED}.
 @end multitable
 
 @item @emph{Return value}:
@@ -11924,11 +11929,13 @@ Transformational function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
-@item @var{TEAM} @tab (optional, intent(in)) If present, return the number of
-images in the given team; if absent, return the number of images in the
-current team.
-@item @var{TEAM_NUMBER} @tab (intent(in)) The number as given in the
-@code{FORM TEAM} statement.
+@item @var{TEAM} @tab (optional, intent(in)) Scalar of type
+@code{TEAM_TYPE} identifying the current or an ancestor team.  If present,
+return the number of images in the given team; if absent, return the number
+of images in the current team.
+@item @var{TEAM_NUMBER} @tab (optional, intent(in)) Integer scalar
+identifying the initial team (@code{-1}) or a sibling team of the current
+team.  @var{TEAM} and @var{TEAM_NUMBER} are mutually exclusive.
 @end multitable
 
 @item @emph{Return value}:
@@ -11945,9 +11952,11 @@ type(team_type) :: t
 ! When running with 4 images
 print *, num_images() ! 4
 
-form team (mod(this_image(), 2), t)
-print *, num_images(t) ! 2
-print *, num_images(-1) ! 4
+form team (2 - mod(this_image(), 2), t)
+change team (t)
+  print *, num_images() ! 2
+  print *, num_images(team_number=-1) ! 4
+end team
 @end smallexample
 
 @item @emph{Standard}:
@@ -12259,7 +12268,7 @@ Elemental function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
-@item @var{I} @tab Shall be of type @code{INTEGER}.
+@item @var{I} @tab Shall be of type @code{INTEGER} or @code{UNSIGNED}.
 @end multitable
 
 @item @emph{Return value}:
@@ -12307,7 +12316,7 @@ Elemental function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
-@item @var{I} @tab Shall be of type @code{INTEGER}.
+@item @var{I} @tab Shall be of type @code{INTEGER} or @code{UNSIGNED}.
 @end multitable
 
 @item @emph{Return value}:
@@ -14057,9 +14066,6 @@ Degrees function: @*
 @section @code{SIND} --- Sine function, degrees
 @fnindex SIND
 @fnindex DSIND
-@fnindex CSIND
-@fnindex ZSIND
-@fnindex CDSIND
 @cindex trigonometric function, sine, degrees
 @cindex sine, degrees
 
@@ -14094,9 +14100,6 @@ end program test_sind
 @headitem Name            @tab Argument             @tab Return type       @tab Standard
 @item @code{SIND(X)}   @tab @code{REAL(4) X}     @tab @code{REAL(4)}    @tab Fortran 2023
 @item @code{DSIND(X)}  @tab @code{REAL(8) X}     @tab @code{REAL(8)}    @tab GNU extension
-@item @code{CSIND(X)}  @tab @code{COMPLEX(4) X}  @tab @code{COMPLEX(4)} @tab GNU extension
-@item @code{ZSIND(X)}  @tab @code{COMPLEX(8) X}  @tab @code{COMPLEX(8)} @tab GNU extension
-@item @code{CDSIND(X)} @tab @code{COMPLEX(8) X}  @tab @code{COMPLEX(8)} @tab GNU extension
 @end multitable
 
 @item @emph{Standard}:
@@ -15431,7 +15434,7 @@ Elemental function
 
 @item @emph{Arguments}:
 @multitable @columnfractions .15 .70
-@item @var{I} @tab Shall be of type @code{INTEGER}.
+@item @var{I} @tab Shall be of type @code{INTEGER} or @code{UNSIGNED}.
 @end multitable
 
 @item @emph{Return value}:
@@ -16407,15 +16410,23 @@ OpenMP Application Program Interface v6.0}.
 named constants:
 
 @table @asis
+@item @code{omp_access_kind}
 @item @code{omp_allocator_handle_kind}
 @item @code{omp_alloctrait_key_kind}
 @item @code{omp_alloctrait_val_kind}
+@item @code{omp_control_tool_kind}
+@item @code{omp_control_tool_result_kind}
 @item @code{omp_depend_kind}
+@item @code{omp_event_handle_kind}
+@item @code{omp_interop_fr_kind}
+@item @code{omp_interop_kind}
+@item @code{omp_interop_property_kind}
+@item @code{omp_interop_rc_kind}
 @item @code{omp_lock_kind}
 @item @code{omp_lock_hint_kind}
+@item @code{omp_memspace_handle_kind}
 @item @code{omp_nest_lock_kind}
 @item @code{omp_pause_resource_kind}
-@item @code{omp_memspace_handle_kind}
 @item @code{omp_proc_bind_kind}
 @item @code{omp_sched_kind}
 @item @code{omp_sync_hint_kind}
@@ -16540,6 +16551,8 @@ The following scalar integer named constants are of the kind
 @item @code{omp_cgroup_mem_alloc}
 @item @code{omp_pteam_mem_alloc}
 @item @code{omp_thread_mem_alloc}
+@item @code{ompx_gnu_pinned_mem_alloc} (GCC specific)
+@item @code{ompx_gnu_managed_mem_alloc} (GCC specific)
 @end table
 
 The following scalar integer named constants are of the kind
@@ -16551,6 +16564,66 @@ The following scalar integer named constants are of the kind
 @item @code{omp_const_mem_space}
 @item @code{omp_high_bw_mem_space}
 @item @code{omp_low_lat_mem_space}
+@item @code{ompx_gnu_managed_mem_space} (GCC specific)
+@end table
+
+The following scalar integer named constant is of the kind
+@code{omp_interop_kind}:
+
+@table @asis
+@item @code{omp_interop_none}
+@end table
+
+The following scalar integer named constants are of the kind
+@code{omp_interop_fr_kind}:
+
+@table @asis
+@item @code{omp_ifr_cuda}
+@item @code{omp_ifr_cuda_driver}
+@item @code{omp_ifr_opencl}
+@item @code{omp_ifr_sycl}
+@item @code{omp_ifr_hip}
+@item @code{omp_ifr_level_zero}
+@item @code{omp_ifr_hsa}
+@item @code{omp_ifr_last}
+@end table
+
+The following scalar integer named constants are of the kind
+@code{omp_interop_property_kind}:
+
+@table @asis
+@item @code{omp_ipr_fr_id}
+@item @code{omp_ipr_fr_name}
+@item @code{omp_ipr_vendor}
+@item @code{omp_ipr_vendor_name}
+@item @code{omp_ipr_device_num}
+@item @code{omp_ipr_platform}
+@item @code{omp_ipr_device}
+@item @code{omp_ipr_device_context}
+@item @code{omp_ipr_targetsync}
+@item @code{omp_ipr_first}
+@end table
+
+The following scalar integer named constants are of the kind
+@code{omp_interop_rc_kind}:
+
+@table @asis
+@item @code{omp_irc_no_value}
+@item @code{omp_irc_success}
+@item @code{omp_irc_empty}
+@item @code{omp_irc_out_of_range}
+@item @code{omp_irc_type_int}
+@item @code{omp_irc_type_ptr}
+@item @code{omp_irc_type_str}
+@item @code{omp_irc_other}
+@end table
+
+The following scalar integer named constants are of the kind
+@code{omp_access_kind}:
+
+@table @asis
+@item @code{omp_access_cgroup}
+@item @code{omp_access_pteam}
 @end table
 
 The following scalar integer named constants are of the kind

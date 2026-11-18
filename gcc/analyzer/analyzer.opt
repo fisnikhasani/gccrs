@@ -34,6 +34,10 @@ The maximum number of constraints per state.
 Common Joined UInteger Var(param_analyzer_max_infeasible_edges) Init(10) Param
 The maximum number of infeasible edges to reject before declaring a diagnostic as infeasible.
 
+-param=analyzer-max-macro-alias-depth=
+Common Joined UInteger Var(param_analyzer_max_macro_alias_depth) Init(8) Param
+Maximum number of macro aliases to follow when resolving named constants in the analyzer; zero disables alias following.
+
 -param=analyzer-max-recursion-depth=
 Common Joined UInteger Var(param_analyzer_max_recursion_depth) Init(2) Param
 The maximum number of times a callsite can appear in a call stack within the analyzer, before terminating analysis of a call that would recurse deeper.
@@ -308,7 +312,7 @@ Add extra annotations to diagrams.
 
 fanalyzer-fine-grained
 Common Ignore
-Does nothing. Preserved for backward compatibility.
+Does nothing.  Preserved for backward compatibility.
 
 fanalyzer-feasibility
 Common Var(flag_analyzer_feasibility) Init(1)
@@ -372,7 +376,7 @@ Dump various analyzer internals to stderr.
 
 fdump-analyzer-callgraph
 Common Ignore
-Does nothing. Preserved for backward compatibility.
+Does nothing.  Preserved for backward compatibility.
 
 fdump-analyzer-exploded-graph
 Common RejectNegative Var(flag_dump_analyzer_exploded_graph)

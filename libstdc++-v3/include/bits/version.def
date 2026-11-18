@@ -89,6 +89,9 @@ ftms = {
 };
 
 ftms = {
+  // 202106 P0401R6 Providing size feedback in the Allocator interface
+  // 202302 P2652R2 Disallow user specialization of allocator_traits
+  //        LWG3887 Version macro for allocate_at_least 
   name = allocate_at_least;
   values = {
     v = 202302;
@@ -408,7 +411,7 @@ ftms = {
 
 ftms = {
   name = constant_wrapper;
-  // 202506 P2781R9 std::constexpr_wrapper 
+  // 202506 P2781R9 std::constexpr_wrapper
   // 202603 P3978R3 constant_wrapper should unwrap on call and subscript
   // 202606 P4206R0 Revert string support in std::constant_wrapper
   values = {
@@ -613,23 +616,23 @@ ftms = {
     v = 202306;
     cxxmin = 26;
     hosted = yes;
-    cxx11abi = yes;
+    extra_cond = "_GLIBCXX_USE_CXX11_ABI || !_GLIBCXX_USE_DUAL_ABI";
   };
   values = {
     v = 201907;
     cxxmin = 20;
     hosted = yes;
-    cxx11abi = yes; // std::chrono::tzdb requires cxx11 std::string
+    extra_cond = "_GLIBCXX_USE_CXX11_ABI || !_GLIBCXX_USE_DUAL_ABI";
   };
   values = {
     v = 201611;
     cxxmin = 17;
-    hosted = yes;
+    hosted = yes; // system_clock::now() and steady_clock::now() are hosted
   };
 };
 
 ftms = {
-  // Unofficial macro for chrono features supported for old string ABI.
+  // Unofficial macro for <chrono> subset supported for old string ABI.
   name = chrono_cxx20;
   values = {
     v = 202306;
@@ -639,6 +642,27 @@ ftms = {
   values = {
     v = 201800;
     cxxmin = 20;
+    no_stdname = yes;
+  };
+};
+
+ftms = {
+  // Unofficial macro for <chrono> subset supported for freestanding.
+  // This excludes Clock::now() functions and everything that depends on tzdb.
+  name = freestanding_chrono;
+  values = {
+    v = 202306;
+    cxxmin = 26;
+    no_stdname = yes;
+  };
+  values = {
+    v = 201907;
+    cxxmin = 20;
+    no_stdname = yes;
+  };
+  values = {
+    v = 201611;
+    cxxmin = 17;
     no_stdname = yes;
   };
 };
@@ -887,6 +911,13 @@ ftms = {
 
 ftms = {
   name = bitops;
+  // 202606 P3793R2 Better shifting
+  // 202607 P3104R6 Bit permutations
+  values = {
+    v = 202607;
+    cxxmin = 29;
+  };
+  // 201907 P0553R4 Bit operations
   values = {
     v = 201907;
     cxxmin = 20;
@@ -1128,8 +1159,8 @@ ftms = {
   // 202306 P2630R4 Submdspan
   // 202403 P2642R6 Padded mdspan layouts
   // 202411 P3355R1 Fix submdspan for C++26
-  // 202511 P3663R3 Future-proof submdspan-mapping  
-  // 202603 P3982R1 Split strided_slice into extent_slice and range_slice for C++26                                                          
+  // 202511 P3663R3 Future-proof submdspan-mapping
+  // 202603 P3982R1 Split strided_slice into extent_slice and range_slice for C++26
   values = {
     v = 202603;
     cxxmin = 26;
@@ -1456,6 +1487,33 @@ ftms = {
   values = {
     v = 201907;
     cxxmin = 20;
+    hosted = yes;
+  };
+};
+
+ftms = {
+  name = constexpr_deque;
+  values = {
+    v = 202502;
+    cxxmin = 26;
+    hosted = yes;
+  };
+};
+
+ftms = {
+  name = constexpr_queue;
+  values = {
+    v = 202502;
+    cxxmin = 26;
+    hosted = yes;
+  };
+};
+
+ftms = {
+  name = constexpr_stack;
+  values = {
+    v = 202502;
+    cxxmin = 26;
     hosted = yes;
   };
 };
@@ -2282,13 +2340,31 @@ ftms = {
 };
 
 ftms = {
-  // 202406 P0843R14 inplace_vector 
+  name = start_lifetime;
+  values = {
+    v = 202603;
+    cxxmin = 26;
+    extra_cond = "__has_builtin(__builtin_start_lifetime)";
+  };
+};
+
+ftms = {
+  // 202406 P0843R14 inplace_vector
   // 202603 P3981R2 Better return types in std::inplace_vector and std::exception_ptr_cast
   //        P4022R0 Remove try_append_range from inplace_vector for now
   name = inplace_vector;
   values = {
     v = 202603;
     cxxmin = 26;
+  };
+};
+
+ftms = {
+  name = constexpr_inplace_vector;
+  values = {
+    v = 202502;
+    cxxmin = 26;
+    extra_cond = "__glibcxx_start_lifetime";
   };
 };
 
@@ -2339,9 +2415,11 @@ ftms = {
 };
 
 ftms = {
+  // 202506 P2927R3 Observing exceptions stored in exception_ptr
+  // 202603 P3981R2 Better return types in std::inplace_vector and std::exception_ptr_cast
   name = exception_ptr_cast;
   values = {
-    v = 202506;
+    v = 202603;
     cxxmin = 26;
   };
 };
@@ -2429,6 +2507,17 @@ ftms = {
 };
 
 ftms = {
+  name = simd_complex;
+  values = {
+    no_stdname = true; // TODO: change once complete
+    v = 202502;
+    cxxmin = 26;
+    extra_cond = "defined __glibcxx_simd";
+    hosted = yes;
+  };
+};
+
+ftms = {
   name = is_structural;
   values = {
     v = 202603;
@@ -2450,6 +2539,17 @@ ftms = {
   values = {
     v = 202511;
     cxxmin = 26;
+  };
+};
+
+ftms = {
+  name = within_lifetime;
+  // 202306 P2641R4 Checking if a union alternative is active
+  // 202603 P3450R1 Extend std::is_within_lifetime
+  values = {
+    v = 202603;
+    cxxmin = 26;
+    extra_cond = "__has_builtin(__builtin_is_within_lifetime)";
   };
 };
 
@@ -2606,6 +2706,14 @@ ftms = {
   values = {
     v = 202502;
     extra_cond = "defined(__glibcxx_ranges) && defined(_GLIBCXX_ASSERTIONS)";
+  };
+};
+
+ftms = {
+  name = clmul;
+  values = {
+    v = 202610;
+    cxxmin = 29;
   };
 };
 

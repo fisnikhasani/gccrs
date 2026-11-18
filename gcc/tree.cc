@@ -64,7 +64,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "ipa-utils.h"
 #include "selftest.h"
 #include "stringpool.h"
-#include "attribs.h"
 #include "rtl.h"
 #include "regs.h"
 #include "tree-vector-builder.h"
@@ -76,6 +75,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "asan.h"
 #include "ubsan.h"
 #include "attr-callback.h"
+
+/* For qualifier_set::{join,merge}.  */
+#include "stdbackport/expected"
 
 /* Names of tree components.
    Used for printing out the tree and error messages.  */
@@ -283,7 +285,7 @@ static GTY ((cache ("gt_value_expr_mark")))
 static GTY ((cache))
      hash_table<tree_vec_map_cache_hasher> *debug_args_for_decl;
 
-static void set_type_quals (tree, int);
+static void set_type_quals (tree, qualifier_set);
 static void print_type_hash_statistics (void);
 static void print_debug_expr_statistics (void);
 static void print_value_expr_statistics (void);
@@ -318,6 +320,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_UNIFORM  */
   1, /* OMP_CLAUSE_ENTER  */
   1, /* OMP_CLAUSE_LINK  */
+  1, /* OMP_CLAUSE_LOCAL */
   1, /* OMP_CLAUSE_DETACH  */
   1, /* OMP_CLAUSE_USE_DEVICE_PTR  */
   1, /* OMP_CLAUSE_USE_DEVICE_ADDR  */
@@ -363,7 +366,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_THREAD_LIMIT  */
   0, /* OMP_CLAUSE_PROC_BIND  */
   1, /* OMP_CLAUSE_SAFELEN  */
-  1, /* OMP_CLAUSE_SIMDLEN  */
+  3, /* OMP_CLAUSE_SIMDLEN  */
   0, /* OMP_CLAUSE_DEVICE_TYPE  */
   0, /* OMP_CLAUSE_FOR  */
   0, /* OMP_CLAUSE_PARALLEL  */
@@ -400,6 +403,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_NOCONTEXT */
   1, /* OMP_CLAUSE_DYN_GROUPPRIVATE  */
   3, /* OMP_CLAUSE_USES_ALLOCATORS */
+  2, /* OMP_CLAUSE_MESSAGE */
 };
 
 const char * const omp_clause_code_name[] =
@@ -423,6 +427,7 @@ const char * const omp_clause_code_name[] =
   "uniform",
   "enter",
   "link",
+  "local",
   "detach",
   "use_device_ptr",
   "use_device_addr",
@@ -505,6 +510,7 @@ const char * const omp_clause_code_name[] =
   "nocontext",
   "dyn_groupprivate",
   "uses_allocators",
+  "message"
 };
 
 /* Unless specific to OpenACC, we tend to internally maintain OpenMP-centric
@@ -1021,10 +1027,8 @@ set_decl_section_name (tree node, const char *value)
       if (!snode)
 	return;
     }
-  else if (VAR_P (node))
-    snode = varpool_node::get_create (node);
   else
-    snode = cgraph_node::get_create (node);
+    snode = symtab_node::get_create (node);
   snode->set_section (value);
 }
 
@@ -1039,11 +1043,7 @@ set_decl_section_name (tree decl, const_tree other)
   struct symtab_node *other_node = symtab_node::get (other);
   if (other_node)
     {
-      struct symtab_node *decl_node;
-      if (VAR_P (decl))
-    decl_node = varpool_node::get_create (decl);
-      else
-    decl_node = cgraph_node::get_create (decl);
+      struct symtab_node *decl_node = symtab_node::get_create (decl);
       decl_node->set_section (*other_node);
     }
   else
@@ -1858,6 +1858,10 @@ wide_int_to_tree_1 (tree type, const wide_int_ref &pcst)
 
       switch (code)
 	{
+	/* This could represent the C++ std::meta::info type.  */
+	case OPAQUE_TYPE:
+	  gcc_assert (SCALAR_INT_MODE_P (TYPE_MODE (type)));
+	  /* Fallthru.  */
 	case NULLPTR_TYPE:
 	  gcc_assert (hwi == 0);
 	  /* Fallthru.  */
@@ -2033,6 +2037,10 @@ cache_integer_cst (tree t, bool might_duplicate ATTRIBUTE_UNUSED)
      wide_int_to_type_1.  */
   switch (TREE_CODE (type))
     {
+    /* This could represent the C++ std::meta::info type.  */
+    case OPAQUE_TYPE:
+      gcc_assert (SCALAR_INT_MODE_P (TYPE_MODE (type)));
+      /* Fallthru.  */
     case NULLPTR_TYPE:
       gcc_checking_assert (integer_zerop (t));
       /* Fallthru.  */
@@ -3322,6 +3330,29 @@ real_zerop (const_tree expr)
     default:
       return false;
     }
+}
+
+/* Return true if EXPR is the real constant negative zero.  */
+
+bool
+real_negzerop (const_tree expr)
+{
+  STRIP_ANY_LOCATION_WRAPPER (expr);
+
+  if (TREE_CODE (expr) == VECTOR_CST)
+    {
+      expr = uniform_vector_p (expr);
+      if (!expr)
+	return false;
+    }
+
+  if (TREE_CODE (expr) == COMPLEX_CST)
+    return real_negzerop (TREE_REALPART (expr))
+	   && real_negzerop (TREE_IMAGPART (expr));
+
+  return TREE_CODE (expr) == REAL_CST
+	  && REAL_VALUE_MINUS_ZERO (TREE_REAL_CST (expr))
+	  && !(DECIMAL_FLOAT_MODE_P (TYPE_MODE (TREE_TYPE (expr))));
 }
 
 /* Return true if EXPR is the real constant one in real or complex form.
@@ -5672,17 +5703,166 @@ protected_set_expr_location_if_unset (tree t, location_t loc)
     protected_set_expr_location (t, loc);
 }
 
-/* Set the type qualifiers for TYPE to TYPE_QUALS, which is a bitmask
-   of the various TYPE_QUAL values.  */
+
+/* Attempt to produce a qualifier_set that's a merge of qualifiers in THIS and
+   OTHER.  Such a qualifier set can be used instead of either THIS or OTHER
+   safely.  (i.e. if a type was qualified by either THIS or OTHER, it can be
+   qualified by their merge instead safely, possibly through a conversion)
+
+   This operation may fail.  In that case, the error value returned provides
+   reasoning for the failure.
+
+   If STRICT_ADDR_SPACE, then no address space mismatch is permitted.  This is
+   useful if merging below the top-level of pointers (i.e. in a case such as
+   'AS1 T**' vs 'AS2 T**').
+
+   You'll need to include stdbackport/expected to use this.  */
+
+gcc::expected<qualifier_set, qualifier_set::merge_error>
+qualifier_set::merge (qualifier_set other,
+		      bool strict_addr_space /* = false */) const
+{
+  using ME = qualifier_set::merge_error;
+
+  if (has (TYPE_QUAL_ATOMIC) != other.has (TYPE_QUAL_ATOMIC))
+    return gcc::make_unexpected (ME::atomic_mismatch);
+
+  auto cv_merged = cv_quals () | other.cv_quals ();
+  auto as1 = addr_space ();
+  auto as2 = other.addr_space ();
+
+  addr_space_t as_super;
+  if (as1 == as2)
+    as_super = as1;
+  else if (!strict_addr_space
+	   && targetm.addr_space.subset_p (as1, as2))
+    as_super = as2;
+  else if (!strict_addr_space
+	   && targetm.addr_space.subset_p (as2, as1))
+    as_super = as1;
+  else
+    return gcc::make_unexpected (ME::disjoint_address_spaces);
+
+  return qualifier_set {cv_merged, as_super};
+}
+
+/* Return a qualifier set that has all the qualifiers of THIS and OTHER.
+   Unlike 'merge', this operation operates purely syntactically; if THIS is
+   {q1_1, q1_2, ..., q1_i} and OTHER {q2_1, q2_2, ..., q2_j}, then returns the
+   qualifier set obtained by concatenating the sequences q1 and q2 without
+   duplicates, if such a qualifier set is valid.
+
+   Specifically, this implies that if THIS or OTHER both (syntactically)
+   contain an address space qualifier, and they're different, the operation
+   fails (even if one is subset of the other).
+
+   This operation may fail.  In that case, the error value returned provides
+   reasoning for the failure.
+
+   You'll need to include stdbackport/expected to use this.  */
+
+gcc::expected<qualifier_set, qualifier_set::join_error>
+qualifier_set::join (qualifier_set other) const
+{
+  using JE = qualifier_set::join_error;
+  auto cv_merged = cv_quals () | other.cv_quals ();
+  auto as1 = addr_space ();
+  auto as2 = other.addr_space ();
+
+  addr_space_t as = ADDR_SPACE_GENERIC;
+  if (as1 == as2)
+    as = as1;
+  else if (!ADDR_SPACE_GENERIC_P (as1) && !ADDR_SPACE_GENERIC_P (as2))
+    return gcc::make_unexpected (JE::double_addr_space);
+  else if (ADDR_SPACE_GENERIC_P (as1))
+    as = as2;
+  else
+    as = as1;
+
+  return qualifier_set {cv_merged, as};
+}
+
+/* Returns true if qualifiers in OTHER can be replaced with qualifiers in THIS
+   safely.
+
+   If !POINTEE, such a replacement is safe iff 'cv2 int *' can be converted
+   into 'cv1 int *' where cv1 are the qualifiers in THIS and cv2 the qualifiers
+   in OTHER.
+
+   Otherwise, such a replacement is safe iff 'cv2 int * const *' can be
+   converted into 'cv1 int * const *' with cv1 and cv2 as above.  */
+
+bool
+qualifier_set::superset_of (qualifier_set other,
+			    bool pointee /* = false */) const
+{
+  /* Compatible if THIS contains all of CVR of OTHER, has the same value of
+     the _Atomic qualifier as OTHER, and has a superset address space.
+
+     If POINTEE, then it must be possible to reinterpret the value of one
+     qualification as a value of the other qualification, and thus, the
+     address spaces must be strictly equal.  */
+  auto cv_this = cv_quals ();
+  auto cv_other = other.cv_quals ();
+  auto as_this = addr_space ();
+  auto as_other = other.addr_space ();
+  return ((cv_this & cv_other) == cv_other
+	  /* Differences in the _Atomic qualifier cannot be crossed.  */
+	  && (cv_this & TYPE_QUAL_ATOMIC) == (cv_other & TYPE_QUAL_ATOMIC)
+	  && (as_this == as_other
+	      || (!pointee
+		  && targetm.addr_space.subset_p (as_other, as_this))));
+}
+
+DEBUG_FUNCTION void
+qualifier_set::debug () const
+{
+  putc ('{', stderr);
+  cv_qualifier cv;
+  addr_space_t as;
+  std::tie (cv, as) = split ();
+  bool has_previous = false;
+  auto handle_bit = [&] (cv_qualifier bit, const char *lbl)
+  {
+    if (!(cv & bit))
+      return;
+
+    if (has_previous)
+      fputs (", ", stderr);
+
+    has_previous = true;
+    fputs (lbl, stderr);
+  };
+
+  handle_bit (TYPE_QUAL_CONST, "const");
+  handle_bit (TYPE_QUAL_VOLATILE, "volatile");
+  handle_bit (TYPE_QUAL_RESTRICT, "restrict");
+  handle_bit (TYPE_QUAL_ATOMIC, "_Atomic");
+
+  /* If new bits appear, let the developer know.  */
+  static_assert ((TYPE_QUAL_CONST | TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT
+		  | TYPE_QUAL_ATOMIC)
+		 == TYPE_QUAL_ALL,
+		"new qualifiers added, update handle_bit calls above");
+
+  if (has_previous)
+    fputs (", ", stderr);
+
+  fprintf (stderr, "AS%d", as);
+
+  fputs ("}\n", stderr);
+}
+
+/* Set the type qualifiers for TYPE to TYPE_QUALS.  */
 
 static void
-set_type_quals (tree type, int type_quals)
+set_type_quals (tree type, qualifier_set type_quals)
 {
-  TYPE_READONLY (type) = (type_quals & TYPE_QUAL_CONST) != 0;
-  TYPE_VOLATILE (type) = (type_quals & TYPE_QUAL_VOLATILE) != 0;
-  TYPE_RESTRICT (type) = (type_quals & TYPE_QUAL_RESTRICT) != 0;
-  TYPE_ATOMIC (type) = (type_quals & TYPE_QUAL_ATOMIC) != 0;
-  TYPE_ADDR_SPACE (type) = DECODE_QUAL_ADDR_SPACE (type_quals);
+  TYPE_READONLY (type) = type_quals.has (TYPE_QUAL_CONST);
+  TYPE_VOLATILE (type) = type_quals.has (TYPE_QUAL_VOLATILE);
+  TYPE_RESTRICT (type) = type_quals.has (TYPE_QUAL_RESTRICT);
+  TYPE_ATOMIC (type) = type_quals.has (TYPE_QUAL_ATOMIC);
+  TYPE_ADDR_SPACE (type) = type_quals.addr_space ();
 }
 
 /* Returns true iff CAND and BASE have equivalent language-specific
@@ -5758,7 +5938,7 @@ check_base_type (const_tree cand, const_tree base)
     return true;
   /* Atomic types increase minimal alignment.  We must to do so as well
      or we get duplicated canonical types. See PR88686.  */
-  if ((TYPE_QUALS (cand) & TYPE_QUAL_ATOMIC))
+  if (TYPE_QUALS (cand).has (TYPE_QUAL_ATOMIC))
     {
       /* See if this object can map to a basic atomic type.  */
       tree atomic_type = find_atomic_core_type (cand);
@@ -5771,7 +5951,7 @@ check_base_type (const_tree cand, const_tree base)
 /* Returns true iff CAND is equivalent to BASE with TYPE_QUALS.  */
 
 bool
-check_qualified_type (const_tree cand, const_tree base, int type_quals)
+check_qualified_type (const_tree cand, const_tree base, qualifier_set type_quals)
 {
   return (TYPE_QUALS (cand) == type_quals
 	  && check_base_type (cand, base)
@@ -5802,7 +5982,7 @@ check_aligned_type (const_tree cand, const_tree base, unsigned int align)
    return NULL_TREE.  */
 
 tree
-get_qualified_type (tree type, int type_quals)
+get_qualified_type (tree type, qualifier_set type_quals)
 {
   if (TYPE_QUALS (type) == type_quals)
     return type;
@@ -5834,7 +6014,7 @@ get_qualified_type (tree type, int type_quals)
    exist.  This function never returns NULL_TREE.  */
 
 tree
-build_qualified_type (tree type, int type_quals MEM_STAT_DECL)
+build_qualified_type (tree type, qualifier_set type_quals MEM_STAT_DECL)
 {
   tree t;
 
@@ -5847,7 +6027,7 @@ build_qualified_type (tree type, int type_quals MEM_STAT_DECL)
       t = build_variant_type_copy (type PASS_MEM_STAT);
       set_type_quals (t, type_quals);
 
-      if (((type_quals & TYPE_QUAL_ATOMIC) == TYPE_QUAL_ATOMIC))
+      if (type_quals.has (TYPE_QUAL_ATOMIC))
 	{
 	  /* See if this object can map to a basic atomic type.  */
 	  tree atomic_type = find_atomic_core_type (type);
@@ -6043,10 +6223,8 @@ decl_init_priority_insert (tree decl, priority_type priority)
       if (!snode)
 	return;
     }
-  else if (VAR_P (decl))
-    snode = varpool_node::get_create (decl);
   else
-    snode = cgraph_node::get_create (decl);
+    snode = symtab_node::get_create (decl);
   snode->set_init_priority (priority);
 }
 
@@ -10876,6 +11054,11 @@ ssa_uniform_vector_p (tree op)
       gimple *def_stmt = SSA_NAME_DEF_STMT (op);
       if (gimple_assign_single_p (def_stmt))
 	return uniform_vector_p (gimple_assign_rhs1 (def_stmt));
+      /* A VEC_DUPLICATE_EXPR is a unary assignment, so it is not covered
+	 by the gimple_assign_single_p case above.  */
+      if (is_gimple_assign (def_stmt)
+	  && gimple_assign_rhs_code (def_stmt) == VEC_DUPLICATE_EXPR)
+	return gimple_assign_rhs1 (def_stmt);
     }
   return NULL_TREE;
 }
@@ -10901,6 +11084,89 @@ uniform_integer_cst_p (tree t)
     }
 
   return NULL_TREE;
+}
+
+/* Return true if ELT1 and ELT2 are INTEGER_CSTs and if ELT1 - ELT2 is
+   consistent with the uniform difference recorded in DIFF.  */
+
+static bool
+record_uniform_integer_difference (const_tree elt1, const_tree elt2,
+				   widest_int *diff, bool *diff_p)
+{
+  STRIP_ANY_LOCATION_WRAPPER (elt1);
+  STRIP_ANY_LOCATION_WRAPPER (elt2);
+
+  if (TREE_CODE (elt1) != INTEGER_CST
+      || TREE_CODE (elt2) != INTEGER_CST)
+    return false;
+
+  widest_int elt_diff = wi::to_widest (elt1) - wi::to_widest (elt2);
+  if (!*diff_p)
+    {
+      *diff = elt_diff;
+      *diff_p = true;
+      return true;
+    }
+
+  return *diff == elt_diff;
+}
+
+/* Return the uniform difference between two INTEGER_CSTs or corresponding
+   elements of two VECTOR_CSTs or NULL_TREE if no such difference exists.  */
+
+tree
+uniform_vector_difference_p (const_tree t1, const_tree t2)
+{
+  STRIP_ANY_LOCATION_WRAPPER (t1);
+  STRIP_ANY_LOCATION_WRAPPER (t2);
+
+  if (TREE_CODE (t1) == INTEGER_CST
+      && TREE_CODE (t2) == INTEGER_CST)
+    {
+      widest_int diff = wi::to_widest (t1) - wi::to_widest (t2);
+      if (!wi::fits_shwi_p (diff))
+	return NULL_TREE;
+      return build_int_cst (long_long_integer_type_node, diff.to_shwi ());
+    }
+
+  if (TREE_CODE (t1) != VECTOR_CST
+      || TREE_CODE (t2) != VECTOR_CST
+      || !known_eq (VECTOR_CST_NELTS (t1), VECTOR_CST_NELTS (t2)))
+    return NULL_TREE;
+
+  widest_int diff;
+  bool diff_p = false;
+
+  if (VECTOR_CST_LOG2_NPATTERNS (t1) == VECTOR_CST_LOG2_NPATTERNS (t2)
+      && (VECTOR_CST_NELTS_PER_PATTERN (t1)
+	  == VECTOR_CST_NELTS_PER_PATTERN (t2)))
+    {
+      unsigned int encoded_nelts = vector_cst_encoded_nelts (t1);
+      gcc_assert (encoded_nelts == vector_cst_encoded_nelts (t2));
+
+      for (unsigned int i = 0; i < encoded_nelts; ++i)
+	if (!record_uniform_integer_difference (VECTOR_CST_ENCODED_ELT (t1, i),
+						VECTOR_CST_ENCODED_ELT (t2, i),
+						&diff, &diff_p))
+	  return NULL_TREE;
+    }
+  else
+    {
+      unsigned HOST_WIDE_INT nelts;
+      if (!VECTOR_CST_NELTS (t1).is_constant (&nelts))
+	return NULL_TREE;
+
+      for (unsigned HOST_WIDE_INT i = 0; i < nelts; ++i)
+	if (!record_uniform_integer_difference (vector_cst_elt (t1, i),
+						vector_cst_elt (t2, i),
+						&diff, &diff_p))
+	  return NULL_TREE;
+    }
+
+  if (!diff_p || !wi::fits_shwi_p (diff))
+    return NULL_TREE;
+
+  return build_int_cst (long_long_integer_type_node, diff.to_shwi ());
 }
 
 /* Checks to see if T is a constant or a constant vector and if each element E
@@ -11722,7 +11988,8 @@ walk_type_fields (tree type, walk_tree_fn func, void *data,
    called with the DATA and the address of each sub-tree.  If FUNC returns a
    non-NULL value, the traversal is stopped, and the value returned by FUNC
    is returned.  If PSET is non-NULL it is used to record the nodes visited,
-   and to avoid visiting a node more than once.  */
+   and to avoid visiting a node more than once.
+   Note that TREE_PURPOSE is not walked.  */
 
 tree
 walk_tree_1 (tree *tp, walk_tree_fn func, void *data,
@@ -11878,6 +12145,16 @@ walk_tree_1 (tree *tp, walk_tree_fn func, void *data,
 	  WALK_SUBTREE (OMP_CLAUSE_OPERAND (t, i));
 	WALK_SUBTREE_TAIL (OMP_CLAUSE_CHAIN (t));
       }
+
+    case OMP_METADIRECTIVE:
+      /* Handle this explicitly as TREE_PURPOSE is usually not walked.  */
+      for (tree t2 = OMP_METADIRECTIVE_VARIANTS (t); t2; t2 = TREE_CHAIN (t2))
+	{
+	  WALK_SUBTREE (OMP_METADIRECTIVE_VARIANT_SELECTOR (t2));
+	  WALK_SUBTREE (OMP_METADIRECTIVE_VARIANT_DIRECTIVE (t2));
+	  WALK_SUBTREE (OMP_METADIRECTIVE_VARIANT_BODY (t2));
+	}
+      break;
 
     case TARGET_EXPR:
       {
@@ -12372,9 +12649,37 @@ tree_nop_conversion_p (const_tree outer_type, const_tree inner_type)
 	  || TREE_CODE (inner_type) == OFFSET_TYPE))
     return TYPE_PRECISION (outer_type) == TYPE_PRECISION (inner_type);
 
+  if (TYPE_MODE (outer_type) == BLKmode
+      && TYPE_MODE (inner_type) == BLKmode)
+    {
+      if (VECTOR_TYPE_P (outer_type)
+	  && VECTOR_TYPE_P (inner_type)
+	  && known_eq (TYPE_VECTOR_SUBPARTS (outer_type),
+		       TYPE_VECTOR_SUBPARTS (inner_type))
+	  && (TYPE_MODE (TREE_TYPE (outer_type))
+	      == TYPE_MODE (TREE_TYPE (inner_type))))
+	return true;
+      return false;
+    }
+
   /* Otherwise fall back on comparing machine modes (e.g. for
      aggregate types, floats).  */
   return TYPE_MODE (outer_type) == TYPE_MODE (inner_type);
+}
+
+/* Return true iff a view conversion from vector type INNER_TYPE to vector
+   type OUTER_TYPE has the same number of elements and does not change the
+   representation of an element.  */
+
+bool
+vector_nop_conversion_p (const_tree outer_type, const_tree inner_type)
+{
+  return (VECTOR_TYPE_P (outer_type)
+	  && VECTOR_TYPE_P (inner_type)
+	  && known_eq (TYPE_VECTOR_SUBPARTS (outer_type),
+		       TYPE_VECTOR_SUBPARTS (inner_type))
+	  && tree_nop_conversion_p (TREE_TYPE (outer_type),
+				    TREE_TYPE (inner_type)));
 }
 
 /* Return true iff conversion in EXP generates no instruction.  Mark
@@ -14054,10 +14359,16 @@ type_with_interoperable_signedness (const_tree type)
      signed char and unsigned char.  Similarly fortran FE builds
      C_SIZE_T as signed type, while C defines it unsigned.  */
 
-  return tree_code_for_canonical_type_merging (TREE_CODE (type))
-	   == INTEGER_TYPE
-         && (TYPE_PRECISION (type) == TYPE_PRECISION (signed_char_type_node)
-	     || TYPE_PRECISION (type) == TYPE_PRECISION (size_type_node));
+  if (tree_code_for_canonical_type_merging (TREE_CODE (type)) == INTEGER_TYPE)
+    return (TYPE_PRECISION (type) == TYPE_PRECISION (signed_char_type_node)
+	    || TYPE_PRECISION (type) == TYPE_PRECISION (size_type_node));
+
+  /* The C standard allows aliasing between signed and unsigned variants
+     of the same type.  For INTEGER_TYPEs gimple_get_alias_set handles
+     this and this works because the integer type cache is pre-loaded
+     during streaming.  We do not do this for bitint_type_cache, so handle
+     the aliasing via assigning the same canonical type.  */
+  return TREE_CODE (type) == BITINT_TYPE;
 }
 
 /* Return true iff T1 and T2 are structurally identical for what
@@ -14377,7 +14688,10 @@ verify_opaque_type (const_tree t, tree tv, tree tc)
 	debug_tree (t2);
 	return;
       }
-    if (!OPAQUE_MODE_P (TYPE_MODE (t2)))
+    /* For C++ Reflection, we use the opaque type with a scalar integer
+       mode.  */
+    if (!OPAQUE_MODE_P (TYPE_MODE (t2))
+	&& !SCALAR_INT_MODE_P (TYPE_MODE (t2)))
       {
 	error ("type %s is not with opaque mode", kind_msg);
 	debug_tree (t2);
@@ -15137,6 +15451,22 @@ default_is_empty_record (const_tree type)
   return is_empty_type (TYPE_MAIN_VARIANT (type));
 }
 
+
+/* Determine whether TYPE is an ISO C99 flexible array member type "[]".  */
+
+bool
+flexible_array_member_type_p (const_tree type)
+{
+  if (TREE_CODE (type) == ARRAY_TYPE
+      && TYPE_SIZE (type) == NULL_TREE
+      && TYPE_DOMAIN (type) != NULL_TREE
+      && TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE)
+    return true;
+
+  return false;
+}
+
+
 /* Determine whether TYPE is a structure with a flexible array member,
    or a union containing such a structure (possibly recursively).  */
 
@@ -15153,12 +15483,7 @@ flexible_array_type_p (const_tree type)
 	  last = x;
       if (last == NULL_TREE)
 	return false;
-      if (TREE_CODE (TREE_TYPE (last)) == ARRAY_TYPE
-	  && TYPE_SIZE (TREE_TYPE (last)) == NULL_TREE
-	  && TYPE_DOMAIN (TREE_TYPE (last)) != NULL_TREE
-	  && TYPE_MAX_VALUE (TYPE_DOMAIN (TREE_TYPE (last))) == NULL_TREE)
-	return true;
-      return false;
+       return flexible_array_member_type_p (TREE_TYPE (last));
     case UNION_TYPE:
       for (x = TYPE_FIELDS (type); x != NULL_TREE; x = DECL_CHAIN (x))
 	{

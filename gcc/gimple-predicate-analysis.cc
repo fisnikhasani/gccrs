@@ -1318,7 +1318,7 @@ simplify_1b (pred_chain &chain)
 	    b_code = invert_tree_comparison (b_code, false);
 	  /* Try to combine X a_code Y && X b_code Y'.  */
 	  tree comb = maybe_fold_and_comparisons (boolean_type_node,
-						  a_code,
+						  TRUTH_ANDIF_EXPR, a_code,
 						  a_pred.pred_lhs,
 						  a_pred.pred_rhs,
 						  b_code,
@@ -1394,6 +1394,7 @@ predicate::simplify_2 ()
 	  if (neg_idx != -1U)
 	    {
 	      a_chain.ordered_remove (neg_idx);
+	      b_chain.release ();
 	      m_preds.ordered_remove (j);
 	      simplified = true;
 	      if (a_chain.is_empty ())
@@ -1906,7 +1907,9 @@ predicate::init_from_control_deps (const vec<edge> *dep_chains,
 		{
 		  pred_info one_pred;
 		  one_pred.pred_lhs = gimple_switch_index (gs);
-		  one_pred.pred_rhs = CASE_LOW (l);
+		  one_pred.pred_rhs
+		    = wide_int_to_tree (TREE_TYPE (one_pred.pred_lhs),
+					wi::to_widest (CASE_LOW (l)));
 		  one_pred.cond_code = EQ_EXPR;
 		  one_pred.invert = false;
 		  t_chain.safe_push (one_pred);
@@ -1920,11 +1923,15 @@ predicate::init_from_control_deps (const vec<edge> *dep_chains,
 		     of two here.  */
 		  pred_info one_pred;
 		  one_pred.pred_lhs = gimple_switch_index (gs);
-		  one_pred.pred_rhs = CASE_LOW (l);
+		  one_pred.pred_rhs
+		    = wide_int_to_tree (TREE_TYPE (one_pred.pred_lhs),
+					wi::to_widest (CASE_LOW (l)));
 		  one_pred.cond_code = GE_EXPR;
 		  one_pred.invert = false;
 		  t_chain.safe_push (one_pred);
-		  one_pred.pred_rhs = CASE_HIGH (l);
+		  one_pred.pred_rhs
+		    = wide_int_to_tree (TREE_TYPE (one_pred.pred_lhs),
+					wi::to_widest (CASE_HIGH (l)));
 		  one_pred.cond_code = LE_EXPR;
 		  t_chain.safe_push (one_pred);
 		  has_valid_pred = true;

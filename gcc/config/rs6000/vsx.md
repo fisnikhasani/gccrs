@@ -4829,6 +4829,24 @@
   "lxvdsx %x0,%y1"
   [(set_attr "type" "vecload")])
 
+;; Optimize SPLAT of an extract from a V2DF/V2DI vector with a constant element
+(define_insn "*vsx_splat_extract_<mode>"
+  [(set (match_operand:VSX_D 0 "vsx_register_operand" "=wa")
+	(vec_duplicate:VSX_D
+	 (vec_select:<VEC_base>
+	  (match_operand:VSX_D 1 "vsx_register_operand" "wa")
+	  (parallel [(match_operand 2 "const_0_to_1_operand" "n")]))))]
+  "VECTOR_MEM_VSX_P (<MODE>mode)"
+{
+  int which_word = INTVAL (operands[2]);
+  if (!BYTES_BIG_ENDIAN)
+    which_word = 1 - which_word;
+
+  operands[3] = GEN_INT (which_word ? 3 : 0);
+  return "xxpermdi %x0,%x1,%x1,%3";
+}
+  [(set_attr "type" "vecperm")])
+
 ;; V4SI splat support
 (define_insn "vsx_splat_v4si"
   [(set (match_operand:V4SI 0 "vsx_register_operand" "=wa,wa")
@@ -4857,24 +4875,31 @@
 
 ;; V4SF splat (ISA 3.0)
 (define_insn_and_split "vsx_splat_v4sf"
-  [(set (match_operand:V4SF 0 "vsx_register_operand" "=wa,wa,wa")
+  [(set (match_operand:V4SF 0 "vsx_register_operand" "=wa,wa,wa,wa,wa")
 	(vec_duplicate:V4SF
-	 (match_operand:SF 1 "splat_input_operand" "Z,wa,r")))]
-  "TARGET_P9_VECTOR"
+	 (match_operand:SF 1 "splat_input_operand" "Z,Z,Z,wa,r")))
+   (clobber (match_scratch:DI 2 "=X,X,d,X,X"))]
+  "VECTOR_MEM_VSX_P (V4SFmode)"
   "@
    lxvwsx %x0,%y1
+   lxsiwzx %x0,%y1\;xxspltw %x0,%x0,1
+   lfiwzx %2,%y1\;xxspltw %x0,%x2,1
    #
    mtvsrws %x0,%1"
   "&& reload_completed && vsx_register_operand (operands[1], SFmode)"
-  [(set (match_dup 0)
-	(unspec:V4SF [(match_dup 1)] UNSPEC_VSX_CVDPSPN))
-   (set (match_dup 0)
-	(unspec:V4SF [(match_dup 0)
-		      (const_int 0)] UNSPEC_VSX_XXSPLTW))]
-  ""
-  [(set_attr "type" "vecload,vecperm,vecperm")
-   (set_attr "length" "*,8,*")
-   (set_attr "isa" "*,p8v,*")])
+  [(const_int 0)]
+{
+  rtx cvt = (TARGET_XSCVDPSPN
+	     ? gen_vsx_xscvdpspn_scalar (operands[0], operands[1])
+	     : gen_vsx_xscvdpsp_scalar (operands[0], operands[1]));
+  emit_insn (cvt);
+  emit_insn (gen_vsx_xxspltw_v4sf_direct (operands[0], operands[0],
+					  const0_rtx));
+  DONE;
+}
+  [(set_attr "type" "vecload,vecload,fpload,vecperm,vecperm")
+   (set_attr "length" "4,8,8,8,4")
+   (set_attr "isa" "p9v,p8v,*,*,p9v")])
 
 ;; V4SF/V4SI splat from a vector element
 (define_insn "vsx_xxspltw_<mode>"
@@ -5699,29 +5724,14 @@
   "TARGET_P9_VECTOR"
 {
   int sh;
-  rtx cmpz1_result = gen_reg_rtx (<MODE>mode);
-  rtx cmpz2_result = gen_reg_rtx (<MODE>mode);
-  rtx cmpz_result = gen_reg_rtx (<MODE>mode);
-  rtx not_cmpz_result = gen_reg_rtx (<MODE>mode);
-  rtx and_result = gen_reg_rtx (<MODE>mode);
   rtx result = gen_reg_rtx (<MODE>mode);
-  rtx vzero = gen_reg_rtx (<MODE>mode);
 
-  /* Vector with zeros in elements that correspond to zeros in operands.  */
-  emit_move_insn (vzero, CONST0_RTX (<MODE>mode));
+  /* Vector with ones in elements that do not match or elements corresponding
+     to zeros in operands.  */
 
-  emit_insn (gen_vcmpne<VSX_EXTRACT_WIDTH> (cmpz1_result, operands[1], vzero));
-  emit_insn (gen_vcmpne<VSX_EXTRACT_WIDTH> (cmpz2_result, operands[2], vzero));
-  emit_insn (gen_and<mode>3 (and_result, cmpz1_result, cmpz2_result));
-
-  /* Vector with ones in elements that match.  */
-  emit_insn (gen_vcmpnez<VSX_EXTRACT_WIDTH> (cmpz_result, operands[1],
+  emit_insn (gen_vcmpnez<VSX_EXTRACT_WIDTH> (result, operands[1],
                                              operands[2]));
-  emit_insn (gen_one_cmpl<mode>2 (not_cmpz_result, cmpz_result));
 
-  /* Create vector with ones in elements where there was a zero in one of
-     the source elements or the elements did not match.  */
-  emit_insn (gen_nand<mode>3 (result, and_result, not_cmpz_result));
   sh = GET_MODE_SIZE (GET_MODE_INNER (<MODE>mode)) / 2;
 
   if (<MODE>mode == V16QImode)
@@ -5743,20 +5753,32 @@
   DONE;
 })
 
-;; Load VSX Vector with Length
+;; Load VSX Vector with Length.  If we have lxvrl, we don't have to do an
+;; explicit shift left into a pseudo.
 (define_expand "lxvl"
-  [(set (match_dup 3)
-        (ashift:DI (match_operand:DI 2 "register_operand")
-                   (const_int 56)))
-   (set (match_operand:V16QI 0 "vsx_register_operand")
-	(unspec:V16QI
-	 [(match_operand:DI 1 "gpc_reg_operand")
-          (mem:V16QI (match_dup 1))
-	  (match_dup 3)]
-	 UNSPEC_LXVL))]
+  [(use (match_operand:V16QI 0 "vsx_register_operand"))
+   (use (match_operand:DI 1 "gpc_reg_operand"))
+   (use (match_operand:DI 2 "gpc_reg_operand"))]
   "TARGET_P9_VECTOR && TARGET_64BIT"
 {
-  operands[3] = gen_reg_rtx (DImode);
+  rtx shift_len = gen_rtx_ASHIFT (DImode, operands[2], GEN_INT (56));
+  rtx len;
+
+  if (TARGET_FUTURE)
+    len = shift_len;
+  else
+    {
+      len = gen_reg_rtx (DImode);
+      emit_insn (gen_rtx_SET (len, shift_len));
+    }
+
+  rtx dest = operands[0];
+  rtx addr = operands[1];
+  rtx mem = gen_rtx_MEM (V16QImode, addr);
+  rtvec rv = gen_rtvec (3, addr, mem, len);
+  rtx lxvl = gen_rtx_UNSPEC (V16QImode, rv, UNSPEC_LXVL);
+  emit_insn (gen_rtx_SET (dest, lxvl));
+  DONE;
 })
 
 (define_insn "*lxvl"
@@ -5778,6 +5800,34 @@
 		      UNSPEC_LXVLL))]
   "TARGET_P9_VECTOR"
   "lxvll %x0,%1,%2"
+  [(set_attr "type" "vecload")])
+
+;; For lxvrl and lxvrll, use the combiner to eliminate the shift.  The
+;; define_expand for lxvl will already incorporate the shift in generating the
+;; insn.  The lxvll buitl-in function required the user to have already done
+;; the shift.  Defining lxvrll this way, will optimize cases where the user has
+;; done the shift immediately before the built-in.
+(define_insn "*lxvrl"
+  [(set (match_operand:V16QI 0 "vsx_register_operand" "=wa")
+	(unspec:V16QI
+	 [(match_operand:DI 1 "gpc_reg_operand" "b")
+	  (mem:V16QI (match_dup 1))
+	  (ashift:DI (match_operand:DI 2 "register_operand" "r")
+		     (const_int 56))]
+	 UNSPEC_LXVL))]
+  "TARGET_FUTURE && TARGET_64BIT"
+  "lxvrl %x0,%1,%2"
+  [(set_attr "type" "vecload")])
+
+(define_insn "*lxvrll"
+  [(set (match_operand:V16QI 0 "vsx_register_operand" "=wa")
+	(unspec:V16QI [(match_operand:DI 1 "gpc_reg_operand" "b")
+                       (mem:V16QI (match_dup 1))
+		       (ashift:DI (match_operand:DI 2 "register_operand" "r")
+				  (const_int 56))]
+		      UNSPEC_LXVLL))]
+  "TARGET_FUTURE"
+  "lxvrll %x0,%1,%2"
   [(set_attr "type" "vecload")])
 
 ;; Expand for builtin xl_len_r
@@ -5811,18 +5861,29 @@
 
 ;; Store VSX Vector with Length
 (define_expand "stxvl"
-  [(set (match_dup 3)
-	(ashift:DI (match_operand:DI 2 "register_operand")
-		   (const_int 56)))
-   (set (mem:V16QI (match_operand:DI 1 "gpc_reg_operand"))
-	(unspec:V16QI
-	 [(match_operand:V16QI 0 "vsx_register_operand")
-	  (mem:V16QI (match_dup 1))
-	  (match_dup 3)]
-	 UNSPEC_STXVL))]
+  [(use (match_operand:V16QI 0 "vsx_register_operand"))
+   (use (match_operand:DI 1 "gpc_reg_operand"))
+   (use (match_operand:DI 2 "gpc_reg_operand"))]
   "TARGET_P9_VECTOR && TARGET_64BIT"
 {
-  operands[3] = gen_reg_rtx (DImode);
+  rtx shift_len = gen_rtx_ASHIFT (DImode, operands[2], GEN_INT (56));
+  rtx len;
+
+  if (TARGET_FUTURE)
+    len = shift_len;
+  else
+    {
+      len = gen_reg_rtx (DImode);
+      emit_insn (gen_rtx_SET (len, shift_len));
+    }
+
+  rtx src = operands[0];
+  rtx addr = operands[1];
+  rtx mem = gen_rtx_MEM (V16QImode, addr);
+  rtvec rv = gen_rtvec (3, src, mem, len);
+  rtx stxvl = gen_rtx_UNSPEC (V16QImode, rv, UNSPEC_STXVL);
+  emit_insn (gen_rtx_SET (mem, stxvl));
+  DONE;
 })
 
 ;; Define optab for vector access with length vectorization exploitation.
@@ -5865,6 +5926,35 @@
 	 UNSPEC_STXVL))]
   "TARGET_P9_VECTOR && TARGET_64BIT"
   "stxvl %x0,%1,%2"
+  [(set_attr "type" "vecstore")])
+
+;; For stxvrl and stxvrll, use the combiner to eliminate the shift.  The
+;; define_expand for stxvl will already incorporate the shift in generating the
+;; insn.  The stxvll buitl-in function required the user to have already done
+;; the shift.  Defining stxvrll this way, will optimize cases where the user
+;; has done the shift immediately before the built-in.
+
+(define_insn "*stxvrl"
+  [(set (mem:V16QI (match_operand:DI 1 "gpc_reg_operand" "b"))
+	(unspec:V16QI
+	 [(match_operand:V16QI 0 "vsx_register_operand" "wa")
+	  (mem:V16QI (match_dup 1))
+	  (ashift:DI (match_operand:DI 2 "register_operand" "r")
+		     (const_int 56))]
+	 UNSPEC_STXVL))]
+  "TARGET_FUTURE && TARGET_64BIT"
+  "stxvrl %x0,%1,%2"
+  [(set_attr "type" "vecstore")])
+
+(define_insn "*stxvrll"
+  [(set (mem:V16QI (match_operand:DI 1 "gpc_reg_operand" "b"))
+	(unspec:V16QI [(match_operand:V16QI 0 "vsx_register_operand" "wa")
+		       (mem:V16QI (match_dup 1))
+		       (ashift:DI (match_operand:DI 2 "register_operand" "r")
+				  (const_int 56))]
+	              UNSPEC_STXVLL))]
+  "TARGET_FUTURE"
+  "stxvrll %x0,%1,%2"
   [(set_attr "type" "vecstore")])
 
 ;; Expand for builtin xst_len_r
@@ -6296,7 +6386,7 @@
    (SFBOOL_MFVSR_A		 3)		;; move to gpr src
    (SFBOOL_BOOL_D		 4)		;; and/ior/xor dest
    (SFBOOL_BOOL_A1		 5)		;; and/ior/xor arg1
-   (SFBOOL_BOOL_A2		 6)		;; and/ior/xor arg1
+   (SFBOOL_BOOL_A2		 6)		;; and/ior/xor arg2
    (SFBOOL_SHL_D		 7)		;; shift left dest
    (SFBOOL_SHL_A		 8)		;; shift left arg
    (SFBOOL_MTVSR_D		 9)		;; move to vecter dest
@@ -6336,18 +6426,18 @@
 ;; GPR, and instead move the integer mask value to the vector register after a
 ;; shift and do the VSX logical operation.
 
-;; The insns for dealing with SFmode in GPR registers looks like:
+;; The insns for dealing with SFmode in GPR registers looks like on power8:
 ;; (set (reg:V4SF reg2) (unspec:V4SF [(reg:SF reg1)] UNSPEC_VSX_CVDPSPN))
 ;;
-;; (set (reg:DI reg3) (unspec:DI [(reg:V4SF reg2)] UNSPEC_P8V_RELOAD_FROM_VSX))
+;; (set (reg:DI reg3) (zero_extend:DI (reg:SI reg2)))
 ;;
-;; (set (reg:DI reg4) (and:DI (reg:DI reg3) (reg:DI reg3)))
+;; (set (reg:DI reg4) (and:SI (reg:SI reg3) (reg:SI mask)))
 ;;
 ;; (set (reg:DI reg5) (ashift:DI (reg:DI reg4) (const_int 32)))
 ;;
 ;; (set (reg:SF reg6) (unspec:SF [(reg:DI reg5)] UNSPEC_P8V_MTVSRD))
 ;;
-;; (set (reg:SF reg6) (unspec:SF [(reg:SF reg6)] UNSPEC_VSX_CVSPDPN))
+;; (set (reg:SF reg7) (unspec:SF [(reg:SF reg6)] UNSPEC_VSX_CVSPDPN))
 
 (define_peephole2
   [(match_scratch:DI SFBOOL_TMP_GPR "r")
@@ -6426,6 +6516,138 @@
   operands[SFBOOL_MFVSR_A_V4SF] = gen_rtx_REG (V4SFmode, regno_mfvsr_a);
   operands[SFBOOL_TMP_VSX_DI] = gen_rtx_REG (DImode, regno_tmp_vsx);
   operands[SFBOOL_MTVSR_D_V4SF] = gen_rtx_REG (V4SFmode, regno_mtvsr_d);
+})
+
+;; Constants for SFbool optimization on power9/power10
+(define_constants
+  [(SFBOOL2_TMP_VSX_V4SI	 0)		;; vector temporary (V4SI)
+   (SFBOOL2_TMP_GPR_SI		 1)		;; GPR temporary (SI)
+   (SFBOOL2_MFVSR_D		 2)		;; move to gpr dest (DI)
+   (SFBOOL2_MFVSR_A		 3)		;; move to gpr src (SI)
+   (SFBOOL2_BOOL_D		 4)		;; and/ior/xor dest (SI)
+   (SFBOOL2_BOOL_A1		 5)		;; and/ior/xor arg1 (SI)
+   (SFBOOL2_BOOL_A2		 6)		;; and/ior/xor arg2 (SI)
+   (SFBOOL2_SPLAT_D		 7)		;; splat dest (V4SI)
+   (SFBOOL2_MTVSR_D		 8)		;; move/splat to VSX dest.
+   (SFBOOL2_MTVSR_A		 9)		;; move/splat to VSX arg.
+   (SFBOOL2_MFVSR_A_V4SI	10)		;; MFVSR_A as V4SI
+   (SFBOOL2_MTVSR_D_V4SI	11)		;; MTVSR_D as V4SI
+   (SFBOOL2_XXSPLTW		12)])		;; 1 or 3 for XXSPLTW
+
+;; On power9/power10, the code is different because we have a splat 32-bit
+;; operation that does a direct move to the FPR/vector registers (MTVSRWS).
+;;
+;; The insns for dealing with SFmode in GPR registers looks like on
+;; power9/power10:
+;;
+;; (set (reg:V4SF reg2) (unspec:V4SF [(reg:SF reg1)] UNSPEC_VSX_CVDPSPN))
+;;
+;; (set (reg:DI reg3) (zero_extend:DI (reg:SI reg2)))
+;;
+;; (set (reg:SI reg4) (and:SI (reg:SI reg3) (reg:SI mask)))
+;;
+;; (set (reg:V4SI reg5) (vec_duplicate:V4SI (reg:SI reg4)))
+;;
+;; (set (reg:SF reg6) (unspec:SF [(reg:SF reg5)] UNSPEC_VSX_CVSPDPN))
+
+;; The VSX temporary needs to be an Altivec register in case we are trying to
+;; do and/ior/xor of -16..15 and we want to use VSPLTISW to load the constant.
+;;
+;; The GPR temporary is only used if we are trying to do a logical operation
+;; with a constant outside of the -16..15 range on a power9.  Otherwise, we can
+;; load the constant directly into the VSX temporary register.
+
+(define_peephole2
+  [(match_scratch:V4SI SFBOOL2_TMP_VSX_V4SI "v")
+   (match_scratch:SI SFBOOL2_TMP_GPR_SI "r")
+
+   ;; Zero_extend and direct move
+   (set (match_operand:DI SFBOOL2_MFVSR_D "int_reg_operand")
+	(zero_extend:DI
+	 (match_operand:SI SFBOOL2_MFVSR_A "vsx_register_operand")))
+
+   ;; AND/IOR/XOR operation on int
+   (set (match_operand:SI SFBOOL2_BOOL_D "int_reg_operand")
+	(and_ior_xor:SI
+	 (match_operand:SI SFBOOL2_BOOL_A1 "int_reg_operand")
+	 (match_operand:SI SFBOOL2_BOOL_A2 "reg_or_cint_operand")))
+
+   ;; Splat sfbool result to vector register
+   (set (match_operand:V4SI SFBOOL2_SPLAT_D "vsx_register_operand")
+	(vec_duplicate:V4SI
+	 (match_dup SFBOOL2_BOOL_D)))]
+
+  "TARGET_POWERPC64 && TARGET_P9_VECTOR
+   && REG_P (operands[SFBOOL2_MFVSR_D])
+   && REG_P (operands[SFBOOL2_BOOL_A1])
+   && (REGNO (operands[SFBOOL2_MFVSR_D]) == REGNO (operands[SFBOOL2_BOOL_A1])
+       || (REG_P (operands[SFBOOL2_BOOL_A2])
+           && (REGNO (operands[SFBOOL2_MFVSR_D])
+               == REGNO (operands[SFBOOL2_BOOL_A2]))))
+   && peep2_reg_dead_p (3, operands[SFBOOL2_MFVSR_D])
+   && peep2_reg_dead_p (4, operands[SFBOOL2_BOOL_D])"
+
+  ;; Either (set (reg:SI xxx) (reg:SI yyy))	or
+  ;;        (set (reg:V4SI xxx) (const_vector (parallel [c, c, c, c])))
+  [(set (match_dup SFBOOL2_MTVSR_D)
+	(match_dup SFBOOL2_MTVSR_A))
+
+   ;; And/ior/xor on vector registers
+   (set (match_dup SFBOOL2_TMP_VSX_V4SI)
+	(and_ior_xor:V4SI
+	 (match_dup SFBOOL2_MFVSR_A_V4SI)
+	 (match_dup SFBOOL2_TMP_VSX_V4SI)))
+
+   ;; XXSPLTW t,r,r,1
+   (set (match_dup SFBOOL2_SPLAT_D)
+	(vec_duplicate:V4SI
+	 (vec_select:SI
+	  (match_dup SFBOOL2_TMP_VSX_V4SI)
+	  (parallel [(match_dup SFBOOL2_XXSPLTW)]))))]
+{
+  rtx mfvsr_d = operands[SFBOOL2_MFVSR_D];
+  rtx bool_a1 = operands[SFBOOL2_BOOL_A1];
+  rtx bool_a2 = operands[SFBOOL2_BOOL_A2];
+  rtx bool_arg = (rtx_equal_p (mfvsr_d, bool_a1) ? bool_a2 : bool_a1);
+  int regno_mfvsr_a = REGNO (operands[SFBOOL2_MFVSR_A]);
+  int regno_tmp_vsx = REGNO (operands[SFBOOL2_TMP_VSX_V4SI]);
+
+  /* If the logical operation is a constant, form the constant in a vector
+     register.  */
+  if (CONST_INT_P (bool_arg))
+    {
+      HOST_WIDE_INT value = INTVAL (bool_arg);
+
+      /* See if we can directly load the constant, either by VSPLTIW or by
+         XXSPLTIW on power10.  */
+
+      if (IN_RANGE (value, -16, 15) || TARGET_PREFIXED)
+	{
+	  rtvec cv = gen_rtvec (4, bool_arg, bool_arg, bool_arg, bool_arg);
+	  operands[SFBOOL2_MTVSR_D] = gen_rtx_REG (V4SImode, regno_tmp_vsx);
+	  operands[SFBOOL2_MTVSR_A] = gen_rtx_CONST_VECTOR (V4SImode, cv);
+	}
+
+      else
+	{
+	  /* We need to load up the constant to a GPR and move it to a
+	     vector register.  */
+	  rtx tmp_gpr = operands[SFBOOL2_TMP_GPR_SI];
+	  emit_move_insn (tmp_gpr, bool_arg);
+	  operands[SFBOOL2_MTVSR_D] = gen_rtx_REG (SImode, regno_tmp_vsx);
+	  operands[SFBOOL2_MTVSR_A] = tmp_gpr;
+	}
+    }
+  else
+    {
+      /* Mask is in a register, move it to a vector register.  */
+      operands[SFBOOL2_MTVSR_D] = gen_rtx_REG (SImode, regno_tmp_vsx);
+      operands[SFBOOL2_MTVSR_A] = bool_arg;
+    }
+
+    operands[SFBOOL2_TMP_VSX_V4SI] = gen_rtx_REG (V4SImode, regno_tmp_vsx);
+    operands[SFBOOL2_MFVSR_A_V4SI] = gen_rtx_REG (V4SImode, regno_mfvsr_a);
+    operands[SFBOOL2_XXSPLTW] = GEN_INT (BYTES_BIG_ENDIAN ? 1 : 2);
 })
 
 ;; Support signed/unsigned long long to float conversion vectorization.
@@ -6789,12 +7011,13 @@
 	 of element from 7.  */
       int value = INTVAL (operands[4]);
       rtx vreg = gen_reg_rtx (V16QImode);
+      rtx tmp = gen_reg_rtx (V16QImode);
 
       emit_insn (gen_xxspltib_v16qi (vreg, GEN_INT (-1)));
-      emit_insn (gen_xorv16qi3 (operands[3], operands[3], vreg));
+      emit_insn (gen_xorv16qi3 (tmp, operands[3], vreg));
       value = 7 - value;
       emit_insn (gen_xxpermx_inst (operands[0], operands[2],
-				   operands[1], operands[3],
+				   operands[1], tmp,
 				   GEN_INT (value)));
     }
 

@@ -81,9 +81,11 @@ extern void anti_adjust_stack_and_probe_stack_clash (rtx);
    protection of dynamically allocated stack space.  */
 extern void compute_stack_clash_protection_loop_data (rtx *, rtx *, rtx *,
 						      HOST_WIDE_INT *, rtx);
-extern void emit_stack_clash_protection_probe_loop_start (rtx *, rtx *,
-							  rtx, bool);
-extern void emit_stack_clash_protection_probe_loop_end (rtx, rtx,
+extern void
+emit_stack_clash_protection_probe_loop_start (rtx_code_label **,
+					      rtx_code_label **,
+					      rtx, bool);
+extern void emit_stack_clash_protection_probe_loop_end (rtx_code_label *, rtx,
 							rtx, bool);
 
 /* This enum is used for the following two functions.  */

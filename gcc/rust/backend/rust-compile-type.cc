@@ -17,8 +17,6 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-compile-type.h"
-#include "rust-constexpr.h"
-#include "rust-compile-base.h"
 #include "rust-type-util.h"
 
 #include "rust-tyty.h"
@@ -31,6 +29,90 @@ namespace Compile {
 
 static const std::string RUST_ENUM_DISR_FIELD_NAME = "RUST$ENUM$DISR";
 
+static bool
+type_reaches_adt (TyTy::BaseType *type, DefId target, bool indirect,
+		  std::set<std::pair<DefId, bool>> &visited)
+{
+  type = type->destructure ();
+  switch (type->get_kind ())
+    {
+    case TyTy::TypeKind::POINTER:
+      return type_reaches_adt (
+	static_cast<TyTy::PointerType *> (type)->get_base (), target, true,
+	visited);
+
+    case TyTy::TypeKind::REF:
+      return type_reaches_adt (
+	static_cast<TyTy::ReferenceType *> (type)->get_base (), target, true,
+	visited);
+
+    case TyTy::TypeKind::TUPLE:
+      {
+	auto *tuple = static_cast<TyTy::TupleType *> (type);
+	for (size_t i = 0; i < tuple->num_fields (); i++)
+	  {
+	    if (type_reaches_adt (tuple->get_field (i), target, indirect,
+				  visited))
+	      return true;
+	  }
+	return false;
+      }
+
+    case TyTy::TypeKind::ARRAY:
+      return type_reaches_adt (
+	static_cast<TyTy::ArrayType *> (type)->get_element_type (), target,
+	indirect, visited);
+
+    case TyTy::TypeKind::FNPTR:
+      {
+	auto *fn = static_cast<TyTy::FnPtr *> (type);
+	for (const auto &param : fn->get_params ())
+	  {
+	    if (type_reaches_adt (param.get_tyty (), target, true, visited))
+	      return true;
+	  }
+
+	return type_reaches_adt (fn->get_return_type (), target, true, visited);
+      }
+
+    case TyTy::TypeKind::ADT:
+      break;
+
+    default:
+      return false;
+    }
+
+  auto *adt = static_cast<TyTy::ADTType *> (type);
+  if (adt->get_id () == target && indirect)
+    return true;
+
+  auto key = std::make_pair (adt->get_id (), indirect);
+  bool found = visited.find (key) != visited.end ();
+  if (found)
+    return false;
+  visited.insert (key);
+
+  for (auto *variant : adt->get_variants ())
+    {
+      for (auto *field : variant->get_fields ())
+	{
+	  if (type_reaches_adt (field->get_field_type (), target, indirect,
+				visited))
+	    return true;
+	}
+    }
+
+  return false;
+}
+
+static bool
+is_recursive_adt (const TyTy::ADTType &type)
+{
+  std::set<std::pair<DefId, bool>> visited;
+  return type_reaches_adt (const_cast<TyTy::ADTType *> (&type), type.get_id (),
+			   false, visited);
+}
+
 TyTyResolveCompile::TyTyResolveCompile (Context *ctx, bool trait_object_mode)
   : ctx (ctx), trait_object_mode (trait_object_mode),
     translated (error_mark_node)
@@ -42,6 +124,14 @@ TyTyResolveCompile::compile (Context *ctx, const TyTy::BaseType *ty,
 {
   TyTyResolveCompile compiler (ctx, trait_object_mode);
   const TyTy::BaseType *destructured = ty->destructure ();
+
+  if (const auto *adt = destructured->try_as<const TyTy::ADTType> ())
+    {
+      tree compiled_adt = NULL_TREE;
+      if (ctx->lookup_compiled_adt (*adt, &compiled_adt))
+	return compiled_adt;
+    }
+
   destructured->accept_vis (compiler);
 
   if (compiler.translated != error_mark_node
@@ -88,8 +178,8 @@ TyTyResolveCompile::get_unit_type (Context *ctx)
   static tree unit_type;
   if (unit_type == nullptr)
     {
-      auto cn = ctx->get_mappings ().get_current_crate ();
-      auto &c = ctx->get_mappings ().get_ast_crate (cn);
+      auto cn = ctx->get_mappings ().crate.get_current_crate ();
+      auto &c = ctx->get_mappings ().crate.get_ast_crate (cn);
       location_t locus = BUILTINS_LOCATION;
       if (c.items.size () > 0)
 	{
@@ -297,6 +387,24 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
   tree type_record = error_mark_node;
 
   TyTy::ADTType::ReprOptions repr = type.get_repr_options ();
+  bool cached_incomplete_record = false;
+
+  if (is_recursive_adt (type)
+      && repr.repr_kind != TyTy::ADTType::ReprKind::TRANSPARENT
+      && repr.repr_kind != TyTy::ADTType::ReprKind::SIMD)
+    {
+      tree aggregate = make_node (type.is_union () ? UNION_TYPE : RECORD_TYPE);
+      std::string name
+	= type.get_ident ().path.get () + type.subst_as_string ();
+
+      tree decl = build_decl (type.get_ident ().locus, TYPE_DECL,
+			      Backend::get_identifier_node (name), aggregate);
+      TYPE_NAME (aggregate) = decl;
+      type_record = aggregate;
+      ctx->insert_compiled_adt (type, type_record);
+      cached_incomplete_record = true;
+    }
+
   if (repr.repr_kind == TyTy::ADTType::ReprKind::TRANSPARENT)
     {
       rust_assert (type.number_of_variants () == 1);
@@ -334,8 +442,21 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
 	    }
 	}
     }
+  else if (repr.repr_kind == TyTy::ADTType::ReprKind::SIMD)
+    {
+      TyTy::VariantDef &variant = *type.get_variants ().at (0);
+      auto element = variant.get_fields ().at (0)->get_field_type ();
+      auto inner_type = compile (ctx, element);
 
-  // compilation of non-transparent ADTs below
+      type_record = build_vector_type (inner_type, variant.num_fields ());
+    }
+  else if (type.get_adt_kind () == TyTy::ADTType::ADTKind::EXTERN)
+    {
+      // Extern types are codegen'd as C's void type. They can only be used
+      // through indirection, so they're effectively always codegen'd as
+      // `void *` types.
+      type_record = void_type_node;
+    }
   else if (!type.is_enum ())
     {
       rust_assert (type.number_of_variants () == 1);
@@ -353,8 +474,45 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
 				 type.get_ty_ref ()));
 	}
 
-      type_record = type.is_union () ? Backend::union_type (fields, false)
-				     : Backend::struct_type (fields, false);
+      if (!type.is_union () && variant.num_fields () > 0)
+	{
+	  const TyTy::StructFieldType *tail_field
+	    = variant.get_field_at_index (variant.num_fields () - 1);
+	  TyTy::BaseType *tail_ty = tail_field->get_field_type ();
+
+	  if (tail_ty->is_unsized ())
+	    {
+	      tree raw_dst_type = error_mark_node;
+
+	      if (tail_ty->get_kind () == TyTy::TypeKind::SLICE)
+		{
+		  auto slice = static_cast<TyTy::SliceType *> (tail_ty);
+		  tree elem_type
+		    = TyTyResolveCompile::compile (ctx,
+						   slice->get_element_type ());
+		  raw_dst_type = build_array_type (elem_type, NULL_TREE);
+		}
+	      else if (tail_ty->get_kind () == TyTy::TypeKind::DYNAMIC)
+		{
+		  raw_dst_type = make_node (RECORD_TYPE);
+		  TYPE_SIZE (raw_dst_type) = bitsize_zero_node;
+		  TYPE_SIZE_UNIT (raw_dst_type) = size_zero_node;
+		  layout_type (raw_dst_type);
+		}
+	      else
+		{
+		  raw_dst_type = fields.back ().type;
+		}
+	      fields.pop_back ();
+	      fields.emplace_back (tail_field->get_name (), raw_dst_type,
+				   type.get_locus ());
+	    }
+	}
+      if (cached_incomplete_record)
+	type_record = Backend::fill_in_fields (type_record, fields, false);
+      else
+	type_record = type.is_union () ? Backend::union_type (fields, false)
+				       : Backend::struct_type (fields, false);
     }
   else
     {
@@ -476,7 +634,10 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
 
       std::vector<Backend::typed_identifier> fields
 	= {discrim, variants_union_field};
-      type_record = Backend::struct_type (fields, false);
+      if (cached_incomplete_record)
+	type_record = Backend::fill_in_fields (type_record, fields, false);
+      else
+	type_record = Backend::struct_type (fields, false);
     }
 
   // Handle repr options
@@ -502,10 +663,22 @@ TyTyResolveCompile::visit (const TyTy::ADTType &type)
       layout_type (type_record);
     }
 
-  std::string named_struct_str
-    = type.get_ident ().path.get () + type.subst_as_string ();
-  translated = Backend::named_type (named_struct_str, type_record,
-				    type.get_ident ().locus);
+  if (cached_incomplete_record)
+    {
+      // see gcc/c/c-decl.cc this sets up any incomplete variants of the tree
+      for (tree variant = TYPE_NEXT_VARIANT (type_record); variant != NULL_TREE;
+	   variant = TYPE_NEXT_VARIANT (variant))
+	TYPE_FIELDS (variant) = TYPE_FIELDS (type_record);
+
+      translated = type_record;
+    }
+  else
+    {
+      std::string named_struct_str
+	= type.get_ident ().path.get () + type.subst_as_string ();
+      translated = Backend::named_type (named_struct_str, type_record,
+					type.get_ident ().locus);
+    }
 }
 
 void
@@ -742,6 +915,16 @@ TyTyResolveCompile::visit (const TyTy::ReferenceType &type)
 
       return;
     }
+  else if (type.is_dyn_adt_type (&adt))
+    {
+      tree type_record = create_dyn_adt_record (*adt);
+      std::string dyn_str_type_str
+	= std::string (type.is_mutable () ? "&mut" : "& ") + adt->get_name ();
+
+      translated = Backend::named_type (dyn_str_type_str, type_record,
+					adt->get_locus ());
+      return;
+    }
   // Check for CStr, create a specific record for it
   else if (type.is_dyn_cstr_type (&adt))
     {
@@ -773,7 +956,17 @@ TyTyResolveCompile::visit (const TyTy::ReferenceType &type)
     }
   else
     {
-      auto base = Backend::immutable_type (base_compiled_type);
+      // https://doc.rust-lang.org/core/cell/struct.UnsafeCell.html
+      // If you have a reference &T, then normally in Rust the compiler performs
+      // optimizations based on the knowledge that &T points to immutable data.
+      // Mutating that data, for example through an alias or by transmuting a &T
+      // into a &mut T, is considered undefined behavior. UnsafeCell<T> opts-out
+      // of the immutability guarantee for &T: a shared reference &UnsafeCell<T>
+      // may point to data that is being mutated. This is called “interior
+      // mutability”.
+      auto base = type.get_base ()->contains_unsafe_cell ()
+		    ? base_compiled_type
+		    : Backend::immutable_type (base_compiled_type);
       translated = Backend::reference_type (base);
     }
 }
@@ -784,6 +977,7 @@ TyTyResolveCompile::visit (const TyTy::PointerType &type)
   const TyTy::SliceType *slice = nullptr;
   const TyTy::StrType *str = nullptr;
   const TyTy::DynamicObjectType *dyn = nullptr;
+  const TyTy::ADTType *adt = nullptr;
   if (type.is_dyn_slice_type (&slice))
     {
       tree type_record = create_slice_type_record (*slice);
@@ -817,6 +1011,17 @@ TyTyResolveCompile::visit (const TyTy::PointerType &type)
       translated = Backend::named_type (dyn_str_type_str, type_record,
 					dyn->get_locus ());
 
+      return;
+    }
+  else if (type.is_dyn_adt_type (&adt))
+    {
+      tree type_record = create_dyn_adt_record (*adt);
+      std::string dyn_str_type_str
+	= std::string (type.is_mutable () ? "*mut" : "*const ")
+	  + adt->get_name ();
+
+      translated = Backend::named_type (dyn_str_type_str, type_record,
+					adt->get_locus ());
       return;
     }
 
@@ -947,6 +1152,65 @@ TyTyResolveCompile::create_str_type_record (const TyTy::StrType &type)
   Backend::typed_identifier len_field ("len", len_field_ty, type.get_locus ());
 
   tree record = Backend::struct_type ({data_field, len_field});
+  RS_DST_FLAG (record) = 1;
+  TYPE_MAIN_VARIANT (record) = ctx->insert_main_variant (record);
+
+  return record;
+}
+
+tree
+TyTyResolveCompile::create_dyn_adt_record (const TyTy::ADTType &type)
+{
+  location_t locus = type.get_locus ();
+
+  tree adt_record = TyTyResolveCompile::compile (ctx, &type);
+  tree data_field_ty = build_pointer_type (adt_record);
+  Backend::typed_identifier data_field ("data", data_field_ty, locus);
+
+  rust_assert (type.number_of_variants () > 0);
+  TyTy::VariantDef &variant = *type.get_variants ().front ();
+  rust_assert (variant.num_fields () > 0);
+
+  const TyTy::BaseType *tail_field
+    = variant.get_field_at_index (variant.num_fields () - 1)->get_field_type ();
+
+  tree meta_field_ty = error_mark_node;
+  std::string meta = "meta";
+
+  if (tail_field->get_kind () == TyTy::TypeKind::SLICE
+      || tail_field->get_kind () == TyTy::TypeKind::STR)
+    {
+      TyTy::BaseType *usize = nullptr;
+      bool ok = ctx->get_tyctx ()->lookup_builtin ("usize", &usize);
+      rust_assert (ok);
+      meta_field_ty = TyTyResolveCompile::compile (ctx, usize);
+      meta = "len";
+    }
+  else if (tail_field->get_kind () == TyTy::TypeKind::DYNAMIC)
+    {
+      const TyTy::DynamicObjectType *dyn
+	= static_cast<const TyTy::DynamicObjectType *> (tail_field);
+      tree dyn_record = create_dyn_obj_record (*dyn);
+      tree vtable_field = DECL_CHAIN (TYPE_FIELDS (dyn_record));
+      meta_field_ty = TREE_TYPE (vtable_field);
+      meta = "vtable";
+    }
+  else if (tail_field->get_kind () == TyTy::TypeKind::ADT)
+    {
+      const TyTy::ADTType *inner_adt
+	= static_cast<const TyTy::ADTType *> (tail_field);
+      tree inner_fat_ptr = create_dyn_adt_record (*inner_adt);
+      tree inner_meta_field = DECL_CHAIN (TYPE_FIELDS (inner_fat_ptr));
+      meta_field_ty = TREE_TYPE (inner_meta_field);
+      tree name_ident = DECL_NAME (inner_meta_field);
+      if (name_ident != NULL_TREE)
+	meta = IDENTIFIER_POINTER (name_ident);
+    }
+  else
+    rust_unreachable ();
+
+  Backend::typed_identifier meta_field (meta, meta_field_ty, locus);
+  tree record = Backend::struct_type ({data_field, meta_field});
   RS_DST_FLAG (record) = 1;
   TYPE_MAIN_VARIANT (record) = ctx->insert_main_variant (record);
 

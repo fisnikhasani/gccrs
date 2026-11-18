@@ -14,6 +14,8 @@
 // along with GCC; see the file COPYING3.  If not see
 // <http://www.gnu.org/licenses/>.
 
+#include "expected.h"
+#include "optional.h"
 #include "rust-diagnostics.h"
 #include "rust-system.h"
 #include "rust-builtins.h"
@@ -29,11 +31,15 @@ BuiltinsContext &
 BuiltinsContext::get ()
 {
   static BuiltinsContext instance;
+
+  if (instance.setup_state == SetupState::UNINITIALIZED)
+    instance.setup ();
+
   return instance;
 }
 
-bool
-BuiltinsContext::lookup_simple_builtin (const std::string &name, tree *builtin)
+tl::optional<tree>
+BuiltinsContext::lookup_simple_builtin (const std::string &name)
 {
   auto *to_search = &name;
 
@@ -41,10 +47,23 @@ BuiltinsContext::lookup_simple_builtin (const std::string &name, tree *builtin)
   if (it != rust_intrinsic_to_gcc_builtin.end ())
     to_search = &it->second;
 
-  return lookup_gcc_builtin (*to_search, builtin);
+  return lookup_gcc_builtin (*to_search);
 }
 
-BuiltinsContext::BuiltinsContext () { setup (); }
+tl::expected<std::pair<tree, LlvmBuiltinAdapter>, LlvmBuiltinMappingError>
+BuiltinsContext::map_llvm_to_gcc_builtin (const std::string &name)
+{
+  auto mapping = llvm_to_gcc_builtin.find (name);
+  if (mapping == llvm_to_gcc_builtin.end ())
+    return tl::make_unexpected (LlvmBuiltinMappingError::NotMapped ());
+
+  if (auto lookup = lookup_gcc_builtin (mapping->second.gcc_name))
+    return std::make_pair (*lookup, mapping->second.adapter);
+
+  return tl::make_unexpected (LlvmBuiltinMappingError::TargetUnavailable ());
+}
+
+BuiltinsContext::BuiltinsContext () : setup_state (SetupState::UNINITIALIZED) {}
 
 /**
  * Define a function type according to `builtin-types.def`
@@ -228,7 +247,7 @@ BuiltinsContext::define_builtin_attributes ()
 
 #define DEF_ATTR_NULL_TREE(ENUM) built_in_attributes[(int) ENUM] = NULL_TREE;
 #define DEF_ATTR_INT(ENUM, VALUE)                                              \
-  built_in_attributes[ENUM] = build_int_cst (NULL_TREE, VALUE);
+  built_in_attributes[ENUM] = build_int_cst (integer_type_node, VALUE);
 #define DEF_ATTR_STRING(ENUM, VALUE)                                           \
   built_in_attributes[ENUM] = build_string (strlen (VALUE), VALUE);
 #define DEF_ATTR_IDENT(ENUM, STRING)                                           \
@@ -356,24 +375,92 @@ BuiltinsContext::register_rust_mappings ()
 }
 
 void
+BuiltinsContext::register_llvm_to_gcc_builtin ()
+{
+  llvm_to_gcc_builtin = {
+    {"llvm.x86.rdrand.16",
+     {"__builtin_ia32_rdrand16_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+    {"llvm.x86.rdrand.32",
+     {"__builtin_ia32_rdrand32_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+    {"llvm.x86.rdrand.64",
+     {"__builtin_ia32_rdrand64_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+    {"llvm.x86.rdseed.16",
+     {"__builtin_ia32_rdseed_hi_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+    {"llvm.x86.rdseed.32",
+     {"__builtin_ia32_rdseed_si_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+    {"llvm.x86.rdseed.64",
+     {"__builtin_ia32_rdseed_di_step",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_VALUE_STATUS}},
+
+    {"llvm.x86.addcarry.32",
+     {"__builtin_ia32_addcarryx_u32",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_STATUS_VALUE}},
+    {"llvm.x86.addcarryx.u32",
+     {"__builtin_ia32_addcarryx_u32", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+    {"llvm.x86.subborrow.32",
+     {"__builtin_ia32_sbb_u32",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_STATUS_VALUE}},
+    {"llvm.x86.addcarry.64",
+     {"__builtin_ia32_addcarryx_u64",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_STATUS_VALUE}},
+    {"llvm.x86.addcarryx.u64",
+     {"__builtin_ia32_addcarryx_u64", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+    {"llvm.x86.subborrow.64",
+     {"__builtin_ia32_sbb_u64",
+      LlvmBuiltinAdapter::OUTPUT_POINTER_STATUS_VALUE}},
+
+    {"llvm.x86.vcvtph2ps.128",
+     {"__builtin_ia32_vcvtph2ps", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+    {"llvm.x86.vcvtph2ps.256",
+     {"__builtin_ia32_vcvtph2ps256", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+    {"llvm.x86.vcvtps2ph.128",
+     {"__builtin_ia32_vcvtps2ph", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+    {"llvm.x86.vcvtps2ph.256",
+     {"__builtin_ia32_vcvtps2ph256", LlvmBuiltinAdapter::FORWARD_ARGUMENTS}},
+  };
+}
+
+void
+BuiltinsContext::register_builtin (tree decl)
+{
+  rust_assert (TREE_CODE (decl) == FUNCTION_DECL);
+  rust_assert (DECL_NAME (decl));
+
+  const char *name = IDENTIFIER_POINTER (DECL_NAME (decl));
+  builtin_functions.insert ({std::string (name), decl});
+}
+
+void
 BuiltinsContext::setup ()
 {
+  rust_assert (setup_state == SetupState::UNINITIALIZED);
+  setup_state = SetupState::INITIALIZING;
+
   define_builtin_types ();
   define_builtin_attributes ();
   define_builtins ();
 
+  targetm.init_builtins ();
+
   register_rust_mappings ();
+  register_llvm_to_gcc_builtin ();
+
+  setup_state = SetupState::READY;
 }
 
-bool
-BuiltinsContext::lookup_gcc_builtin (const std::string &name, tree *builtin)
+tl::optional<tree>
+BuiltinsContext::lookup_gcc_builtin (const std::string &name)
 {
   auto it = builtin_functions.find (name);
   if (it == builtin_functions.end ())
-    return false;
+    return tl::nullopt;
 
-  *builtin = it->second;
-  return true;
+  return it->second;
 }
 
 } // namespace Compile

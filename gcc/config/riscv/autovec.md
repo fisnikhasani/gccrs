@@ -452,6 +452,27 @@
   }
 )
 
+;; -------------------------------------------------------------------------
+;; ---- [INT,FP] Initialize from two half-width vectors
+;; -------------------------------------------------------------------------
+
+(define_expand "vec_init<mode><v_half>"
+  [(match_operand:V_HAS_HALF 0 "register_operand")
+   (match_operand 1 "")]
+  "TARGET_VECTOR
+   && known_le (GET_MODE_SIZE (<MODE>mode),
+		riscv_regmode_natural_size (<MODE>mode))"
+{
+  gcc_assert (GET_CODE (operands[1]) == PARALLEL);
+  gcc_assert (XVECLEN (operands[1], 0) == 2);
+
+  rtx low = force_reg (<V_HALF>mode, XVECEXP (operands[1], 0, 0));
+  rtx high = force_reg (<V_HALF>mode, XVECEXP (operands[1], 0, 1));
+
+  emit_insn (gen_vec_concat (<MODE>mode, operands[0], low, high));
+  DONE;
+})
+
 ;; Slide an RVV vector left and insert a scalar into element 0.
 (define_expand "vec_shl_insert_<mode>"
   [(match_operand:V_VLSI 0 "register_operand")
@@ -1114,9 +1135,9 @@
 }
 [(set_attr "type" "vialu")])
 
-;; -------------------------------------------------------------------------------
+;; ----------------------------------------------------------------------------
 ;; - [INT] ABS expansion
-;; -------------------------------------------------------------------------------
+;; ----------------------------------------------------------------------------
 
 (define_expand "abs<mode>2"
   [(set (match_operand:V_VLSI 0 "register_operand")
@@ -1139,6 +1160,70 @@
   rtx ops2[] = {operands[0], operands[1], neg};
   riscv_vector::emit_vlmax_insn (CODE_FOR_pred_smax<mode>,
 				 riscv_vector::BINARY_OP, ops2);
+  DONE;
+})
+
+;; ----------------------------------------------------------------------------
+;; - [INT] Absolute differences
+;; ----------------------------------------------------------------------------
+(define_insn_and_split "<su>abd<mode>3"
+  [(set (match_operand:VI_QH 0 "register_operand" "=vr")
+	(unspec:VI_QH
+	 [(match_operand:VI_QH 1 "register_operand" "vr")
+	  (match_operand:VI_QH 2 "register_operand" "vr")]
+	 UNSPEC_VABD))]
+  "TARGET_ZVABD && can_create_pseudo_p ()"
+  "#"
+  "&& 1"
+  [(const_int 0)]
+{
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vabd<su><mode>,
+				 riscv_vector::BINARY_OP, operands);
+  DONE;
+}
+[(set_attr "type" "vialu")])
+
+;; ----------------------------------------------------------------------------
+;; - [INT] Sum of absolute differences
+;; ----------------------------------------------------------------------------
+
+;; These are supported directly.
+(define_expand "<su>sad<mode><v_double_trunc>"
+  [(set (match_operand:VWEXTI_HS 0 "register_operand" "=vr")
+    (unspec:VWEXTI_HS
+	 [(match_operand:<V_DOUBLE_TRUNC> 1 "register_operand" "vr")
+	  (match_operand:<V_DOUBLE_TRUNC> 2 "register_operand" "vr")
+	  (match_operand:VWEXTI_HS 3 "register_operand")]
+	 UNSPEC_VABD))]
+  "TARGET_ZVABD"
+{
+  rtx ops[] = {operands[0], operands[3], operands[1], operands[2]};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_widen_abd_plus<su><mode>,
+				 riscv_vector::WIDEN_TERNARY_OP, ops);
+  DONE;
+})
+
+;; These we can synthesize.
+(define_expand "<su>sad<mode><v_quad_trunc>"
+  [(set (match_operand:VWEXTI_S 0 "register_operand" "=vr")
+    (unspec:VWEXTI_S
+        [(match_operand:<V_QUAD_TRUNC> 1 "register_operand" "vr")
+         (match_operand:<V_QUAD_TRUNC> 2 "register_operand" "vr")
+         (match_operand:VWEXTI_S 3 "register_operand")]
+        UNSPEC_VABD))]
+  "TARGET_ZVABD"
+{
+  rtx abd = gen_reg_rtx (<V_DOUBLE_TRUNC>mode);
+  emit_move_insn (abd, CONST0_RTX (<V_DOUBLE_TRUNC>mode));
+  rtx ops1[] = {abd, abd, operands[1], operands[2]};
+  insn_code icode = CODE_FOR_pred_widen_abd_plus<su><v_double_trunc>;
+  riscv_vector::emit_vlmax_insn (icode, riscv_vector::WIDEN_TERNARY_OP, ops1);
+
+  rtx ops2[] = {operands[0], operands[3], abd};
+  riscv_vector::emit_vlmax_insn (code_for_pred_single_widen_add (ZERO_EXTEND,
+								 <MODE>mode),
+				 riscv_vector::BINARY_OP, ops2);
+
   DONE;
 })
 
@@ -1254,10 +1339,9 @@
 
 (define_insn_and_split "fma<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (plus:V_VLSF
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))
+	(fma:V_VLSF
+	  (match_operand:V_VLSF 1 "register_operand")
+	  (match_operand:V_VLSF 2 "register_operand")
 	  (match_operand:V_VLSF 3 "register_operand")))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
@@ -1282,11 +1366,10 @@
 
 (define_insn_and_split "fnma<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-          (match_operand:V_VLSF 3 "register_operand")
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))))]
+	(fma:V_VLSF
+	  (neg:V_VLSF (match_operand:V_VLSF 1 "register_operand"))
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (match_operand:V_VLSF 3 "register_operand")))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1310,11 +1393,10 @@
 
 (define_insn_and_split "fms<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))
-	  (match_operand:V_VLSF 3 "register_operand")))]
+	(fma:V_VLSF
+	  (match_operand:V_VLSF 1 "register_operand")
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (neg:V_VLSF (match_operand:V_VLSF 3 "register_operand"))))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1338,12 +1420,10 @@
 
 (define_insn_and_split "fnms<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-          (neg:V_VLSF
-	    (mult:V_VLSF
-	      (match_operand:V_VLSF 1 "register_operand")
-	      (match_operand:V_VLSF 2 "register_operand")))
-	  (match_operand:V_VLSF 3 "register_operand")))]
+	(fma:V_VLSF
+	  (neg:V_VLSF (match_operand:V_VLSF 1 "register_operand"))
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (neg:V_VLSF (match_operand:V_VLSF 3 "register_operand"))))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1396,7 +1476,7 @@
 
       /* Here we set VL = offset + 1.  */
       rtx length = gen_reg_rtx (Pmode);
-      operands[2] = gen_lowpart (Pmode, operands[2]);
+      operands[2] = convert_to_mode (Pmode, operands[2], true);
       if (CONST_INT_P (operands[2]))
 	  emit_move_insn (length, GEN_INT (INTVAL (operands[2]) + 1));
       else
@@ -1452,7 +1532,7 @@
 
     /* Emit the slide down to index 0 in a new vector.  */
     tmp = gen_reg_rtx (<MODE>mode);
-    operands[2] = gen_lowpart (Pmode, operands[2]);
+    operands[2] = convert_to_mode (Pmode, operands[2], true);
     rtx ops[] = {tmp, operands[1], operands[2]};
     riscv_vector::emit_vlmax_insn
       (code_for_pred_slide (UNSPEC_VSLIDEDOWN, <MODE>mode),
@@ -1518,69 +1598,6 @@
   "TARGET_VECTOR"
 {
   emit_insn (gen_vec_extract<mode>qi (operands[0], operands[1], operands[2]));
-  DONE;
-})
-
-;; -------------------------------------------------------------------------
-;; ---- [INT,FP] Extract a vector from a vector.
-;; -------------------------------------------------------------------------
-;; TODO: This can be extended to allow basically any extract mode.
-;; For now this helps optimize VLS subregs like (subreg:V2DI (reg:V4DI) 16)
-;; that would otherwise need to go via memory.
-
-(define_expand "vec_extract<mode><vls_half>"
-  [(set (match_operand:<VLS_HALF>	 0 "nonimmediate_operand")
-     (vec_select:<VLS_HALF>
-       (match_operand:VLS_HAS_HALF	 1 "register_operand")
-       (parallel
-	 [(match_operand		 2 "immediate_operand")])))]
-  "TARGET_VECTOR"
-{
-  int sz = GET_MODE_NUNITS (<VLS_HALF>mode).to_constant ();
-  int part = INTVAL (operands[2]);
-
-  rtx start = GEN_INT (part * sz);
-  rtx tmp = operands[1];
-
-  if (part != 0)
-    {
-      tmp = gen_reg_rtx (<MODE>mode);
-
-      rtx ops[] = {tmp, operands[1], start};
-      riscv_vector::emit_vlmax_insn
-	(code_for_pred_slide (UNSPEC_VSLIDEDOWN, <MODE>mode),
-	 riscv_vector::BINARY_OP, ops);
-    }
-
-  emit_move_insn (operands[0], gen_lowpart (<VLS_HALF>mode, tmp));
-  DONE;
-})
-
-(define_expand "vec_extract<mode><vls_quarter>"
-  [(set (match_operand:<VLS_QUARTER>	 0 "nonimmediate_operand")
-     (vec_select:<VLS_QUARTER>
-       (match_operand:VLS_HAS_QUARTER	 1 "register_operand")
-       (parallel
-	 [(match_operand		 2 "immediate_operand")])))]
-  "TARGET_VECTOR"
-{
-  int sz = GET_MODE_NUNITS (<VLS_QUARTER>mode).to_constant ();
-  int part = INTVAL (operands[2]);
-
-  rtx start = GEN_INT (part * sz);
-  rtx tmp = operands[1];
-
-  if (part != 0)
-    {
-      tmp = gen_reg_rtx (<MODE>mode);
-
-      rtx ops[] = {tmp, operands[1], start};
-      riscv_vector::emit_vlmax_insn
-	(code_for_pred_slide (UNSPEC_VSLIDEDOWN, <MODE>mode),
-	 riscv_vector::BINARY_OP, ops);
-    }
-
-  emit_move_insn (operands[0], gen_lowpart (<VLS_QUARTER>mode, tmp));
   DONE;
 })
 
@@ -2436,7 +2453,7 @@
   "TARGET_VECTOR && !HONOR_SNANS (<MODE>mode)"
 {
   REAL_VALUE_TYPE rv;
-  real_inf (&rv, true);
+  real_nan (&rv, "", 1, VOIDmode);
   rtx f = const_double_from_real_value (rv, <VEL>mode);
   riscv_vector::expand_reduction (UNSPEC_REDUC_MAX,
 				  UNSPEC_REDUC_MAX_VL0_SAFE,
@@ -2451,7 +2468,7 @@
   "TARGET_VECTOR && !HONOR_SNANS (<MODE>mode)"
 {
   REAL_VALUE_TYPE rv;
-  real_inf (&rv, false);
+  real_nan (&rv, "", 1, VOIDmode);
   rtx f = const_double_from_real_value (rv, <VEL>mode);
   riscv_vector::expand_reduction (UNSPEC_REDUC_MIN,
 				  UNSPEC_REDUC_MIN_VL0_SAFE,
@@ -3075,23 +3092,3 @@
     riscv_vector::expand_strided_store (<MODE>mode, operands);
     DONE;
   })
-
-; ========
-; == Absolute difference (not including sum)
-; ========
-(define_insn_and_split "<su>abd<mode>3"
-  [(set (match_operand:V_VLSI 0 "register_operand" "=vr")
-       (unspec:V_VLSI
-	 [(match_operand:V_VLSI 1 "register_operand" "vr")
-	  (match_operand:V_VLSI 2 "register_operand" "vr")]
-	 UNSPEC_VABD))]
-  "TARGET_ZVABD && can_create_pseudo_p ()"
-  "#"
-  "&& 1"
-  [(const_int 0)]
-{
-  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vabd<su><mode>,
-				 riscv_vector::BINARY_OP, operands);
-  DONE;
-}
-[(set_attr "type" "vialu")])

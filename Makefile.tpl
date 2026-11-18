@@ -212,7 +212,6 @@ HOST_EXPORTS = \
 	GOC="$(GOC)"; export GOC; \
 	GDC="$(GDC)"; export GDC; \
 	GM2="$(GM2)"; export GM2; \
-	GNATMAKE_FOR_BUILD="$(GNATMAKE_FOR_BUILD)"; export GNATMAKE_FOR_BUILD; \
 	AR="$(AR)"; export AR; \
 	AS="$(AS)"; export AS; \
 	CC_FOR_BUILD="$(CC_FOR_BUILD)"; export CC_FOR_BUILD; \
@@ -325,7 +324,6 @@ BASE_TARGET_EXPORTS = \
 	GOC="$(GOC_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS"; export GOC; \
 	GDC="$(GDC_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS"; export GDC; \
 	GM2="$(GM2_FOR_TARGET) $(XGCC_FLAGS_FOR_TARGET) $$TFLAGS"; export GM2; \
-	GNATMAKE_FOR_BUILD="$(GNATMAKE_FOR_BUILD)"; export GNATMAKE_FOR_BUILD; \
 	DLLTOOL="$(DLLTOOL_FOR_TARGET)"; export DLLTOOL; \
 	DSYMUTIL="$(DSYMUTIL_FOR_TARGET)"; export DSYMUTIL; \
 	LD="$(COMPILER_LD_FOR_TARGET)"; export LD; \
@@ -426,7 +424,7 @@ MAKEINFO = @MAKEINFO@
 EXPECT = @EXPECT@
 RUNTEST = @RUNTEST@
 
-AUTO_PROFILE = gcc-auto-profile --all -c 10000000
+AUTO_PROFILE = gcc-auto-profile --all --perf perf.data -c 10000000 --
 
 # This just becomes part of the MAKEINFO definition passed down to
 # sub-makes.  It lets flags be given on the command line while still
@@ -460,6 +458,8 @@ A68 = @A68@
 GDC = @GDC@
 GNATBIND = @GNATBIND@
 GNATMAKE = @GNATMAKE@
+# ADAC is only used by gcc, in stage1 and in nonbootstrap builds.
+ADAC = @ADAC@
 
 CFLAGS = @CFLAGS@
 LDFLAGS = @LDFLAGS@
@@ -606,6 +606,9 @@ STAGEautofeedback_TFLAGS = $(STAGE3_TFLAGS)
 # Disable warnings as errors since inlining decisions with -fauto-profile
 # may result in additional warnings.
 STAGEautofeedback_CONFIGURE_FLAGS = $(filter-out --enable-werror-always,$(STAGE_CONFIGURE_FLAGS))
+
+GMP_CHECKING_FLAGS = -fno-checking -fchecking=1
+GMP_FILTER_CHECKING_FLAGS = $(filter-out $(GMP_CHECKING_FLAGS),$(1))
 
 do-compare = @do_compare@
 do-compare3 = $(do-compare)
@@ -784,6 +787,7 @@ FLAGS_TO_PASS = $(BASE_FLAGS_TO_PASS) $(EXTRA_HOST_FLAGS)
 # Flags to pass to stage1 or when not bootstrapping.
 
 STAGE1_FLAGS_TO_PASS = \
+	ADAC="$(ADAC)" \
 	LDFLAGS="$${LDFLAGS}" \
 	HOST_LIBS="$${HOST_LIBS}"
 
@@ -795,6 +799,7 @@ POSTSTAGE1_FLAGS_TO_PASS = \
 	A68="$${A68}" A68_FOR_BUILD="$${A68_FOR_BUILD}" \
 	GDC="$${GDC}" GDC_FOR_BUILD="$${GDC_FOR_BUILD}" \
 	GM2="$${GM2}" GM2_FOR_BUILD="$${GM2_FOR_BUILD}" \
+	ADAC="$${CC}" \
 	GNATBIND="$${GNATBIND}" \
 	LDFLAGS="$${LDFLAGS}" \
 	HOST_LIBS="$${HOST_LIBS}" \
@@ -1054,6 +1059,7 @@ do-check:
 warning.log: build.log
 	$(srcdir)/contrib/warn_summary build.log > $@
 
+.PHONY: mail-report.log
 mail-report.log:
 	if test x'$(BOOT_CFLAGS)' != x''; then \
 	    BOOT_CFLAGS='$(BOOT_CFLAGS)'; export BOOT_CFLAGS; \
@@ -1062,6 +1068,7 @@ mail-report.log:
 	chmod +x $@
 	echo If you really want to send e-mail, run ./$@ now
 
+.PHONY: mail-report-with-warnings.log
 mail-report-with-warnings.log: warning.log
 	if test x'$(BOOT_CFLAGS)' != x''; then \
 	    BOOT_CFLAGS='$(BOOT_CFLAGS)'; export BOOT_CFLAGS; \
@@ -1194,7 +1201,18 @@ TAGS: do-TAGS
 # Macros for configure and all targets
 # ------------------------------------
 
-[+ DEFINE configure +]
+[+ ;; Return the stage flag variable that should be used when configuring
+   ;; the current module.
+   ;; GMP and MPC record the compiler options in object files, which makes
+   ;; LTO bootstrap comparisons fail if stage-specific checking flags differ.
+   (define stage-configure-flags
+     (lambda (suffix)
+       (let ((flag (string-append "STAGE" (get "id") suffix)))
+	 (if (or (= (get "module") "gmp")
+		 (= (get "module") "mpc"))
+	     (string-append "$(call GMP_FILTER_CHECKING_FLAGS,$(" flag "))")
+	     (string-append "$(" flag ")")))))
++][+ DEFINE configure +]
 .PHONY: configure-[+prefix+][+module+] maybe-configure-[+prefix+][+module+]
 maybe-configure-[+prefix+][+module+]:
 @if gcc-bootstrap
@@ -1251,7 +1269,7 @@ configure-stage[+id+]-[+prefix+][+module+]:
 	@$(SHELL) $(srcdir)/mkinstalldirs [+subdir+]/[+module+]
 	@r=`${PWD_COMMAND}`; export r; \
 	s=`cd $(srcdir); ${PWD_COMMAND}`; export s; \
-	TFLAGS="$(STAGE[+id+]_TFLAGS)"; \
+	TFLAGS="[+ (stage-configure-flags "_TFLAGS") +]"; \
 	[+ IF check_multilibs
 	+]echo "Checking multilib configuration for [+module+]..."; \
 	$(CC_FOR_TARGET) --print-multi-lib > [+subdir+]/[+module+]/multilib.tmp 2> /dev/null; \
@@ -1271,7 +1289,7 @@ configure-stage[+id+]-[+prefix+][+module+]:
 	CFLAGS="$(CFLAGS_FOR_TARGET)"; export CFLAGS; \
 	CXXFLAGS="$(CXXFLAGS_FOR_TARGET)"; export CXXFLAGS; \
 	LIBCFLAGS="$(LIBCFLAGS_FOR_TARGET)"; export LIBCFLAGS;[+ ELSE prefix +] \
-	CFLAGS="$(STAGE[+id+]_CFLAGS)"; export CFLAGS; \
+	CFLAGS="[+ (stage-configure-flags "_CFLAGS") +]"; export CFLAGS; \
 	CXXFLAGS="$(STAGE[+id+]_CXXFLAGS)"; export CXXFLAGS;[+ IF (= (get "module") "gcc") +] \
 	GDCFLAGS="$(STAGE[+id+]_GDCFLAGS)"; export GDCFLAGS;[+ ENDIF +][+ IF prev +] \
 	LIBCFLAGS="$(STAGE[+id+]_CFLAGS)"[+ ELSE prev +] \
@@ -1821,6 +1839,15 @@ do-clean: clean-stage[+id+]
 # only possibility, but now it conflicts with no-bootstrap rules
 @if gcc-bootstrap
 [+ IF compare-target +]
+# Run the comparisons in parallel through a generated sub-makefile under
+# the jobserver.  Each failing recipe writes a separate result shard that
+# is collected after the sub-make finishes.  The comparison command is
+# written into that makefile, so double its '$' characters to survive the
+# expansion the sub-make performs when it reads them back, and name the
+# shell there, which a sub-make does not inherit.  The exit trap starts
+# with ':' because older bash does not preserve the exit status across an
+# exit trap that consists of a single command, which would report a
+# comparison failure as a success.
 [+compare-target+]:
 	@r=`${PWD_COMMAND}`; export r; \
 	s=`cd $(srcdir); ${PWD_COMMAND}`; export s; \
@@ -1829,29 +1856,54 @@ do-clean: clean-stage[+id+]
 	  exit 0; \
 	fi; \
 	: $(MAKE); $(stage); \
-	rm -f .bad_compare; \
+	compare_id=$$$$; \
+	bad_compare=.bad_compare.$$compare_id; export bad_compare; \
+	compare_makefile=[+compare-target+].$$compare_id.mk; \
+	trap ':; rm -f "$$compare_makefile" "$$bad_compare" \
+	  "$$bad_compare".*' 0; \
+	trap 'exit 1' 1 2 3 15; \
+	rm -f .bad_compare "$$bad_compare" "$$bad_compare".*; \
 	echo Comparing stages [+prev+] and [+id+]; \
         sed=`echo stage[+id+] | sed 's,^stage,,;s,.,.,g'`; \
 	files=`find stage[+id+]-* -name "*$(objext)" -print | \
 		 sed -n s,^stage$$sed-,,p`; \
-	for file in $${files} ${extra-compare}; do \
-	  f1=$$r/stage[+prev+]-$$file; f2=$$r/stage[+id+]-$$file; \
-	  if test ! -f $$f1; then continue; fi; \
-	  $(do-[+compare-target+]) > /dev/null 2>&1; \
-	  if test $$? -eq 1; then \
-	    case $$file in \
-	      @compare_exclusions@) \
-	        echo warning: $$file differs ;; \
-	      *) \
-	        echo $$file differs >> .bad_compare ;; \
-	    esac; \
-	  fi; \
-	done; \
-	if [ -f .bad_compare ]; then \
+	cmp_cmd='$(subst $$,$$$$,$(do-[+compare-target+]))'; \
+	{ \
+	  echo 'SHELL = $(SHELL)'; \
+	  echo 'all:'; \
+	  echo '.PHONY: all FORCE'; \
+	  echo 'FORCE:'; \
+	  printf '[+compare-target+]/%%: FORCE ; @'; \
+	  printf 'f1=$$$$r/stage[+prev+]-$$*; '; \
+	  printf 'f2=$$$$r/stage[+id+]-$$*; '; \
+	  printf '%s' "$$cmp_cmd"; \
+	  printf ' > /dev/null 2>&1; st=$$$$?; '; \
+	  printf 'if test $$$$st -eq 1; then '; \
+	  printf 'case $$* in '; \
+	  printf '@compare_exclusions@) echo warning: $$* differs ;; '; \
+	  printf '*) echo $$* differs >> "$$$$bad_compare.$$$$$$$$" ;; '; \
+	  printf 'esac; '; \
+	  printf 'elif test $$$$st -ne 0; then '; \
+	  printf 'echo "$$* compare: error status $$$$st" '; \
+	  printf '>> "$$$$bad_compare.$$$$$$$$"; fi\n'; \
+	  for file in $${files} ${extra-compare}; do \
+	    if test ! -f $$r/stage[+prev+]-$$file; then continue; fi; \
+	    echo "all: [+compare-target+]/$$file"; \
+	  done; \
+	} > "$$compare_makefile"; \
+	$(MAKE) -s -f "$$compare_makefile" all; compare_status=$$?; \
+	if test $$compare_status -ne 0; then \
+	  exit $$compare_status; \
+	fi; \
+	set -- "$$bad_compare".*; \
+	if test -f "$$1"; then \
 	  echo "Bootstrap comparison failure!"; \
-	  cat .bad_compare; \
+	  LC_ALL=C sort "$$bad_compare".* > "$$bad_compare" || exit 1; \
+	  cat "$$bad_compare"; \
+	  mv -f "$$bad_compare" .bad_compare; \
 	  exit 1; \
 	else \
+	  rm -f .bad_compare; \
 	  echo Comparison successful.; \
 	fi; \
 	$(STAMP) [+compare-target+][+ IF prev +]

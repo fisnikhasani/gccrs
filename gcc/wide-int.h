@@ -1948,7 +1948,6 @@ namespace wi
   struct int_traits <unsigned long>
     : public primitive_int_traits <unsigned long, false> {};
 
-#if defined HAVE_LONG_LONG
   template <>
   struct int_traits <long long>
     : public primitive_int_traits <long long, true> {};
@@ -1956,7 +1955,6 @@ namespace wi
   template <>
   struct int_traits <unsigned long long>
     : public primitive_int_traits <unsigned long long, false> {};
-#endif
 }
 
 namespace wi
@@ -2184,12 +2182,15 @@ inline void
 wi::copy (T1 &x, const T2 &y)
 {
   unsigned int len = y.get_len ();
-  HOST_WIDE_INT *xval = x.write_val (len);
-  const HOST_WIDE_INT *yval = y.get_val ();
-  unsigned int i = 0;
-  do
-    xval[i] = yval[i];
-  while (++i < len);
+  if (len > 0)
+    {
+      HOST_WIDE_INT *xval = x.write_val (len);
+      const HOST_WIDE_INT *yval = y.get_val ();
+      unsigned int i = 0;
+      do
+        xval[i] = yval[i];
+      while (++i < len);
+    }
   /* For widest_int write_val is called with an exact value, not
      upper bound for len, so nothing is needed further.  */
   if (!wi::int_traits <T1>::needs_write_val_arg)
@@ -3984,6 +3985,9 @@ namespace wi
 			     bool, unsigned int);
   unsigned int from_array (HOST_WIDE_INT *, const HOST_WIDE_INT *,
 			   unsigned int, unsigned int, bool);
+
+  wide_int bit_repeat (const wide_int_ref &, unsigned int);
+  wide_int clmul (const wide_int_ref &, const wide_int_ref &, unsigned int);
 }
 
 /* Return a PRECISION-bit integer in which the low WIDTH bits are set

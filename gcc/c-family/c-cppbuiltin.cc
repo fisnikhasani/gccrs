@@ -645,6 +645,13 @@ c_cpp_builtins_optimize_pragma (cpp_reader *pfile, tree prev_tree,
   else if (prev->x_flag_rounding_math && !cur->x_flag_rounding_math)
     cpp_undef (pfile, "__ROUNDING_MATH__");
 
+  if (!prev->x_flag_unsafe_math_optimizations
+      && cur->x_flag_unsafe_math_optimizations)
+    cpp_define_unused (pfile, "__UNSAFE_MATH_OPTIMIZATIONS__");
+  else if (prev->x_flag_unsafe_math_optimizations
+	   && !cur->x_flag_unsafe_math_optimizations)
+    cpp_undef (pfile, "__UNSAFE_MATH_OPTIMIZATIONS__");
+
   cpp_stop_forcing_token_locations (parse_in);
 }
 
@@ -1072,7 +1079,8 @@ c_cpp_builtins (cpp_reader *pfile)
 	  /* Set feature test macros for C++20.  */
 	  cpp_define (pfile, "__cpp_init_captures=201803L");
 	  cpp_define (pfile, "__cpp_generic_lambdas=201707L");
-	  cpp_define (pfile, "__cpp_designated_initializers=201707L");
+	  if (cxx_dialect <= cxx26)
+	    cpp_define (pfile, "__cpp_designated_initializers=201707L");
 	  if (cxx_dialect <= cxx20)
 	    cpp_define (pfile, "__cpp_constexpr=202002L");
 	  cpp_define (pfile, "__cpp_constexpr_in_decltype=201711L");
@@ -1099,7 +1107,7 @@ c_cpp_builtins (cpp_reader *pfile)
 	    cpp_define (pfile, "__cpp_constexpr=202211L");
 	  cpp_define (pfile, "__cpp_deduction_guides=202207L");
 	  cpp_define (pfile, "__cpp_multidimensional_subscript=202211L");
-	  cpp_define (pfile, "__cpp_named_character_escapes=202207L");
+	  cpp_define (pfile, "__cpp_named_character_escapes=202606L");
 	  cpp_define (pfile, "__cpp_static_call_operator=202207L");
 	  cpp_define (pfile, "__cpp_implicit_move=202207L");
 	  cpp_define (pfile, "__cpp_explicit_this_parameter=202110L");
@@ -1123,15 +1131,21 @@ c_cpp_builtins (cpp_reader *pfile)
 	    cpp_define (pfile, "__cpp_impl_reflection=202603L");
 	  else
 	    cpp_warn (pfile, "__cpp_impl_reflection");
-	  cpp_define (pfile, "__cpp_trivial_union=202502L");
+	  cpp_define (pfile, "__cpp_trivial_union=202603L");
 	}
       if (cxx_dialect > cxx26)
 	{
 	  /* Set feature test macros for C++29.  */
 	  cpp_define (pfile, "__cpp_pp_embed=202606L");
+	  cpp_define (pfile, "__cpp_designated_initializers=202606L");
 	}
       if (flag_concepts && cxx_dialect > cxx14)
-	cpp_define (pfile, "__cpp_concepts=202002L");
+	{
+	  if (cxx_dialect > cxx26)
+	    cpp_define (pfile, "__cpp_concepts=202606L");
+	  else
+	    cpp_define (pfile, "__cpp_concepts=202002L");
+	}
       else if (cxx_dialect >= cxx20)
 	cpp_warn (pfile, "__cpp_concepts");
       if (flag_contracts)
@@ -1145,7 +1159,7 @@ c_cpp_builtins (cpp_reader *pfile)
       else if (cxx_dialect >= cxx20)
 	cpp_warn (pfile, "__cpp_modules");
       if (flag_coroutines)
-	cpp_define (pfile, "__cpp_impl_coroutine=201902L"); /* n4861, DIS */
+	cpp_define (pfile, "__cpp_impl_coroutine=202606L"); /* n4861, DIS */
       else if (cxx_dialect >= cxx20)
 	cpp_warn (pfile, "__cpp_impl_coroutine");
       if (flag_tm)

@@ -29,7 +29,7 @@ namespace Resolver2_0 {
 class GlobbingVisitor
 {
 public:
-  GlobbingVisitor (NameResolutionContext &ctx) : ctx (ctx) {}
+  GlobbingVisitor (NameResolutionContext &ctx) : ctx (ctx), dirty (false) {}
 
   void go (AST::GlobContainer *container);
 
@@ -39,10 +39,11 @@ public:
 
   void glob_definitions (Rib &dst, Rib &src);
 
-  tl::optional<Rib::Definition> glob_definition (const Rib::Definition &def);
+  bool is_dirty () const { return dirty; }
 
 private:
   NameResolutionContext &ctx;
+  bool dirty;
 };
 
 } // namespace Resolver2_0

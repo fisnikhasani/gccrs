@@ -4,6 +4,7 @@ sinclude(../config/enable.m4)
 sinclude(../config/tls.m4)
 sinclude(../config/toolexeclibdir.m4)
 sinclude(../config/acx.m4)
+sinclude(../config/mmap.m4)
 sinclude(../config/no-executables.m4)
 sinclude(../config/lib-ld.m4)
 sinclude(../config/override.m4)
@@ -29,25 +30,9 @@ AC_ARG_WITH(cross-host,
 AC_ARG_WITH(ld,
 [  --with-ld               arrange to use the specified ld (full pathname)])
 
-if test "${srcdir}" = "."; then
-  if test -n "${with_build_subdir}"; then
-    libgcc_topdir="${srcdir}/../.."
-    with_target_subdir=
-  elif test -z "${with_target_subdir}"; then
-    libgcc_topdir="${srcdir}/.."
-  else
-    if test "${with_target_subdir}" != "."; then
-      libgcc_topdir="${srcdir}/${with_multisrctop}../.."
-    else
-      libgcc_topdir="${srcdir}/${with_multisrctop}.."
-    fi
-  fi
-else
-  libgcc_topdir="${srcdir}/.."
-fi
+libgcc_topdir="${srcdir}/.."
 AC_SUBST(libgcc_topdir)
-AC_CONFIG_AUX_DIR($libgcc_topdir)
-AC_CONFIG_HEADER(auto-target.h:config.in)
+AC_CONFIG_HEADERS([auto-target.h:config.in])
 
 AC_ARG_ENABLE(shared,
 [  --disable-shared        don't provide a shared libgcc],
@@ -229,10 +214,8 @@ AS_VAR_ARITH([long_double_type_size], [$ac_cv_sizeof_long_double \* 8])
 AC_SUBST(double_type_size)
 AC_SUBST(long_double_type_size)
 
-AC_CHECK_HEADERS(inttypes.h stdint.h stdlib.h ftw.h \
-	unistd.h sys/stat.h sys/types.h \
-	string.h strings.h memory.h sys/auxv.h sys/mman.h)
-AC_HEADER_STDC
+AC_CHECK_HEADERS(stdlib.h ftw.h string.h strings.h memory.h)
+AC_CHECK_HEADERS(ftw.h sys/mman.h)
 
 # Check for decimal float support.
 AC_CACHE_CHECK([whether decimal floating point is supported], [libgcc_cv_dfp],
@@ -480,7 +463,7 @@ powerpc*-*-linux*)
 esac
 
 case ${host} in
-s390*-*-linux*)
+s390x-*-linux*)
   AC_CACHE_CHECK([Support float16 on s390],
 		 [libgcc_cv_s390_float16],
 		 [AC_COMPILE_IFELSE(
@@ -528,21 +511,6 @@ EOF
   fi
   ;;
 esac
-
-# Check if Solaris linker support v2 linker mapfile syntax.
-# Link with -nostartfiles -nodefaultlibs since neither are present while
-# building libgcc.
-case ${host} in
-*-*-solaris2*)
-  solaris_ld_v2_maps=no
-  echo 'int main(void) {return 0;}' > conftest.c
-  echo '$mapfile_version 2' > conftest.map
-  if AC_TRY_COMMAND([${CC-cc} -nostartfiles -nodefaultlibs -Wl,-M,conftest.map -o conftest conftest.c 1>&AS_MESSAGE_LOG_FD]); then
-      solaris_ld_v2_maps=yes
-  fi
-  ;;
-esac
-AC_SUBST(solaris_ld_v2_maps)
 
 case ${host} in
 loongarch32*-*-*)

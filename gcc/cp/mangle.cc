@@ -192,7 +192,7 @@ static void mangle_call_offset (const tree, const tree);
 
 static void write_mangled_name (const tree, bool);
 static void write_encoding (const tree);
-static void write_name (tree, const int);
+static void write_name (tree, const bool = false);
 static void write_abi_tags (tree);
 static void write_unscoped_name (const tree);
 static void write_unscoped_template_name (const tree);
@@ -888,14 +888,14 @@ write_tparms_constraints (tree constraints)
     {
       tree probe = constraints;
       while (probe
-	     && !EXPR_LOCATION (probe)
+	     && !cp_expr_location (probe)
 	     && TREE_CODE (probe) == TRUTH_ANDIF_EXPR)
 	{
 	  tree op1 = TREE_OPERAND (probe, 1);
-	  probe = (EXPR_LOCATION (op1) ? op1
+	  probe = (cp_expr_location (op1) ? op1
 		   : TREE_OPERAND (probe, 0));
 	}
-      if (probe && EXPR_LOCATION (probe))
+      if (probe && cp_expr_location (probe))
 	{
 	  write_char ('Q');
 	  write_constraint_expression (probe);
@@ -914,7 +914,7 @@ write_type_constraint (tree cnst)
   gcc_checking_assert (TREE_CODE (cnst) == TEMPLATE_ID_EXPR);
 
   tree concept_decl = get_concept_check_template (cnst);
-  write_name (concept_decl, 0);
+  write_name (concept_decl);
   tree args = TREE_OPERAND (cnst, 1);
   if (TREE_VEC_LENGTH (args) > 1)
     {
@@ -936,13 +936,13 @@ write_encoding (const tree decl)
       /* For overloaded operators write just the mangled name
 	 without arguments.  */
       if (DECL_OVERLOADED_OPERATOR_P (decl))
-	write_name (decl, /*ignore_local_scope=*/0);
+	write_name (decl);
       else
 	write_source_name (DECL_NAME (decl));
       return;
     }
 
-  write_name (decl, /*ignore_local_scope=*/0);
+  write_name (decl);
   if (TREE_CODE (decl) == FUNCTION_DECL)
     {
       tree fn_type;
@@ -1086,14 +1086,14 @@ decl_mangling_context (tree decl)
 	  ::= <nested-name>
 	  ::= <local-name>
 
-   If IGNORE_LOCAL_SCOPE is nonzero, this production of <name> is
+   If IGNORE_LOCAL_SCOPE is true, this production of <name> is
    called from <local-name>, which mangles the enclosing scope
    elsewhere and then uses this function to mangle just the part
    underneath the function scope.  So don't use the <local-name>
    production, to avoid an infinite recursion.  */
 
 static void
-write_name (tree decl, const int ignore_local_scope)
+write_name (tree decl, const bool ignore_local_scope/*=false*/)
 {
   tree context;
 
@@ -2429,7 +2429,7 @@ write_local_name (tree function, const tree local_entity,
       /* Now the <entity name>.  Let write_name know its being called
 	 from <local-name>, so it doesn't try to process the enclosing
 	 function scope again.  */
-      write_name (entity, /*ignore_local_scope=*/1);
+      write_name (entity, /*ignore_local_scope=*/true);
       if (DECL_DISCRIMINATOR_P (local_entity)
 	  && !(TREE_CODE (local_entity) == TYPE_DECL
 	       && TYPE_ANON_P (TREE_TYPE (local_entity))))
@@ -2640,7 +2640,7 @@ write_type (tree type)
 		      type = CLASS_PLACEHOLDER_TEMPLATE (type);
 		      if (find_substitution (type))
 			return;
-		      write_name (type, 0);
+		      write_name (type);
 		      break;
 		    }
 		  if (AUTO_IS_DECLTYPE (type))
@@ -2739,11 +2739,6 @@ write_type (tree type)
 		++is_builtin_type;
 	      break;
 
-	    case META_TYPE:
-	      write_string ("Dm");
-	      ++is_builtin_type;
-	      break;
-
 	    case SPLICE_SCOPE:
 	      write_splice (type);
 	      break;
@@ -2775,7 +2770,13 @@ write_type (tree type)
 	      write_expression (PACK_INDEX_INDEX (type));
 	      break;
 
-	    case LANG_TYPE:
+	    case OPAQUE_TYPE:
+	      if (REFLECTION_TYPE_P (type))
+		{
+		  write_string ("Dm");
+		  ++is_builtin_type;
+		  break;
+		}
 	      /* fall through.  */
 
 	    default:
@@ -2892,7 +2893,12 @@ write_CV_qualifiers_for_type (const tree type)
   /* Note that we do not use cp_type_quals below; given "const
      int[3]", the "const" is emitted with the "int", not with the
      array.  */
-  cp_cv_quals quals = TYPE_QUALS (type);
+  cv_qualifier quals;
+  addr_space_t as;
+  std::tie (quals, as) = TYPE_QUALS (type).split ();
+
+  /* No address space support yet.  */
+  gcc_checking_assert (ADDR_SPACE_GENERIC_P (as));
 
   if (quals & TYPE_QUAL_RESTRICT)
     {
@@ -3201,7 +3207,7 @@ write_method_parms (tree parm_types, const int method_p, const tree decl)
 static void
 write_class_enum_type (const tree type)
 {
-  write_name (TYPE_NAME (type), /*ignore_local_scope=*/0);
+  write_name (TYPE_NAME (type));
 }
 
 /* Mangle a requirement REQ in a requires-expression.  */
@@ -3214,15 +3220,23 @@ write_requirement (tree req)
   switch (tree_code code = TREE_CODE (req))
     {
       /* # simple-requirement or compound-requirement
-	 <requirement> ::= X <expression> [ N ] [ R <type-constraint> ] */
+	 <requirement> ::= X <expression> [ N ] [ R <type-constraint> ]
+			   X <expression> C <expression>
+			     [ R <type-constraint> ]  */
     case SIMPLE_REQ:
     case COMPOUND_REQ:
       write_char ('X');
       write_expression (op);
       if (code == SIMPLE_REQ)
 	break;
-      if (COMPOUND_REQ_NOEXCEPT_P (req))
+      if (operand_equal_p (TREE_OPERAND (req, 2), boolean_true_node))
 	write_char ('N');
+      else if (TREE_OPERAND (req, 2) != error_mark_node
+	       && !operand_equal_p (TREE_OPERAND (req, 2), boolean_false_node))
+	{
+	  write_char ('C');
+	  write_expression (TREE_OPERAND (req, 2));
+	}
       if (tree constr = TREE_OPERAND (req, 1))
 	{
 	  write_char ('R');
@@ -3888,8 +3902,14 @@ write_expression (tree expr)
 				if (field == ce->index)
 				  break;
 				if (abi_check (21))
-				  write_expression (build_zero_cst
-						    (TREE_TYPE (field)));
+				  {
+				    tree type = TREE_TYPE (field), expr;
+				    if (REFLECTION_TYPE_P (type))
+				      expr = get_null_reflection ();
+				    else
+				      expr = build_zero_cst (type);
+				    write_expression (expr);
+				  }
 				field = DECL_CHAIN (field);
 			      }
 			  }
@@ -4063,6 +4083,10 @@ write_expression (tree expr)
 		     "use library traits instead", expr);
 	      break;
 
+	    case ERROR_MARK:
+	      if (seen_error ())
+		break;
+	      /* FALLTHROUGH */
 	    default:
 	      sorry ("mangling %C", code);
 	      break;
@@ -4075,20 +4099,38 @@ write_expression (tree expr)
       switch (code)
 	{
 	case CALL_EXPR:
-	  {
-	    tree fn = CALL_EXPR_FN (expr);
+	  if (tree fn = CALL_EXPR_FN (expr))
+	    {
+	      if (TREE_CODE (fn) == ADDR_EXPR)
+		fn = TREE_OPERAND (fn, 0);
 
-	    if (TREE_CODE (fn) == ADDR_EXPR)
-	      fn = TREE_OPERAND (fn, 0);
+	      /* Mangle a dependent name as the name, not whatever happens to
+		 be the first function in the overload set.  */
+	      if (OVL_P (fn)
+		  && type_dependent_expression_p_push (expr))
+		fn = OVL_NAME (fn);
 
-	    /* Mangle a dependent name as the name, not whatever happens to
-	       be the first function in the overload set.  */
-	    if (OVL_P (fn)
-		&& type_dependent_expression_p_push (expr))
-	      fn = OVL_NAME (fn);
-
-	    write_expression (fn);
-	  }
+	      write_expression (fn);
+	    }
+	  else
+	    switch (CALL_EXPR_IFN (expr))
+	      {
+	      /* Calls to __builtin_bswapg/__builtin_bitreverseg/__builtin_clmulg
+		 are parsed as IFN_BSWAP/IFN_BITREVERSE/IFN_CLMUL calls because
+		 we don't have those builtins but instead keywords.  Pretend
+		 they are builtin function template.  */
+	      case IFN_BSWAP:
+		write_source_name (get_identifier ("__builtin_bswapg"));
+		break;
+	      case IFN_BITREVERSE:
+		write_source_name (get_identifier ("__builtin_bitreverseg"));
+		break;
+	      case IFN_CLMUL:
+		write_source_name (get_identifier ("__builtin_clmulg"));
+		break;
+	      default:
+		gcc_unreachable ();
+	      }
 
 	  for (i = 0; i < call_expr_nargs (expr); ++i)
 	    write_expression (CALL_EXPR_ARG (expr, i));
@@ -4186,6 +4228,8 @@ write_expression (tree expr)
 		      [ <alias template-args> ] _ <type> # type alias
 		  ::= ty <type>				# type
 		  ::= dm <prefix> <unqualified-name>	# ns data member
+		  ::= da <prefix> [ <nonnegative number> ] _ # empty anon union
+							     # data member
 		  ::= un <prefix> [ <nonnegative number> ] _ # unnamed bitfld
 		  ::= ct [ <prefix> ] <unqualified-name> # class template
 		  ::= ft [ <prefix> ] <unqualified-name> # function template
@@ -4207,6 +4251,11 @@ write_reflection (tree refl)
 {
   char prefix[3];
   tree arg = reflection_mangle_prefix (refl, prefix);
+  if (strcmp (prefix, "dm") == 0
+      && DECL_NAME (arg) == NULL_TREE
+      && ANON_AGGR_TYPE_P (TREE_TYPE (arg))
+      && anon_aggr_naming_decl (TREE_TYPE (arg)) == NULL_TREE)
+    strcpy (prefix, "da");
   write_string (prefix);
   /* If there is no argument, nothing further needs to be mangled.  */
   if (arg == NULL_TREE)
@@ -4214,7 +4263,7 @@ write_reflection (tree refl)
   if (strcmp (prefix, "vl") == 0 || strcmp (prefix, "ob") == 0)
     write_expression (arg);
   else if (strcmp (prefix, "vr") == 0 || strcmp (prefix, "sb") == 0)
-    write_name (arg, 0);
+    write_name (arg);
   else if (strcmp (prefix, "fn") == 0)
     write_encoding (arg);
   else if (strcmp (prefix, "pa") == 0)
@@ -4240,7 +4289,9 @@ write_reflection (tree refl)
 	 write_template_args, it shouldn't be
 	 remembered among substitutions.  */
       write_prefix (decl_mangling_context (arg));
-      write_unqualified_name (arg);
+      if (modules_p ())
+	maybe_write_module (arg);
+      write_source_name (DECL_NAME (arg));
       tree template_info = maybe_template_info (arg);
       if (template_info)
 	write_template_args (TI_ARGS (template_info));
@@ -4256,6 +4307,21 @@ write_reflection (tree refl)
 	ctx = decl_mangling_context (TYPE_NAME (ctx));
       write_prefix (ctx);
       write_unqualified_name (arg);
+    }
+  else if (strcmp (prefix, "da") == 0)
+    {
+      int idx = 0;
+      tree ctx = decl_mangling_context (arg);
+      for (tree f = TYPE_FIELDS (ctx); f; f = DECL_CHAIN (f))
+	if (f == arg)
+	  break;
+	else if (TREE_CODE (f) == FIELD_DECL
+		 && DECL_NAME (f) == NULL_TREE
+		 && ANON_AGGR_TYPE_P (TREE_TYPE (f))
+		 && anon_aggr_naming_decl (TREE_TYPE (f)) == NULL_TREE)
+	  ++idx;
+      write_prefix (ctx);
+      write_compact_number (idx);
     }
   else if (strcmp (prefix, "un") == 0)
     {
@@ -4278,7 +4344,7 @@ write_reflection (tree refl)
 	   || strcmp (prefix, "ns") == 0)
     {
       write_prefix (decl_mangling_context (arg));
-      write_unqualified_name (arg);
+      write_unqualified_name (STRIP_TEMPLATE (arg));
     }
   else if (strcmp (prefix, "ba") == 0)
     {
@@ -4562,7 +4628,7 @@ write_template_template_arg (const tree decl)
 
   if (find_substitution (decl))
     return;
-  write_name (decl, /*ignore_local_scope=*/0);
+  write_name (decl);
   add_substitution (decl);
 }
 
@@ -5293,7 +5359,7 @@ write_guarded_var_name (const tree variable)
        casing.  */
     write_string (IDENTIFIER_POINTER (DECL_ASSEMBLER_NAME (variable)) + 2);
   else
-    write_name (variable, /*ignore_local_scope=*/0);
+    write_name (variable);
 }
 
 /* Return an identifier for the name of an initialization guard

@@ -593,7 +593,7 @@ build_simple_base_path (tree expr, tree binfo)
 	/* We don't use build_class_member_access_expr here, as that
 	   has unnecessary checks, and more importantly results in
 	   recursive calls to dfs_walk_once.  */
-	int type_quals = cp_type_quals (TREE_TYPE (expr));
+	auto type_quals = cp_type_quals (TREE_TYPE (expr));
 
 	expr = build3 (COMPONENT_REF,
 		       cp_build_qualified_type (type, type_quals),
@@ -1418,7 +1418,17 @@ add_method (tree type, tree method, bool via_using)
 	  if (losem || losef)
 	    win = losem - losef;
 	  else
-	    win = more_constrained (fn, method);
+	    {
+	      win = more_constrained (fn, method);
+	      if (win)
+		{
+		  /* The winner can't be more explicit.  */
+		  int ex = (DECL_NONCONVERTING_P (method)
+			    - DECL_NONCONVERTING_P (fn));
+		  if (ex && ex != win)
+		    win = 0;
+		}
+	    }
 	  if (win > 0)
 	    /* Leave FN in the method vec, discard METHOD.  */
 	    return false;
@@ -2309,10 +2319,11 @@ determine_primary_bases (tree t)
     }
 }
 
-/* Update the variant types of T.  */
+/* Update the variant types of T.  If UPDATE_ALIGN is true, also
+   update variant alignments from TYPE.  */
 
 void
-fixup_type_variants (tree type)
+fixup_type_variants (tree type, bool update_align /* = false */)
 {
   if (!type)
     return;
@@ -2340,9 +2351,10 @@ fixup_type_variants (tree type)
       TYPE_SIZE (variant) = TYPE_SIZE (type);
       TYPE_SIZE_UNIT (variant) = TYPE_SIZE_UNIT (type);
 
-      if (!TYPE_USER_ALIGN (variant)
-	  || TYPE_NAME (variant) == TYPE_NAME (type)
-	  || TYPE_ALIGN_RAW (variant) < TYPE_ALIGN_RAW (type))
+      if (update_align
+	  && (!TYPE_USER_ALIGN (variant)
+	      || TYPE_NAME (variant) == TYPE_NAME (type)
+	      || TYPE_ALIGN_RAW (variant) < TYPE_ALIGN_RAW (type)))
 	{
 	  TYPE_ALIGN_RAW (variant) =  TYPE_ALIGN_RAW (type);
 	  TYPE_USER_ALIGN (variant) = TYPE_USER_ALIGN (type);
@@ -2443,7 +2455,7 @@ finish_struct_bits (tree t)
     get_pure_virtuals (t);
 
   /* Fix up variants (if any).  */
-  fixup_type_variants (t);
+  fixup_type_variants (t, /*update_align=*/true);
 }
 
 /* Issue warnings about T having private constructors, but no friends,
@@ -8113,7 +8125,7 @@ finish_struct_1 (tree t)
 	       thunk base function.  */
 	    DECL_VINDEX (fndecl) = NULL_TREE;
 	  else if (TREE_CODE (DECL_VINDEX (fndecl)) != INTEGER_CST)
-	    DECL_VINDEX (fndecl) = build_int_cst (NULL_TREE, vindex);
+	    DECL_VINDEX (fndecl) = build_int_cst (integer_type_node, vindex);
 	}
     }
 
@@ -8370,6 +8382,8 @@ finish_struct (tree t, tree attributes)
 	}
       /* It also cannot be a union.  */
       ok &= NON_UNION_CLASS_TYPE_P (t);
+      if (BINFO_N_BASE_BINFOS (TYPE_BINFO (t)))
+	ok = false;
       if (!ok)
 	fatal_error (input_location, "definition of %qD does not match "
 		     "%<#include <initializer_list>%>", TYPE_NAME (t));
@@ -10750,7 +10764,7 @@ build_vtbl_initializer (tree binfo,
 	    for (i = 0; i < TARGET_VTABLE_USES_DESCRIPTORS; ++i)
 	      {
 		tree fdesc = build2 (FDESC_EXPR, vfunc_ptr_type_node,
-				     fn, build_int_cst (NULL_TREE, i));
+				     fn, build_int_cst (integer_type_node, i));
 		TREE_CONSTANT (fdesc) = 1;
 
 		CONSTRUCTOR_APPEND_ELT (*inits, NULL_TREE, fdesc);

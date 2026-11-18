@@ -331,7 +331,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       inline constexpr bool treat_as_floating_point_v<long double> = true;
 #endif // C++17
 
-#if __cplusplus > 201703L
+#ifdef __glibcxx_chrono_cxx20 // C++ >= 20
 #if __cpp_lib_concepts
     template<typename _Tp>
       inline constexpr bool is_clock_v = false;
@@ -376,7 +376,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       { };
 #endif // C++20
 
-#if __cplusplus >= 201703L // C++ >= 17
+#if __glibcxx_freestanding_chrono >= 201611L // C++ >= 17
     /** Convert a `duration` to type `ToDur` and round down.
      *
      * If the duration cannot be represented exactly in the result type,
@@ -532,7 +532,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	{
 	  // Duration only allows positive periods so we don't need to
 	  // handle negative values here (unlike __static_gcd and std::gcd).
-#if __cplusplus >= 201402L
+#if __cpp_constexpr >= 201304L // C++ >= 14
 	  do
 	    {
 	      intmax_t __rem = __m % __n;
@@ -836,7 +836,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	return __ct(__lhs).count() < __ct(__rhs).count();
       }
 
-#if __cpp_lib_three_way_comparison
+#if __cpp_lib_three_way_comparison // C++ >= 20
     template<typename _Rep1, typename _Period1,
 	     typename _Rep2, typename _Period2>
       requires three_way_comparable<common_type_t<_Rep1, _Rep2>>
@@ -910,7 +910,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     /// hours
     using hours		= duration<_GLIBCXX_CHRONO_INT64_T, ratio<3600>>;
 
-#if __cplusplus > 201703L
+#ifdef __glibcxx_chrono_cxx20 // C++ >= 20
     /// days
     using days		= duration<_GLIBCXX_CHRONO_INT64_T, ratio<86400>>;
 
@@ -957,7 +957,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	time_since_epoch() const
 	{ return __d; }
 
-#if __cplusplus > 201703L
+#ifdef __glibcxx_chrono_cxx20 // C++ >= 20
 	constexpr time_point&
 	operator++()
 	{
@@ -1030,7 +1030,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	return __time_point(duration_cast<_ToDur>(__t.time_since_epoch()));
       }
 
-#if __cplusplus > 201402L
+#if __glibcxx_freestanding_chrono >= 201611L // C++ >= 17
     /** Convert a `time_point` to type `ToDur` and round down.
      *
      * The result is the same time point as measured by the same clock, but
@@ -1162,7 +1162,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 		 const time_point<_Clock, _Dur2>& __rhs)
       { return __lhs.time_since_epoch() == __rhs.time_since_epoch(); }
 
-#if __cpp_lib_three_way_comparison
+#if __cpp_lib_three_way_comparison // C++ >= 20
     template<typename _Clock, typename _Dur1,
 	     three_way_comparable_with<_Dur1> _Dur2>
       constexpr auto
@@ -1204,7 +1204,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     /// @}
     /// @} group chrono
 
-#if _GLIBCXX_HOSTED
     // Clocks.
 
     // Why nanosecond resolution as the default?
@@ -1244,6 +1243,7 @@ _GLIBCXX_BEGIN_INLINE_ABI_NAMESPACE(_V2)
 
       static constexpr bool is_steady = false;
 
+#if _GLIBCXX_HOSTED
       static time_point
       now() noexcept;
 
@@ -1260,10 +1260,26 @@ _GLIBCXX_BEGIN_INLINE_ABI_NAMESPACE(_V2)
       static time_point
       from_time_t(std::time_t __t) noexcept
       {
-	typedef chrono::time_point<system_clock, seconds>	__from;
-	return time_point_cast<system_clock::duration>
-	       (__from(chrono::seconds(__t)));
+	using __sys_seconds = chrono::time_point<system_clock, seconds>;
+	return time_point_cast<duration>(__sys_seconds(chrono::seconds(__t)));
       }
+#else
+      static time_point now() = delete;
+
+      // Map to C API
+      [[__gnu__::__always_inline__]]
+      static long long
+      to_time_t(const time_point& __t) noexcept
+      { return duration_cast<chrono::seconds>(__t.time_since_epoch()).count(); }
+
+      [[__gnu__::__always_inline__]]
+      static time_point
+      from_time_t(long long __t) noexcept
+      {
+	using __sys_seconds = chrono::time_point<system_clock, seconds>;
+	return time_point_cast<duration>(__sys_seconds(chrono::seconds(__t)));
+      }
+#endif
     };
 
 
@@ -1282,8 +1298,12 @@ _GLIBCXX_BEGIN_INLINE_ABI_NAMESPACE(_V2)
 
       static constexpr bool is_steady = true;
 
+#if _GLIBCXX_HOSTED
       static time_point
       now() noexcept;
+#else
+      static time_point now() = delete;
+#endif
     };
 
 
@@ -1299,7 +1319,7 @@ _GLIBCXX_BEGIN_INLINE_ABI_NAMESPACE(_V2)
 
 _GLIBCXX_END_INLINE_ABI_NAMESPACE(_V2)
 
-#if __cplusplus >= 202002L
+#ifdef __glibcxx_chrono_cxx20 // C++ >= 20
     /// @addtogroup chrono
     /// @{
     template<typename _Duration>
@@ -1307,29 +1327,23 @@ _GLIBCXX_END_INLINE_ABI_NAMESPACE(_V2)
     using sys_seconds = sys_time<seconds>;
     using sys_days = sys_time<days>;
 
+    template<> struct is_clock<system_clock> : true_type { };
+    template<> inline constexpr bool is_clock_v<system_clock> = true;
+
+    template<> struct is_clock<steady_clock> : true_type { };
+    template<> inline constexpr bool is_clock_v<steady_clock> = true;
+
+#if _GLIBCXX_HOSTED
     using file_clock = ::std::filesystem::__file_clock;
 
     template<typename _Duration>
       using file_time = time_point<file_clock, _Duration>;
 
-    template<> struct is_clock<system_clock> : true_type { };
-    template<> struct is_clock<steady_clock> : true_type { };
     template<> struct is_clock<file_clock> : true_type { };
-
-    template<> inline constexpr bool is_clock_v<system_clock> = true;
-    template<> inline constexpr bool is_clock_v<steady_clock> = true;
     template<> inline constexpr bool is_clock_v<file_clock> = true;
+#endif
     /// @}
 #endif // C++20
-#elif __cplusplus >= 202002L
-    // Define a fake clock like chrono::local_t so that sys_time etc.
-    // can be used for freestanding.
-    struct __sys_t;
-    template<typename _Duration>
-      using sys_time = time_point<__sys_t, _Duration>;
-    using sys_seconds = sys_time<seconds>;
-    using sys_days = sys_time<days>;
-#endif // _GLIBCXX_HOSTED
   } // namespace chrono
 
 #ifdef __glibcxx_chrono_udls // C++ >= 14

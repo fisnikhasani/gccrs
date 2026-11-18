@@ -423,13 +423,6 @@ DefaultHIRVisitor::walk (RangeFullExpr &)
 {}
 
 void
-DefaultHIRVisitor::walk (RangeFromToInclExpr &expr)
-{
-  expr.get_from_expr ().accept_vis (*this);
-  expr.get_to_expr ().accept_vis (*this);
-}
-
-void
 DefaultHIRVisitor::walk (RangeToInclExpr &expr)
 {
   expr.get_to_expr ().accept_vis (*this);
@@ -602,6 +595,7 @@ DefaultHIRVisitor::walk (InlineAsm &expr)
 void
 DefaultHIRVisitor::walk (LlvmInlineAsm &expr)
 {
+  visit_outer_attrs (expr);
   for (auto &output : expr.outputs)
     output.expr->accept_vis (*this);
   for (auto &input : expr.inputs)
@@ -1084,6 +1078,8 @@ DefaultHIRVisitor::walk (SlicePatternItemsHasRest &items)
 {
   for (auto &lower : items.get_lower_patterns ())
     lower->accept_vis (*this);
+  if (items.has_rest_bind ())
+    items.get_rest_bind ().accept_vis (*this);
   for (auto &upper : items.get_upper_patterns ())
     upper->accept_vis (*this);
 }

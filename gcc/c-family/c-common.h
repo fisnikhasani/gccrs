@@ -112,7 +112,7 @@ enum rid
   RID_BUILTIN_SHUFFLEVECTOR,   RID_BUILTIN_CONVERTVECTOR,  RID_BUILTIN_TGMATH,
   RID_BUILTIN_HAS_ATTRIBUTE,   RID_BUILTIN_ASSOC_BARRIER,  RID_BUILTIN_STDC,
   RID_BUILTIN_COUNTED_BY_REF,  RID_BUILTIN_BSWAPG,
-  RID_BUILTIN_BITREVERSEG,
+  RID_BUILTIN_BITREVERSEG,     RID_BUILTIN_CLMULG,
   RID_DFLOAT32, RID_DFLOAT64, RID_DFLOAT128, RID_DFLOAT64X,
 
   /* TS 18661-3 keywords, in the same sequence as the TI_* values.  */
@@ -400,7 +400,7 @@ struct GTY(()) c_common_identifier {
 struct c_common_resword
 {
   const char *const word;
-  ENUM_BITFIELD(rid) const rid : 16;
+  enum rid const rid : 16;
   const unsigned int disable   : 32;
 };
 
@@ -897,7 +897,10 @@ extern bool decl_with_nonnull_addr_p (const_tree);
 extern tree c_fully_fold (tree, bool, bool *, bool = false);
 extern tree c_wrap_maybe_const (tree, bool);
 extern tree c_common_truthvalue_conversion (location_t, tree);
-extern void c_apply_type_quals_to_decl (int, tree);
+extern void c_apply_type_quals_to_decl (cv_qualifier, tree);
+inline void
+c_apply_type_quals_to_decl (qualifier_set qs, tree decl)
+{ c_apply_type_quals_to_decl (qs.cv_quals (), decl); }
 extern tree c_sizeof_or_alignof_type (location_t, tree, bool, bool, int);
 extern tree c_alignof_expr (location_t, tree);
 extern tree c_countof_type (location_t, tree);
@@ -928,7 +931,6 @@ extern tree fold_for_warn (tree);
 extern tree c_common_get_narrower (tree, int *);
 extern bool get_attribute_operand (tree, unsigned HOST_WIDE_INT *);
 extern void c_common_finalize_early_debug (void);
-extern bool c_flexible_array_member_type_p (const_tree);
 extern unsigned int c_strict_flex_array_level_of (tree);
 extern bool c_option_is_from_cpp_diagnostics (int);
 extern tree c_hardbool_type_attr_1 (tree, tree *, tree *);
@@ -976,7 +978,8 @@ extern tree pointer_int_sum (location_t, enum tree_code, tree, tree,
 			     bool = true);
 
 /* Add qualifiers to a type, in the fashion for C.  */
-extern tree c_build_qualified_type (tree, int, tree = NULL_TREE, size_t = 0);
+extern tree c_build_qualified_type (tree, qualifier_set, tree = NULL_TREE,
+				    size_t = 0);
 
 /* Build tree nodes and builtin functions common to both C and C++ language
    frontends.  */
@@ -1752,5 +1755,56 @@ namespace selftest {
   extern void c_family_tests (void);
 } // namespace selftest
 #endif /* #if CHECKING_P */
+
+/* Wrapping a template parameter in type_identity_t hides it from template
+   argument deduction.  */
+#if __cpp_lib_type_identity
+using std::type_identity_t;
+#else
+template <typename T>
+struct type_identity { typedef T type; };
+template <typename T>
+using type_identity_t = typename type_identity<T>::type;
+#endif
+
+/* RAII sentinel that saves the value of a variable, optionally
+   overrides it right away, and restores its value when the sentinel
+   id destructed.  */
+
+template <typename T>
+class temp_override
+{
+  T& overridden_variable;
+  T saved_value;
+public:
+  temp_override (T& var) : overridden_variable (var), saved_value (var) {}
+  temp_override (T& var, type_identity_t<T> overrider)
+    : overridden_variable (var), saved_value (var)
+  {
+    overridden_variable = overrider;
+  }
+  ~temp_override() { overridden_variable = saved_value; }
+};
+
+/* Object generator function for temp_override, so you don't need to write the
+   type of the object as a template argument.
+
+   Use as auto x = make_temp_override (flag); */
+
+template <typename T>
+inline temp_override<T>
+make_temp_override (T& var)
+{
+  return { var };
+}
+
+/* Likewise, but use as auto x = make_temp_override (flag, value); */
+
+template <typename T>
+inline temp_override<T>
+make_temp_override (T& var, type_identity_t<T> overrider)
+{
+  return { var, overrider };
+}
 
 #endif /* ! GCC_C_COMMON_H */

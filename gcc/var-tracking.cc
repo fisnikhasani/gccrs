@@ -376,7 +376,7 @@ struct variable
   char n_var_parts;
 
   /* What type of DV this is, according to enum onepart_enum.  */
-  ENUM_BITFIELD (onepart_enum) onepart : CHAR_BIT;
+  enum onepart_enum onepart : CHAR_BIT;
 
   /* True if this variable_def struct is currently in the
      changed_variables hash table.  */
@@ -452,7 +452,7 @@ static inline dvuid
 dv_uid (decl_or_value dv)
 {
   if (dv_is_value_p (dv))
-    return CSELIB_VAL_PTR (dv_as_value (dv))->uid;
+    return CSELIB_VAL_UID (dv_as_value (dv));
   else
     return DECL_UID (dv_as_decl (dv));
 }
@@ -1723,8 +1723,7 @@ shared_hash_find (shared_hash *vars, decl_or_value dv)
 static inline bool
 canon_value_cmp (rtx tval, rtx cval)
 {
-  return !cval
-    || CSELIB_VAL_PTR (tval)->uid < CSELIB_VAL_PTR (cval)->uid;
+  return !cval || CSELIB_VAL_UID (tval) < CSELIB_VAL_UID (cval);
 }
 
 static bool dst_can_be_shared;
@@ -4531,7 +4530,8 @@ variable_post_merge_new_vals (variable **slot, dfset_post_merge *dfpm)
 		      if (dump_file)
 			fprintf (dump_file,
 				 "Created new value %u:%u for reg %i\n",
-				 v->uid, v->hash, REGNO (node->loc));
+				 CSELIB_VAL_UID (v->val_rtx), v->hash,
+				 REGNO (node->loc));
 		    }
 
 		  var_reg_decl_set (*dfpm->permp, node->loc,
@@ -10025,7 +10025,7 @@ reemit_marker_as_note (rtx_insn *insn)
     case NOTE_INSN_BEGIN_STMT:
     case NOTE_INSN_INLINE_ENTRY:
       {
-	rtx_insn *note = NULL;
+	rtx_note *note = NULL;
 	if (cfun->debug_nonbind_markers)
 	  {
 	    note = emit_note_before (kind, insn);
@@ -10145,7 +10145,7 @@ vt_initialize (void)
 #endif
       elim = (ira_use_lra_p
 	      ? lra_eliminate_regs (reg, VOIDmode, NULL_RTX)
-	      : eliminate_regs (reg, VOIDmode, NULL_RTX));
+	      : eliminate_regs (reg, VOIDmode, nullptr));
       if (elim != reg)
 	{
 	  if (GET_CODE (elim) == PLUS)
@@ -10167,7 +10167,7 @@ vt_initialize (void)
 #endif
       elim = (ira_use_lra_p
 	      ? lra_eliminate_regs (reg, VOIDmode, NULL_RTX)
-	      : eliminate_regs (reg, VOIDmode, NULL_RTX));
+	      : eliminate_regs (reg, VOIDmode, nullptr));
       if (elim != reg)
 	{
 	  if (GET_CODE (elim) == PLUS)
@@ -10201,7 +10201,7 @@ vt_initialize (void)
 #endif
       elim = (ira_use_lra_p
 	      ? lra_eliminate_regs (reg, VOIDmode, NULL_RTX)
-	      : eliminate_regs (reg, VOIDmode, NULL_RTX));
+	      : eliminate_regs (reg, VOIDmode, nullptr));
       if (elim != reg)
 	{
 	  if (GET_CODE (elim) == PLUS)

@@ -53,7 +53,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "langhooks.h"
 #include "debug.h"
 #include "common/common-target.h"
-#include "stringpool.h"
 #include "attribs.h"
 #include "asan.h"
 #include "rtl-iter.h"
@@ -61,7 +60,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "alloc-pool.h"
 #include "toplev.h"
 #include "opts.h"
-#include "asan.h"
 #include "recog.h"
 #include "gimple-expr.h"
 
@@ -1752,8 +1750,9 @@ assemble_asm (tree asm_str)
 	}
       constraints = XALLOCAVEC (const char *, noutputs + ninputs);
       ops = XALLOCAVEC (rtx, noutputs + ninputs);
-      memset (&recog_data, 0, sizeof (recog_data));
       recog_data.n_operands = ninputs + noutputs;
+      recog_data.n_dups = 0;
+      recog_data.n_alternatives = 0;
       recog_data.is_asm = true;
       reload_completed = 0;
       cse_not_expected = 1;
@@ -1857,8 +1856,11 @@ assemble_asm (tree asm_str)
 	    recog_data.n_alternatives += (*p++ == ',');
 	}
       for (i = 0; i < recog_data.n_operands; i++)
-	recog_data.operand_type[i]
-	  = recog_data.constraints[i][0] == '=' ? OP_OUT : OP_IN;
+	{
+	  recog_data.operand_type[i]
+	    = recog_data.constraints[i][0] == '=' ? OP_OUT : OP_IN;
+	  recog_data.is_operator[i] = false;
+	}
       reload_completed = 1;
       constrain_operands (1, ALL_ALTERNATIVES);
       if (which_alternative < 0)
@@ -6685,10 +6687,7 @@ assemble_alias (tree decl, tree target)
   TREE_USED (decl) = 1;
 
   /* Allow aliases to aliases.  */
-  if (TREE_CODE (decl) == FUNCTION_DECL)
-    cgraph_node::get_create (decl)->alias = true;
-  else
-    varpool_node::get_create (decl)->alias = true;
+  symtab_node::get_create (decl)->alias = true;
 
   /* If the target has already been emitted, we don't have to queue the
      alias.  This saves a tad of memory.  */
@@ -6936,10 +6935,7 @@ make_decl_one_only (tree decl, tree comdat_group)
 
   TREE_PUBLIC (decl) = 1;
 
-  if (VAR_P (decl))
-    symbol = varpool_node::get_create (decl);
-  else
-    symbol = cgraph_node::get_create (decl);
+  symbol = symtab_node::get_create (decl);
 
   if (SUPPORTS_ONE_ONLY)
     {

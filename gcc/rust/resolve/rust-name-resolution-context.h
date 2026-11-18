@@ -253,8 +253,9 @@ public:
   CanonicalPathRecordCrateRoot (NodeId node_id, std::string seg)
     : node_id (node_id), seg (std::move (seg))
   {
-    rust_assert (Analysis::Mappings::get ().node_is_crate (node_id));
-    crate_num = Analysis::Mappings::get ().lookup_crate_num (node_id).value ();
+    rust_assert (Analysis::Mappings::get ().crate.node_is_crate (node_id));
+    crate_num
+      = Analysis::Mappings::get ().crate.lookup_crate_num (node_id).value ();
   }
 
   Resolver::CanonicalPath as_path (const NameResolutionContext &,
@@ -276,7 +277,7 @@ public:
     : CanonicalPathRecordWithParent (parent_node_id), node_id (node_id),
       seg (std::move (seg))
   {
-    rust_assert (!Analysis::Mappings::get ().node_is_crate (node_id));
+    rust_assert (!Analysis::Mappings::get ().crate.node_is_crate (node_id));
   }
 
   Resolver::CanonicalPath as_path (const NameResolutionContext &,
@@ -499,6 +500,11 @@ public:
   tl::expected<NodeId, DuplicateNameError>
   insert_globbed (Identifier name, NodeId id, Namespace ns);
 
+  // Crate are supposed to be injected before any other module because we want
+  // the name collision error to be reported on the offending module which has a
+  // real source location, this function should therefore not fail.
+  void insert_crate_in_prelude (Identifier name, NodeId id);
+
   /**
    * Run a lambda in a "scoped" context, meaning that a new `Rib` will be pushed
    * before executing the lambda and then popped. This is useful for all kinds
@@ -680,12 +686,11 @@ public:
     ResolutionBuilder (NameResolutionContext &ctx) : ctx (&ctx) {}
 
     template <typename S>
-    void set_path (const std::vector<S> &path_segments, NodeId node_id,
-		   bool has_opening_scope)
+    void set_path (const RawPath<S> &new_path, NodeId node_id)
     {
-      path = ResolutionPath (path_segments, node_id);
+      path = ResolutionPath (new_path, node_id);
       mode = ResolutionMode::Normal;
-      if (has_opening_scope)
+      if (new_path.has_opening_scope_resolution ())
 	{
 	  if (get_rust_edition () == Edition::E2015)
 	    mode = ResolutionMode::FromRoot;
@@ -696,30 +701,27 @@ public:
     }
 
     template <typename S>
-    void set_path (const std::vector<S> &path_segments, NodeId node_id,
+    void set_path (const RawPath<S> &new_path, NodeId node_id,
 		   ResolutionMode mode)
     {
-      path = ResolutionPath (path_segments, node_id);
+      path = ResolutionPath (new_path, node_id);
       this->mode = mode;
       has_path_set = true;
     }
 
     void set_path (const AST::SimplePath &path)
     {
-      set_path (path.get_segments (), path.get_node_id (),
-		path.has_opening_scope_resolution ());
+      set_path (path, path.get_node_id ());
     }
 
     void set_path (const AST::PathInExpression &path)
     {
-      set_path (path.get_segments (), path.get_node_id (),
-		path.opening_scope_resolution ());
+      set_path (path, path.get_node_id ());
     }
 
     void set_path (const AST::TypePath &path)
     {
-      set_path (path.get_segments (), path.get_node_id (),
-		path.has_opening_scope_resolution_op ());
+      set_path (path, path.get_node_id ());
     }
 
     void set_mode (ResolutionMode mode) { this->mode = mode; }
@@ -780,12 +782,12 @@ public:
 
   template <typename S, typename... Args>
   tl::optional<NamespacedDefinition>
-  resolve_path (const std::vector<S> &path_segments, ResolutionMode mode,
+  resolve_path (const RawPath<S> &path, ResolutionMode mode,
 		tl::optional<std::vector<Error> &> collect_errors,
 		Namespace ns_first, Args... ns_args)
   {
     ResolutionBuilder builder (*this);
-    builder.set_path (path_segments, UNKNOWN_NODEID, mode);
+    builder.set_path (path, UNKNOWN_NODEID, mode);
     builder.add_namespaces (ns_first, ns_args...);
     builder.set_collect_errors (collect_errors);
 
@@ -794,14 +796,13 @@ public:
 
   template <typename S, typename... Args>
   tl::optional<NamespacedDefinition>
-  resolve_path (const std::vector<S> &path_segments,
-		bool has_opening_scope_resolution,
+  resolve_path (const RawPath<S> &path,
 		tl::optional<std::vector<Error> &> collect_errors,
 		Namespace ns_first, Args... ns_args)
   {
     ResolutionBuilder builder (*this);
-    builder.set_path (path_segments, UNKNOWN_NODEID,
-		      has_opening_scope_resolution);
+    builder.set_path (path.get_segments (), path.has_opening_scope (),
+		      UNKNOWN_NODEID);
     builder.add_namespaces (ns_first, ns_args...);
     builder.set_collect_errors (collect_errors);
 
@@ -810,54 +811,25 @@ public:
 
   template <typename S, typename... Args>
   tl::optional<NamespacedDefinition>
-  resolve_path (const std::vector<S> &path_segments,
-		bool has_opening_scope_resolution, Namespace ns_first,
+  resolve_path (const RawPath<S> &path, Namespace ns_first, Args... ns_args)
+  {
+    ResolutionBuilder builder (*this);
+    builder.set_path (path, UNKNOWN_NODEID);
+    builder.add_namespaces (ns_first, ns_args...);
+
+    return builder.resolve ();
+  }
+
+  template <typename S, typename... Args>
+  tl::optional<NamespacedDefinition>
+  resolve_path (const RawPath<S> &path, ResolutionMode mode, Namespace ns_first,
 		Args... ns_args)
   {
     ResolutionBuilder builder (*this);
-    builder.set_path (path_segments, UNKNOWN_NODEID,
-		      has_opening_scope_resolution);
+    builder.set_path (path, UNKNOWN_NODEID, mode);
     builder.add_namespaces (ns_first, ns_args...);
 
     return builder.resolve ();
-  }
-
-  template <typename S, typename... Args>
-  tl::optional<NamespacedDefinition>
-  resolve_path (const std::vector<S> &path_segments, ResolutionMode mode,
-		Namespace ns_first, Args... ns_args)
-  {
-    ResolutionBuilder builder (*this);
-    builder.set_path (path_segments, UNKNOWN_NODEID, mode);
-    builder.add_namespaces (ns_first, ns_args...);
-
-    return builder.resolve ();
-  }
-
-  template <typename... Args>
-  tl::optional<NamespacedDefinition> resolve_path (const AST::SimplePath &path,
-						   Args &&...args)
-  {
-    return resolve_path (path.get_segments (),
-			 path.has_opening_scope_resolution (),
-			 std::forward<Args> (args)...);
-  }
-
-  template <typename... Args>
-  tl::optional<NamespacedDefinition>
-  resolve_path (const AST::PathInExpression &path, Args &&...args)
-  {
-    return resolve_path (path.get_segments (), path.opening_scope_resolution (),
-			 std::forward<Args> (args)...);
-  }
-
-  template <typename... Args>
-  tl::optional<NamespacedDefinition> resolve_path (const AST::TypePath &path,
-						   Args &&...args)
-  {
-    return resolve_path (path.get_segments (),
-			 path.has_opening_scope_resolution_op (),
-			 std::forward<Args> (args)...);
   }
 
   /*
@@ -902,7 +874,7 @@ private:
   bool
   should_search_prelude (const typename ForeverStack<N>::Node *current_node,
 			 const typename ForeverStack<N>::SegIterator &iterator,
-			 const std::vector<ResolutionPath::Segment> &segments);
+			 const std::vector<ResolutionPathSegment> &segments);
 
   /**
    * Resolve a path to its definition
@@ -940,7 +912,7 @@ private:
   tl::optional<typename ForeverStack<N>::Node &>
   resolve_segments (ForeverStack<N> &stack,
 		    typename ForeverStack<N>::Node &starting_point,
-		    const std::vector<ResolutionPath::Segment> &segments,
+		    const RawPath<ResolutionPathSegment> &path,
 		    typename ForeverStack<N>::SegIterator iterator,
 		    std::function<void (Usage, Definition, Namespace)>
 		      insert_segment_resolution,

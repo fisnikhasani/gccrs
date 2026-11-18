@@ -43,6 +43,15 @@
   [BF] This is the GNU68-2026-001-brief-selection GNU extension.  It
        adds support for a brief form of the selection construct.
 
+  [DR] This is the GNU68-2026-003-decimal-radices GNU extension.  It
+       adds support for using ten radix in bits denotations.
+
+  [FI] This is the GNU68-2026-004-fixed-sized-modes GNU extension.  It
+       adds support for non-cummulative sizetys of some fixed sizes
+       like `word', `single', `double', etc.
+
+  [NP] This is the GNU68-2025-006-nestable-pragmats GNU extension.
+
   The metaproduction rules, hyper-rules and hyper-alternatives
   introduced by each extension are clearly marked in the sections
   below.  You can easily search for them using the extensions tags in
@@ -82,15 +91,19 @@
 
 1.2 General metaproduction rules
 
+{ Extensions:
+  [FI] fixed sized modes. }
+
 1.2.1 Metaproduction rules of modes
 
 A) MODE :: PLAIN ; STOWED ; REF to MODE ; PROCEDURE ;
            UNITED ; MU definition of MODE ; MU application.
 B) PLAIN :: INTREAL ; boolean ; character.
 C) INTREAL :: SIZETY integral ; SIZETY real.
-D) SIZETY :: long LONGSETY ; short SHORTSETY ; EMPTY.
+D) SIZETY :: long LONGSETY ; short SHORTSETY ; FIXETY ; EMPTY.
 E) LONGSETY :: long LONGSETY ; EMPTY.
 F) SHORTSETY :: short SHORTSETY ; EMPTY.
+I) FIXETY :: word ; EMPTY.
 G) EMPTY :: .
 H) STOWED :: structured with FIELDS mode ;
              FLEXETY ROWS of MODE.
@@ -269,7 +282,7 @@ f) *NEST range :
   "variables".  The former are either a denotation or an identifier of
   some mode.  The second are identifiers of a "reference to" mode. }
 
-{ The rule f introduces a paranotion for all the constructs that
+{ The rule {f} introduces a paranotion for all the constructs that
   introduce new ranges.  }
 
 3.1 Closed clauses
@@ -536,7 +549,7 @@ i) WHETHER NEST filters EMPTY out of EMPTY{h} : WHETHER true.
     d) A
        PUB B  }
 
-{ In rule b, the 'invoke TAU's enveloped by 'INKS' represent those
+{ In rule {b}, the 'invoke TAU's enveloped by 'INKS' represent those
   modules which might need to be invoked at any module-call whose
   applied-module-indication identified a particular
   defining-module-indication, whereas those enveloped by 'INKSETY'
@@ -547,13 +560,13 @@ i) WHETHER NEST filters EMPTY out of EMPTY{h} : WHETHER true.
   that all modules now invoked will never be invoked again within
   those descendents.  }
 
-{ Rule f ensures the independence of declarations revealed by one
+{ Rule {f} ensures the independence of declarations revealed by one
   revelation; thus
 
     MODULE A = DEF PUB REAL x FED, B = DEF PUB REAL x FED;
     ACCESS A, B (x)
 
-  is not produced.  However, rule e allows a given declaration to be
+  is not produced.  However, rule {e} allows a given declaration to be
   revealed by two public accesses of the same module, as in
 
     MODULE A = DEF PUB REAL x FED;
@@ -631,11 +644,11 @@ e) NEST declaration with DECSETY without DECSETY1{49e} :
        and also{94f} token,
        NEST declaration with DECSETY3 without DECSETY1{e}.
 
-{ Rule e determines how a "NEST declaration with DECSETY without
+{ Rule {e} determines how a "NEST declaration with DECSETY without
   DECSETY1" results into two groups of declarations.  The declarations
   in 'DECSETY' are public and syntactically preceded by PUB.  The
-  declarations in 'DECSETY1 are non-public and are not marked by
-  PUB.  }
+  declarations in 'DECSETY1 are non-public and are not marked by PUB.
+  }
 
 4.2 Mode declarations
 
@@ -835,12 +848,12 @@ g) WHETHER MOIDS ravels to MOODS{g,46s} :
   mode if they have the same number of fields with the same tags and
   their modes deflex.  }
 
-{ The hyperrule f) implements a predicate that determines whether two
+{ The hyperrule {f} implements a predicate that determines whether two
   provided sets of moods are incestuous, i.e. whether they contain
   modes which are firmly related.  }
 
-{ The hyperrule g) determines whether a set of moods and
-  united modes may be ravelled.  }
+{ The hyperrule {g} determines whether a set of moods and united modes
+  may be ravelled.  }
 
 4.8 Indicators and field selectors
 
@@ -965,11 +978,11 @@ g) *module text :
 
     f) POSTLUDE close (f) }
 
-{ Note that the EMPTY (for PROPSETY) in rule f enforces that a module
-  postlude cannot contain declarations, labels or module accesses.
-  Only units are allowed.  }
+{ Note that the EMPTY (for PROPSETY) in rule {f} enforces that a
+  module postlude cannot contain declarations, labels or module
+  accesses.  Only units are allowed.  }
 
-{ Rule b ensures that a unique 'TAU' is associated with each
+{ Rule {b} ensures that a unique 'TAU' is associated with each
   module-text accessible from any given point in the program.  This is
   used to ensure that an invoke ATU' can be identified in the nest of
   all descendent constructs of any access-clause or module-text which
@@ -1370,17 +1383,21 @@ b) WHETHER MOID1 unites to MOID2{a,34i,71m} :
 
 6.5 Widening
 
+{ Extensions:
+  [FI] fixed sized modes. }
+
 6.5.1 Syntax
 
 A) BITS :: structured with
                       row of boolean field SITHETY letter aleph mode.
 B) BYTES :: structured with
                        row of character field SITHETY letter aleph mode.
-C) SITHETY :: LENGTH LENGTHETY ; SHORT SHORTHETY ; EMPTY.
+C) SITHETY :: LENGTH LENGTHETY ; SHORT SHORTHETY ; WORD ; EMPTY.
 D) LENGTH :: letter l letter o letter n letter g.
 E) SHORT :: letter s letter h letter o letter r letter t.
 F) LENGTHETY :: LENGTH LENGTHETY ; EMPTY.
 G) SHORTHETY :: SHORT SHORTHETY ; EMPTY.
+H) WORD :: letter w letter o letter r letter d.
 
 a) widened to{b,61A} SIZETY real FORM :
      MEEK{61C} SIZETY integral FORM.
@@ -1388,7 +1405,7 @@ b) widened to{61A} structured with SIZETY real field letter r letter e
            SIZETY real field letter i letter m mode FORM :
      MEEK{61C} SIZETY real FORM ;
      widened to{a} SIZETY real FORM.
-c) widened to{61A} row of boolean FORM : MEEK{61C} BIT FORM.
+c) widened to{61A} row of boolean FORM : MEEK{61C} BITS FORM.
 d) widened to{61A} row of character FORM : MEEK{61C} BYTES FORM.
 
 { Examples:
@@ -1628,22 +1645,36 @@ d) WHETHER (procedure with) shields SAFE to yin yang SAFE{73c} :
 
 8 Denotations
 
+8.0.1 Syntax
+
+a) MOID NEST denoter{5D,A341i} :
+     pragment{92a} sequence option,
+       MOID denotation{810a,811a,812a,813a,814a,815a,82a,b,c,83a,-}.
+
 8.1 Plain denotations
+
+{ Extensions:
+  [FI] fixed sized modes. }
 
 8.1.0.1 Syntax
 
-A) SIZE:: long ; short.
+A) SIZE :: long ; short ; word.
 B) *NUMERAL :: fixed point numeral ; variable point numeral ;
                floating point numeral.
 
 a) SIZE INTREAL denotation{a,80a} :
-     SIZE symbol{94d}, INTREAL, denotation{a,811a,812a}.
+     SIZE symbol{94d}, INTREAL denotation{a,811a,812a}.
 
 b) *plain denotation :
      PLAIN denotation{a,811a,812a,813a,814a} ; void denotation{815a}.
 
 { Example:
     a) LONG 0 }
+
+{ Note how rule {a} might lead to situations like `long short integral
+  denotation' or `word word integral denotation' but these will
+  eventually result in a blind alley in {80a} due to MOID not
+  generating `long short integral' nor `word word integral'. }
 
 8.1.1 Integral denotations
 
@@ -1697,7 +1728,7 @@ j) plusminus{i} : plus symbol{94c} ; mius symbol{94c}.
 
 8.1.3.1 Syntax
 
-a) boolean denotation{80a} : true{94b} symbol ; false{94b} smbol.
+a) boolean denotation{80a} : true{94b} symbol ; false{94b} symbol.
 
 { Examples:
     a) TRUE
@@ -1740,21 +1771,29 @@ a) void denotation{80a} : empty{94b} symbol.
 
 8.2 Bits denotations
 
+{ Extensions:
+  [DR] decimal radix.
+  [FI] fixed sized modes. }
+
 8.2.1 Syntax
 
-A) RADIX :: radix two ; radix four ; radix eight ; radix sixteen.
+A) RADIX :: radix two ; radix four ; radix eight ; radix ten ; radix sixteen.
 
 a) structured with row of boolean field
               LENGTH LENGTHETY letter aleph mode denotation{a,80a} :
      long{94d} symbol, structured with row of boolean field
                                   LENGTHETY letter aleph mode denotation{a,c}.
 b) structured with row of boolean field
-              SHORT SHORTHTETY letter aleph mode denotation{b,80a} :
+              SHORT SHORTHETY letter aleph mode denotation{b,80a} :
      short{94d} symbol,
        structured with row of boolean field SHORTHETY letter aleph mode denotation{b,c}.
-c) structured wih row of boolean field
+o) structured with row of boolean field
+              WORD letter aleph mode denotation{a,c} :
+     word{94d} symbol,
+       structured with row of boolean field letter aleph mode denotation{c}.
+c) structured with row of boolean field
               letter aleph mode denotation{a,b,80a} :
-     RADIX{d,e,f,g}, letter r symbol{94a}, RADIX digit{h,i,j,k} sequence.
+     RADIX{d,e,f,g}, letter r symbol{94a}, RADIX digit{h,i,j,k,n} sequence.
 d) radix two{c,A347b} : digit two{94b} symbol.
 e) radix four{c,A347b} : digit four{94b} symbol.
 f) radix eight{c,A347b} : digit eight{94b} symbol.
@@ -1763,13 +1802,15 @@ h) radix two digit{c,i} : digit zero symbol{94b} ; digit one symbol{94b}.
 i) radix four digit{c,j} :
      radix two digit{h} ; digit two symbol{94b} ;
      digit three symbol{94b}.
-j) raidx eight digit{c,k} :
+j) radix eight digit{c,n} :
      radix four digit{i} ; digit four symbol{94b} ;
      digit five symbol{94b} ; digit six symbol{94b} ;
      digit seven symbol{94b}.
+n) radix ten digit{c,k} :
+     radix eight digit{c} ; digit eight symbol{94b} ;
+     digit nine symbol{94b}.
 k) radix sixteen digit{c} :
-     radix eight digit{j} ; digit eight symbol{94b} ;
-     digit nine symbol{94b} ; letter a symbol{94a} ;
+     radix ten digit{n} ; letter a symbol{94a} ;
      letter b symbol{94a} ; letter e symbol{94a} ; letter d symbol{94a} ;
      letter e symbol{94a} ; letter f symbol{94a}.
 
@@ -1835,7 +1876,8 @@ h) *symbol : NOTION symbol{94a,b,c,d,e,f,g,h}.
 9.2.1 Syntax
 
 { Extensions:
-  [NC] nestable comments.  }
+  [NC] nestable comments.
+  [NP] nestable pragmats.}
 
 A) PRAGMENT :: pragmat ; comment.
 
@@ -1844,7 +1886,8 @@ b) PRAGMENT{a} :
      STYLE PRAGMENT symbol{94h,-},
        STYLE PRAGMENT item{c} sequence option,
        STYLE PRAGMENT symbol{94h,-} ;
-     STYLE nestable comment{d}.
+     STYLE nestable comment{d} ;
+     STYLE nestable pragmat{g}.
 c) STYLE PRAGMENT item{b} :
      character glyph{814c} ; STYLE other PRAGMENT item{d}.
 d) STYLE nestable comment{b} :
@@ -1856,6 +1899,10 @@ e) STYLE nestable comment contents{d} :
        STYLE nestable comment{d} option.
 f) STYLE nestable comment item{e} :
      character glyph{814c} ; STYLE other nestable comment item{d}.
+g) STYLE nestable pragmat{b} :
+     STYLE pragmat begin symbol@{94h,-},
+       STYLE PRAGMENT item{c} sequence option,
+       STYLE pragmat end symbol{94h,-}.
 
 { A production rule may be added for each notion designated by 'STYLE
   other PRAGMENT item' each of whose alternatives is a symbol
@@ -1873,7 +1920,8 @@ f) STYLE nestable comment item{e} :
   [MR] access symbol, module symbol, def symbol, public symbol,
        postlude symbol, formal nest symbol, egg symbol
   [US] unsafe symbol
-  [SS] brief of symbol }
+  [SS] brief of symbol
+  [FI] fixed sized modes }
 
 { This section of the Report doesn't describe syntax, but lists all
   the different symbols along with their representation in the
@@ -1892,13 +1940,18 @@ d) module symbol{49a}                   MODULE
    postlude symbol{49f}                 POSTLUDE
    formal nest symbol{56b}              NEST
    egg symbol{A6a,c}                    EGG
+   word symbol{82o}                     WORD
 f) unsafe symbol{37a}                   UNSAFE
    bold of symbol{53a}                  OF
    brief of symbol{53a}                 '
 h) bold comment begin symbol{92a}       NOTE
    bold comment end symbol{92a}         ETON
+   bold pragmat begin symbol            ORDER
+   bold pragmat end symbol              REDRO
    brief comment begin symbol{92a}      {
    brief comment end symbol{92a}        }
+   style i pragmat begin symbol         [[
+   style i pragmat end symbol           ]]
 
 10.1.1 Syntax
 
@@ -1967,12 +2020,12 @@ k) *digit symbol : DIGIT symbol{94b}.
   packets when taken in conjunction with the particular-program BEGIN
   NEST "abc" END }
 
-{ In rule a above, 'MODSETY' envelops the 'MOD's defined by al the
+{ In rule {a} above, 'MODSETY' envelops the 'MOD's defined by al the
   definition-module-packets that are being stuffed along with the
   stuffing-packet.
 
-  In rules c and d, 'MODSETY1' need only envelop the 'MOD's for those
-  modules actually accessed from within that packet.
+  In rules {c} and {d}, 'MODSETY1' need only envelop the 'MOD's for
+  those modules actually accessed from within that packet.
 
   The semantics related to packets are only defined if, for a
   collection of packets being stuffed together, all the 'MOD's

@@ -594,7 +594,7 @@
 ;;   In addition, any FFRT region that includes a load also has at least one
 ;;   instance of:
 ;;
-;;       L2: FFR = update(FFR, FFRT)  [type == no_insn]
+;;       L2: FFR = update(FFR, FFRT, <load result>)  [type == no_insn]
 ;;
 ;;   to make it clear that the region both reads from and writes to the FFR.
 ;;
@@ -702,8 +702,8 @@
   {@ [ cons: =0 , 1   ; attrs: sve_type ]
      [ w        , Utr ; sve_load_1reg   ] ldr\t%0, %1
      [ Utr      , w   ; sve_store_1reg  ] str\t%1, %0
-     [ w        , w   ; *               ] mov\t%0.d, %1.d
-     [ w        , Dn  ; *               ] << aarch64_output_sve_mov_immediate (operands[1]);
+     [ w        , w   ; sve_int_general ] mov\t%0.d, %1.d
+     [ w        , Dn  ; sve_int_general ] << aarch64_output_sve_mov_immediate (operands[1]);
   }
 )
 
@@ -741,6 +741,7 @@
      [ w        , w   ] mov\t%0.d, %1.d
      [ w        , Dn  ] << aarch64_output_sve_mov_immediate (operands[1]);
   }
+  [(set_attr "sve_type" "sve_int_general")]
 )
 
 ;; Handle memory reloads for modes that can't use LDR and STR.  We use
@@ -1150,10 +1151,13 @@
 ;; so that the FFR value is live on entry to the region and so that the FFR
 ;; value visibly changes within the region.  This is used (possibly multiple
 ;; times) in an FFRT region that includes LDFF1 or LDNF1 instructions.
-(define_insn "aarch64_update_ffr_for_load"
+(define_insn "@aarch64_update_ffr<mode>"
   [(set (reg:VNx16BI FFR_REGNUM)
-	(unspec:VNx16BI [(reg:VNx16BI FFRT_REGNUM)
-			 (reg:VNx16BI FFR_REGNUM)] UNSPEC_UPDATE_FFR))]
+	(unspec:VNx16BI
+	 [(reg:VNx16BI FFRT_REGNUM)
+	  (reg:VNx16BI FFR_REGNUM)
+	  (match_operand:SVE_ALL 0 "" "X")
+	 ] UNSPEC_UPDATE_FFR))]
   "TARGET_SVE"
   ""
   [(set_attr "type" "no_insn")]
@@ -1487,6 +1491,7 @@
 	     (unspec:SVE_PARTIAL_I
 	       [(match_operand:<SVE_PARTIAL_I:VPRED> 2 "register_operand" "Upl")
 		(match_operand:SVE_PARTIAL_I 1 "aarch64_sve_ld<fn>f1_operand" "Ut<fn>")
+		(match_operand:SVE_PARTIAL_I 4 "aarch64_maskload_else_operand")
 		(reg:VNx16BI FFRT_REGNUM)]
 	       SVE_LDFF1_LDNF1))]
 	  UNSPEC_PRED_X))]
@@ -2823,6 +2828,7 @@
 				   CONST0_RTX (<MODE>mode)));
     DONE;
   }
+  [(set_attr "sve_type" "sve_int_general")]
 )
 
 ;; Duplicate an Advanced SIMD vector to fill an SVE vector (LE version).
@@ -2901,6 +2907,7 @@
      [ w        , r ] mov\t%0.<single_type>, %<single_wx>1
      [ w        , w ] mov\t%0.<single_type>, %<single_type>1
   }
+  [(set_attr "sve_type" "sve_int_general")]
 )
 
 ;; This is used for vec_duplicate<mode>s from memory, but can also
@@ -3026,10 +3033,10 @@
 	   (match_operand:<VEL> 2 "register_operand")]
 	  UNSPEC_INSR))]
   "TARGET_SVE"
-  {@ [ cons: =0 , 1  , 2 ]
-     [ w        , Dz , w ] fmov\t%<Vetype>0, %<Vetype>2
+  {@ [ cons: =0 , 1  , 2 ; attrs: type ]
+     [ w        , Dz , w ; neon_move    ] fmov\t%<Vetype>0, %<Vetype>2
+     [ w        , Dz , r ; f_mcr        ] fmov\t%<Vetype>0, %<vccore>2
   }
-  [(set_attr "type" "neon_move")]
 )
 
 ;; Shift an SVE vector left and insert a scalar into element 0 of a zero
@@ -3041,10 +3048,10 @@
 	   (match_operand:QI 2 "register_operand")]
 	  UNSPEC_INSR))]
   "TARGET_SVE"
-  {@ [ cons: =0 , 1  , 2 ; attrs: length ]
-     [ w        , Dz , w ; 8              ] fmov\t%h0, %h2\;and\t%0.h, %0.h, #0xff
+  {@ [ cons: =0 , 1  , 2 ; attrs: length , type      ]
+     [ w        , Dz , w ; 8              , neon_move ] fmov\t%h0, %h2\;and\t%0.h, %0.h, #0xff
+     [ w        , Dz , r ; 8              , f_mcr     ] fmov\t%h0, %w2\;and\t%0.h, %0.h, #0xff
   }
-  [(set_attr "type" "neon_move")]
 )
 
 ;; Shift an SVE vector left and insert a scalar into element 0 from a memory
@@ -3147,7 +3154,8 @@
 	/* For VLA, extract the last element with a LASTB and a false
 	   predicate. */
 	rtx sel = aarch64_pfalse_reg (<VPRED>mode);
-	emit_insn (gen_extract_last_<mode> (operands[0], sel, operands[1]));
+	emit_insn (gen_extract_last_active_<mode> (operands[0], sel,
+					    operands[1]));
 	DONE;
       }
     if (!CONST_INT_P (operands[2]))
@@ -3166,7 +3174,8 @@
 	emit_insn (gen_vec_cmp<v_int_equiv><vpred> (sel, cmp, series, zero));
 
 	/* Select the element using LASTB.  */
-	emit_insn (gen_extract_last_<mode> (operands[0], sel, operands[1]));
+	emit_insn (gen_extract_last_active_<mode> (operands[0], sel,
+					    operands[1]));
 	DONE;
       }
   }
@@ -4881,13 +4890,16 @@
 ;; -------------------------------------------------------------------------
 
 ;; Unpredicated highpart multiplication.
+;; Advanced SIMD has no vector DImode high-part multiply, but SVE does.
+;; Make use of the overlap between Z and V registers to implement the V2DI
+;; optab for TARGET_SVE, in the same way as the mul<mode>3 expander above.
 (define_expand "<su>mul<mode>3_highpart"
-  [(set (match_operand:SVE_I 0 "register_operand")
-	(unspec:SVE_I
+  [(set (match_operand:SVE_I_SIMD_DI 0 "register_operand")
+	(unspec:SVE_I_SIMD_DI
 	  [(match_dup 3)
-	   (unspec:SVE_I
-	     [(match_operand:SVE_I 1 "register_operand")
-	      (match_operand:SVE_I 2 "register_operand")]
+	   (unspec:SVE_I_SIMD_DI
+	     [(match_operand:SVE_I_SIMD_DI 1 "register_operand")
+	      (match_operand:SVE_I_SIMD_DI 2 "register_operand")]
 	     MUL_HIGHPART)]
 	  UNSPEC_PRED_X))]
   "TARGET_SVE"
@@ -4898,22 +4910,22 @@
 
 ;; Predicated highpart multiplication.
 (define_insn_and_split "@aarch64_pred_<optab><mode>"
-  [(set (match_operand:SVE_I 0 "register_operand")
-	(unspec:SVE_I
+  [(set (match_operand:SVE_I_SIMD_DI 0 "register_operand")
+	(unspec:SVE_I_SIMD_DI
 	  [(match_operand:<VPRED> 1 "register_operand")
-	   (unspec:SVE_I
-	     [(match_operand:SVE_I 2 "register_operand")
-	      (match_operand:SVE_I 3 "register_operand")]
+	   (unspec:SVE_I_SIMD_DI
+	     [(match_operand:SVE_I_SIMD_DI 2 "register_operand")
+	      (match_operand:SVE_I_SIMD_DI 3 "register_operand")]
 	     MUL_HIGHPART)]
 	  UNSPEC_PRED_X))]
   "TARGET_SVE"
   {@ [ cons: =0 , 1   , %2 , 3 ; attrs: movprfx ]
-     [ w        , Upl , 0  , w ; *              ] <su>mulh\t%0.<Vetype>, %1/m, %0.<Vetype>, %3.<Vetype>
-     [ ?&w      , Upl , w  , w ; yes            ] movprfx\t%0, %2\;<su>mulh\t%0.<Vetype>, %1/m, %0.<Vetype>, %3.<Vetype>
+     [ w        , Upl , 0  , w ; *              ] <su>mulh\t%Z0.<Vetype>, %1/m, %Z0.<Vetype>, %Z3.<Vetype>
+     [ ?&w      , Upl , w  , w ; yes            ] movprfx\t%Z0, %Z2\;<su>mulh\t%Z0.<Vetype>, %1/m, %Z0.<Vetype>, %Z3.<Vetype>
   }
   "TARGET_SVE2"
   [(set (match_dup 0)
-	(unspec:SVE_I
+	(unspec:SVE_I_SIMD_DI
 	  [(match_dup 2)
 	   (match_dup 3)]
 	  MUL_HIGHPART))]
@@ -7523,7 +7535,7 @@
 	  (match_operand:SVE_I 3 "register_operand")))]
   "TARGET_SVE"
   {
-    if (aarch64_prepare_sve_int_fma (operands, PLUS))
+    if (aarch64_prepare_int_fma (operands, PLUS))
       DONE;
     operands[4] = aarch64_ptrue_reg (<VPRED>mode);
   }
@@ -7669,7 +7681,7 @@
 	    UNSPEC_PRED_X)))]
   "TARGET_SVE"
   {
-    if (aarch64_prepare_sve_int_fma (operands, MINUS))
+    if (aarch64_prepare_int_fma (operands, MINUS))
       DONE;
     operands[4] = aarch64_ptrue_reg (<VPRED>mode);
   }
@@ -7806,7 +7818,7 @@
 ;; -------------------------------------------------------------------------
 
 ;; Four-element integer dot-product with accumulation.
-(define_insn "<sur>dot_prod<mode><vsi2qi>"
+(define_insn "@<sur>dot_prod<mode><vsi2qi>"
   [(set (match_operand:SVE_FULL_SDI 0 "register_operand")
 	(plus:SVE_FULL_SDI
 	  (unspec:SVE_FULL_SDI
@@ -7881,10 +7893,10 @@
   [(set_attr "sve_type" "sve_int_dot")]
 )
 
-;; Define double widen_[su]sum as dotproduct
+;; Define double reduc_widen_[su]sum as dotproduct
 ;; Use dot product to perform double widening sum reductions by
 ;; changing += a into += (a * 1).  i.e. we seed the multiplication with 1.
-(define_expand "widen_<sur>sum<mode><vsi2qi>3"
+(define_expand "reduc_widen_<sur>sum<mode><vsi2qi>3"
   [(set (match_operand:SVE_FULL_SDI 0 "register_operand")
 	(plus:SVE_FULL_SDI
 	  (unspec:SVE_FULL_SDI
@@ -7912,7 +7924,7 @@
 ;; [SU]ABD	diff.b, p0/m, op1.b, op2.b
 ;; MOVPRFX	op0, op3	// If necessary
 ;; UDOT		op0.s, diff.b, ones.b
-(define_expand "<su>sad<vsi2qi>"
+(define_expand "<su>sad<mode><vsi2qi>"
   [(use (match_operand:SVE_FULL_SDI 0 "register_operand"))
    (USMAX:<VSI2QI> (match_operand:<VSI2QI> 1 "register_operand")
 		   (match_operand:<VSI2QI> 2 "register_operand"))
@@ -8297,7 +8309,7 @@
 	   [(match_operand:SVE_FULL_F 1 "register_operand")
 	    (match_operand:SVE_FULL_F 2 "register_operand")]
 	  FCMUL_OP))]
-  "TARGET_SVE"
+  "TARGET_SVE && !HONOR_SIGNED_ZEROS (<MODE>mode)"
 {
   rtx pred_reg = aarch64_ptrue_reg (<VPRED>mode);
   rtx gp_mode = gen_int_mode (SVE_RELAXED_GP, SImode);
@@ -8543,7 +8555,7 @@
 ;; -------------------------------------------------------------------------
 
 ;; The mode iterator enforces the target requirements.
-(define_insn "@aarch64_sve_<sve_fp_op><mode>"
+(define_insn "@aarch64_sve_<sve_fp_op><mode><mode>"
   [(set (match_operand:SVE_MATMULF 0 "register_operand")
 	(unspec:SVE_MATMULF
 	  [(match_operand:SVE_MATMULF 2 "register_operand")
@@ -8616,7 +8628,7 @@
 ;; This creates a false dependency on z0 which can result in stalls.
 ;; The zeroing will be done via a movi d0, 0 which is cheaper.
 ;;
-(define_insn "*vcond_mask_<mode><vpred>"
+(define_insn_and_rewrite "*vcond_mask_<mode><vpred>"
   [(set (match_operand:SVE_ALL 0 "register_operand")
 	(unspec:SVE_ALL
 	  [(match_operand:<VPRED> 3 "aarch64_predicate_operand")
@@ -8633,6 +8645,13 @@
      [ w        , Ufc , 0  , Upa ; *              ] fmov\t%0.<Vetype>, %3/m, #%1
      [ ?&w      , vss , w  , Upa ; yes            ] movprfx\t%0, %2\;mov\t%0.<Vetype>, %3/m, #%I1
      [ ?&w      , Ufc , w  , Upa ; yes            ] movprfx\t%0, %2\;fmov\t%0.<Vetype>, %3/m, #%1
+  }
+  "&& reload_completed
+   && aarch64_simd_or_scalar_imm_zero (operands[2], <MODE>mode)
+   && !TARGET_SVE_PREFER_ZEROING_MOVIMM"
+  {
+    emit_move_insn (operands[0], operands[2]);
+    operands[2] = copy_rtx (operands[0]);
   }
 )
 

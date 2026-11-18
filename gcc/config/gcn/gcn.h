@@ -84,6 +84,9 @@ extern const struct gcn_device_def {
   {"arch", "%{!march=*:-march=%(VALUE)}" }, \
   {"tune", "%{!mtune=*:-mtune=%(VALUE)}" }
 
+/* Assembler doesn't support '-v' option.  */
+#define ASM_V_SPEC ""
+
 /* Default target_flags if no switches specified.  */
 #ifndef TARGET_DEFAULT
 #define TARGET_DEFAULT 0
@@ -117,6 +120,7 @@ extern const struct gcn_device_def {
 
 #define DATA_ALIGNMENT(TYPE,ALIGN) ((ALIGN) > 128 ? (ALIGN) : 128)
 #define LOCAL_ALIGNMENT(TYPE,ALIGN) ((ALIGN) > 64 ? (ALIGN) : 64)
+#define LOCAL_DECL_ALIGNMENT(DECL) gcn_local_decl_alignment (DECL)
 #define STACK_SLOT_ALIGNMENT(TYPE,MODE,ALIGN) ((ALIGN) > 64 ? (ALIGN) : 64)
 #define STRICT_ALIGNMENT 1
 
@@ -412,6 +416,7 @@ enum reg_class
   AVGPR_REGS,
   ALL_VGPR_REGS,
   ALL_GPR_REGS,
+  SCALAR_SPILL_REGS,
   SRCDST_REGS,
   AFP_REGS,
   ALL_REGS,
@@ -440,6 +445,7 @@ enum reg_class
    "AVGPR_REGS",	    \
    "ALL_VGPR_REGS",	    \
    "ALL_GPR_REGS",	    \
+   "SCALAR_SPILL_REGS",	    \
    "SRCDST_REGS",	    \
    "AFP_REGS",		    \
    "ALL_REGS"		    \
@@ -576,6 +582,12 @@ enum reg_class
      0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,			   \
      0xffffffff, 0, 0, 0,						   \
      0, 0, 0, 0, 0, 0},							   \
+    /* SCALAR_SPILL_REGS.  */						   \
+    {0xffffffff, 0xffffffff, 0xffffffff, 0xf1,				   \
+     0, 0, 0, 0,							   \
+     0, 0, 0, 0,							   \
+     0,		 0xffffffff, 0xffffffff, 0xffffffff,			   \
+     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0},	   \
     /* SRCDST_REGS.  */							   \
     {0xffffffff, 0xffffffff, 0xffffffff,				   \
      0xffffffff-NAMED_REG_MASK (VCCZ_REG),				   \
@@ -597,8 +609,6 @@ enum reg_class
      0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0 }}
 
 #define REGNO_REG_CLASS(REGNO) gcn_regno_reg_class (REGNO)
-#define MODE_CODE_BASE_REG_CLASS(MODE, AS, OUTER, INDEX) \
-	 gcn_mode_code_base_reg_class (MODE, AS, OUTER, INDEX)
 #define REGNO_MODE_CODE_OK_FOR_BASE_P(NUM, MODE, AS, OUTER, INDEX) \
 	 gcn_regno_mode_code_ok_for_base_p (NUM, MODE, AS, OUTER, INDEX)
 #define INDEX_REG_CLASS VGPR_REGS
@@ -902,3 +912,6 @@ enum gcn_builtin_codes
       || M == V2SFmode || M == V2DImode || M == V2DFmode) \
    ? 2 \
    : 1)
+
+/* For switching between kernel and regular function.  */
+#define SWITCHABLE_TARGET 1

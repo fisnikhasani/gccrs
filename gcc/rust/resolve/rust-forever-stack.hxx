@@ -204,6 +204,16 @@ ForeverStack<Namespace::Values>::insert_variant (Identifier name, NodeId node)
 }
 
 template <Namespace N>
+void
+ForeverStack<N>::insert_crate_in_prelude (Identifier crate_name,
+					  NodeId extern_crate_node_id)
+{
+  auto &extern_prelude_rib = extern_prelude.rib (N);
+  auto definition = Rib::Definition::NonShadowable (extern_crate_node_id);
+  insert_inner (extern_prelude_rib, crate_name, definition);
+}
+
+template <Namespace N>
 inline void
 ForeverStack<N>::insert_lang_prelude (Identifier name, NodeId id)
 {
@@ -437,8 +447,7 @@ ForeverStack<N>::find_closest_module (Node &starting_point)
  * segments */
 static inline bool
 check_leading_kw_at_start (std::vector<Error> &collect_errors,
-			   const ResolutionPath::Segment &segment,
-			   bool condition)
+			   const ResolutionPathSegment &segment, bool condition)
 {
   if (condition)
     collect_errors.emplace_back (
@@ -454,13 +463,14 @@ check_leading_kw_at_start (std::vector<Error> &collect_errors,
 // `super` segment, we go back to the cursor's parent until we reach the
 // correct one or the root.
 template <Namespace N>
-tl::optional<typename std::vector<ResolutionPath::Segment>::const_iterator>
+tl::optional<typename std::vector<ResolutionPathSegment>::const_iterator>
 ForeverStack<N>::find_starting_point (
-  const std::vector<ResolutionPath::Segment> &segments,
+  const RawPath<ResolutionPathSegment> &path,
   std::reference_wrapper<Node> &starting_point,
   std::function<void (Usage, Definition, Namespace)> insert_segment_resolution,
   std::vector<Error> &collect_errors)
 {
+  auto &segments = path.get_segments ();
   auto iterator = segments.begin ();
 
   for (; iterator != segments.end (); iterator++)
@@ -483,6 +493,13 @@ ForeverStack<N>::find_starting_point (
 
       if (seg.is_crate_path_seg ())
 	{
+	  if (path.has_opening_scope_resolution ())
+	    {
+	      collect_errors.emplace_back (seg.locus, ErrorCode::E0433,
+					   "global paths cannot start with %qs",
+					   seg.name.c_str ());
+	      return tl::nullopt;
+	    }
 	  starting_point = root;
 	  insert_segment_resolution (Usage (seg.node_id),
 				     Definition (starting_point.get ().id), N);
@@ -610,8 +627,15 @@ tl::optional<typename ForeverStack<N>::Node &>
 ForeverStack<N>::dfs_node (ForeverStack<N>::Node &starting_point,
 			   NodeId to_find)
 {
+  if (auto found = check_cache (to_find))
+    return found;
+
   if (starting_point.id == to_find)
-    return starting_point;
+    {
+      cache (to_find, starting_point);
+
+      return starting_point;
+    }
 
   for (auto &child : starting_point.children)
     {
@@ -641,6 +665,25 @@ ForeverStack<N>::dfs_node (const ForeverStack<N>::Node &starting_point,
     }
 
   return tl::nullopt;
+}
+
+template <Namespace N>
+tl::optional<typename ForeverStack<N>::Node &>
+ForeverStack<N>::check_cache (NodeId to_find)
+{
+  auto entry = dfs_cache.find (to_find);
+
+  if (entry != dfs_cache.end ())
+    return entry->second;
+
+  return tl::nullopt;
+}
+
+template <Namespace N>
+void
+ForeverStack<N>::cache (NodeId found, typename ForeverStack<N>::Node &result)
+{
+  dfs_cache.insert ({found, result});
 }
 
 template <Namespace N>
@@ -691,7 +734,11 @@ ForeverStack<N>::stream_node (std::stringstream &stream, unsigned indentation,
   auto next = std::string (indentation + 4, ' ');
   auto next_next = std::string (indentation + 8, ' ');
 
-  stream << indent << "Node {\n"
+  std::string cursor_text = "";
+  if (node.id == cursor ().id)
+    cursor_text = "(C)";
+
+  stream << indent << "Node " << cursor_text << "{\n"
 	 << next << "is_root: " << (node.is_root () ? "true" : "false") << ",\n"
 	 << next << "is_leaf: " << (node.is_leaf () ? "true" : "false")
 	 << ",\n";
@@ -722,6 +769,10 @@ ForeverStack<N>::as_debug_string () const
   std::stringstream stream;
 
   stream_node (stream, 0, root);
+  stream << "Extern prelude \n";
+  stream_node (stream, 0, extern_prelude);
+  stream << "Lang prelude \n";
+  stream_node (stream, 0, lang_prelude);
 
   return stream.str ();
 }

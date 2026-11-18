@@ -164,21 +164,20 @@ struct DeferredOpOverload
   HirId expr_id;
   LangItem::Kind lang_item_type;
   HIR::PathIdentSegment specified_segment;
-  TyTy::TypeBoundPredicate predicate;
   HIR::OperatorExprMeta op;
+  TyTy::TyVar result_type;
 
   DeferredOpOverload (HirId expr_id, LangItem::Kind lang_item_type,
 		      HIR::PathIdentSegment specified_segment,
-		      TyTy::TypeBoundPredicate &predicate,
-		      HIR::OperatorExprMeta op)
+		      HIR::OperatorExprMeta op, TyTy::TyVar result_type)
     : expr_id (expr_id), lang_item_type (lang_item_type),
-      specified_segment (specified_segment), predicate (predicate), op (op)
+      specified_segment (specified_segment), op (op), result_type (result_type)
   {}
 
   DeferredOpOverload (const struct DeferredOpOverload &other)
     : expr_id (other.expr_id), lang_item_type (other.lang_item_type),
-      specified_segment (other.specified_segment), predicate (other.predicate),
-      op (other.op)
+      specified_segment (other.specified_segment), op (other.op),
+      result_type (other.result_type)
   {}
 
   DeferredOpOverload &operator= (struct DeferredOpOverload const &other)
@@ -187,6 +186,7 @@ struct DeferredOpOverload
     lang_item_type = other.lang_item_type;
     specified_segment = other.specified_segment;
     op = other.op;
+    result_type = other.result_type;
 
     return *this;
   }
@@ -209,7 +209,20 @@ public:
   bool lookup_type (HirId id, TyTy::BaseType **type) const;
   void clear_type (TyTy::BaseType *ty);
 
+  void mark_function_body_pending (DefId id);
+  void clear_function_body_pending (DefId id);
+  bool function_body_pending (DefId id) const;
+
   void insert_implicit_type (HirId id, TyTy::BaseType *type);
+
+  bool
+  lookup_adt_substitution (DefId id,
+			   const TyTy::SubstitutionArgumentMappings &mappings,
+			   TyTy::ADTType **type) const;
+  void
+  insert_adt_substitution (DefId id,
+			   const TyTy::SubstitutionArgumentMappings &mappings,
+			   TyTy::ADTType *type);
 
   void insert_type_by_node_id (NodeId ref, HirId id);
   bool lookup_type_by_node_id (NodeId ref, HirId *id);
@@ -239,6 +252,7 @@ public:
 
   bool
   find_matching_impl_trait_frame (const TraitReference &tref,
+				  TyTy::BaseType &self,
 				  struct ImplTraitContextFrame *find) const;
   bool have_impl_trait_context () const;
   void push_impl_trait_context (struct ImplTraitContextFrame frame);
@@ -294,8 +308,11 @@ public:
   void insert_unconstrained_check_marker (HirId id, bool status);
   bool have_checked_for_unconstrained (HirId id, bool *result);
 
-  void insert_resolved_predicate (HirId id, TyTy::TypeBoundPredicate predicate);
+  void insert_resolved_predicate (HirId id,
+				  const TyTy::TypeBoundPredicate &predicate);
   bool lookup_predicate (HirId id, TyTy::TypeBoundPredicate *result);
+  std::vector<TyTy::TypeBoundPredicate>
+  predicates_for_type (const TyTy::BaseType *receiver) const;
 
   void insert_query (HirId id);
   void query_completed (HirId id);
@@ -321,6 +338,14 @@ public:
 
   TyTy::VarianceAnalysis::CrateCtx &get_variance_analysis_ctx ();
 
+  void push_const_context (void) { const_context++; }
+  void pop_const_context (void)
+  {
+    if (const_context > 0)
+      const_context--;
+  }
+  bool const_context_p (void) { return (const_context > 0); }
+
 private:
   TypeCheckContext ();
 
@@ -329,6 +354,9 @@ private:
 
   std::map<NodeId, HirId> node_id_refs;
   std::map<HirId, TyTy::BaseType *> resolved;
+  std::map<std::pair<DefId, std::vector<HirId>>, TyTy::ADTType *>
+    adt_substitutions;
+  std::set<DefId> function_bodies_pending;
   std::vector<std::unique_ptr<TyTy::BaseType>> builtins;
   std::vector<std::pair<TypeCheckContextItem, TyTy::BaseType *>>
     return_type_stack;
@@ -370,6 +398,8 @@ private:
 
   // variance analysis
   TyTy::VarianceAnalysis::CrateCtx variance_analysis_ctx;
+
+  unsigned int const_context = 0;
 
   /** Used to resolve (interned) lifetime names to their bounding scope. */
   class LifetimeResolver

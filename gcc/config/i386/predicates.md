@@ -97,6 +97,11 @@
   (and (match_code "reg")
        (match_test "MASK_REGNO_P (REGNO (op))")))
 
+;; Return true if op is the block scale register.
+(define_special_predicate "bsr0_operand"
+  (and (match_code "reg")
+       (match_test "REGNO (op) == BSR0_REG")))
+
 ;; Match a DI, SI or HImode register operand.
 (define_special_predicate "int248_register_operand"
   (and (match_operand 0 "register_operand")
@@ -461,14 +466,6 @@
     }
 })
 
-;; Return true if size of VALUE can be stored in a sign
-;; extended immediate field.
-(define_predicate "x86_64_immediate_size_operand"
-  (and (match_code "symbol_ref")
-       (ior (not (match_test "TARGET_64BIT"))
-	    (match_test "ix86_cmodel == CM_SMALL")
-	    (match_test "ix86_cmodel == CM_KERNEL"))))
-
 ;; Return true if OP is general operand representable on x86_64.
 (define_predicate "x86_64_general_operand"
   (if_then_else (match_test "TARGET_64BIT")
@@ -817,6 +814,12 @@
        (match_code "unspec" "0")
        (match_test "XINT (XEXP (op, 0), 1) == UNSPEC_GOT")))
 
+;; Return true if OP is a PLTOFF symbol operand.
+(define_predicate "pltoff_symbol_operand"
+  (and (match_code "const")
+       (match_code "unspec" "0")
+       (match_test "XINT (XEXP (op, 0), 1) == UNSPEC_PLTOFF")))
+
 ;; Match exactly zero.
 (define_predicate "const0_operand"
   (match_code "const_int,const_double,const_vector")
@@ -877,14 +880,6 @@
   return i == 1 || i == 2 || i == 3;
 })
 
-;; Match 2, 3, 6, or 7
-(define_predicate "const2367_operand"
-  (match_code "const_int")
-{
-  HOST_WIDE_INT i = INTVAL (op);
-  return i == 2 || i == 3 || i == 6 || i == 7;
-})
-
 ;; Match 1, 2, 4, or 8
 (define_predicate "const1248_operand"
   (match_code "const_int")
@@ -927,16 +922,6 @@
 (define_predicate "const_0_to_3_operand"
   (and (match_code "const_int")
        (match_test "IN_RANGE (INTVAL (op), 0, 3)")))
-
-;; Match 0 to 4.
-(define_predicate "const_0_to_4_operand"
-  (and (match_code "const_int")
-       (match_test "IN_RANGE (INTVAL (op), 0, 4)")))
-
-;; Match 0 to 5.
-(define_predicate "const_0_to_5_operand"
-  (and (match_code "const_int")
-       (match_test "IN_RANGE (INTVAL (op), 0, 5)")))
 
 ;; Match 0 to 7.
 (define_predicate "const_0_to_7_operand"
@@ -1563,6 +1548,17 @@
        (and (match_test "TARGET_AVX")
 	    (match_code "ge,gt,uneq,unle,unlt,ltgt"))))
 
+;; SSE2 doesn't have quiet vector compare for UNLT/UNLE/UNGT/UNGE, so reject
+;; them in the packed FP vec_cmp expanders when trapping math is in effect
+;; and NaNs are honored
+
+(define_predicate "ix86_fp_vec_cmp_operator"
+  (and (match_operand 0 "comparison_operator")
+       (ior (not (match_code "unlt,unle,ungt,unge"))
+	    (match_test "TARGET_AVX")
+	    (not (match_test "flag_trapping_math"))
+	    (not (match_test "HONOR_NANS (GET_MODE (XEXP (op, 0)))")))))
+
 (define_predicate "ix86_comparison_int_operator"
   (match_code "ne,eq,ge,gt,le,lt"))
 
@@ -2040,6 +2036,30 @@
     return false;
 
   return true;
+})
+
+;; Return true if OP is a parallel for an insertps vec_select,
+;; where one of the two operands of the vec_concat is const0_operand.
+(define_predicate "insertps_parallel"
+  (and (match_code "parallel")
+       (match_code "const_int" "a"))
+{
+  int i;
+
+  if (XVECLEN (op, 0) != 4)
+    return false;
+
+  /* One element in [0..3], and the other 3 in [4..7].  */
+  bool found = false;
+  for (i = 0; i < 4; ++i)
+    if (INTVAL (XVECEXP (op, 0, i)) < 4)
+      {
+	if (found)
+	  return false;
+	found = true;
+      }
+
+  return found;
 })
 
 ;; Return true if OP is a const vector with duplicate value.

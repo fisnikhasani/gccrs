@@ -1,3 +1,52 @@
+2026-11-10  Arsen Arsenović  <aarsenovic@baylibre.com>
+
+	* dummy-frontend.cc (tree_type_to_jit_type):Update to use new
+	qualifier_set APIs.
+
+2026-10-20  Achim Gratz  <Achim.Gratz@Stromeko.DE>
+	    Zhongteng Gui  <dragon-archer@outlook.com>
+
+	* Make-lang.in: Treat Cygwin like MinGW.
+	(SHARED_PFX): New variable, default to lib, set to cyg for
+	Cygwin targets.
+
+2026-10-20  Zhongteng Gui  <dragon-archer@outlook.com>
+
+	PR lto/115300
+	* Make-lang.in (LIBGCCJIT_DEF_FILE): New variable, dynamically
+	generated from libgccjit.exports.
+	(LIBGCCJIT_EXTRA_OPTS): Add LIBGCCJIT_DEF_FILE and disable
+	automatic exports.
+	(libgccjit): Add LIBGCCJIT_DEF_FILE to the link dependencies.
+	(jit.mostlyclean): Remove LIBGCCJIT_DEF_FILE and its temporary
+	file.
+
+2026-10-09  Zhongteng Gui  <dragon-archer@outlook.com>
+
+	PR jit/125229
+	* Make-lang.in: Seperate conditions for JIT_LDFLAGS and
+	LIBGCCJIT_EXTRA_OPTS, fixed special condition where host
+	is Darwin and target is MinGW, existing special handling
+	for JIT_LDFLAGS on Darwin hosts will also be effective.
+
+2026-10-01  Guillaume Gomez  <contact@guillaume-gomez.fr>
+
+	* Make-lang.in: Compile new attr-handlers.cc file
+	* dummy-frontend.cc: (handle_leaf_attribute, handle_const_attribute)
+	(handle_pure_attribute, handle_novops_attribute)
+	(handle_nothrow_attribute, handle_type_generic_attribute)
+	(handle_returns_twice_attribute, ignore_attribute)
+	(handle_fnspec_attribute, handle_visibility_attribute)
+	(handle_always_inline_attribute, handle_noinline_attribute)
+	(handle_weak_attribute, handle_target_attribute)
+	(handle_used_attribute, handle_alias_ifunc_attribute)
+	(handle_alias_attribute): Move to `attr-handlers.cc`.
+
+2026-08-01  Jakub Jelinek  <jakub@redhat.com>
+
+	* jit-recording.cc (recording::context::set_bool_option): Remove
+	useless "? true : false".
+
 2026-06-17  Antoni Boucher  <bouanto@zoho.com>
 	    Robert Zakrzewski  <robert.zakrzewski1@stellantis.com>
 

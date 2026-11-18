@@ -581,7 +581,7 @@ CallExpr::CallExpr (Analysis::NodeMapping mappings,
 
 CallExpr::CallExpr (CallExpr const &other)
   : ExprWithoutBlock (other), function (other.function->clone_expr ()),
-    locus (other.locus)
+    const_argument_indexes (other.const_argument_indexes), locus (other.locus)
 /*, params(other.params),*/ {
   params.reserve (other.params.size ());
   for (const auto &e : other.params)
@@ -593,6 +593,7 @@ CallExpr::operator= (CallExpr const &other)
 {
   ExprWithoutBlock::operator= (other);
   function = other.function->clone_expr ();
+  const_argument_indexes = other.const_argument_indexes;
   locus = other.locus;
 
   params.reserve (other.params.size ());
@@ -668,7 +669,7 @@ ClosureParam::ClosureParam (std::unique_ptr<Pattern> param_pattern,
 {}
 
 ClosureParam::ClosureParam (ClosureParam const &other)
-  : pattern (other.pattern->clone_pattern ())
+  : pattern (other.pattern->clone_pattern ()), locus (other.locus)
 {
   // guard to protect from null pointer dereference
   if (other.pattern != nullptr)
@@ -692,6 +693,8 @@ ClosureParam::operator= (ClosureParam const &other)
   else
     type = nullptr;
 
+  locus = other.locus;
+
   return *this;
 }
 
@@ -714,6 +717,7 @@ ClosureExpr::ClosureExpr (ClosureExpr const &other)
   expr = other.expr->clone_expr ();
   params = other.params;
   has_move = other.has_move;
+  locus = other.locus;
 }
 
 ClosureExpr &
@@ -725,6 +729,7 @@ ClosureExpr::operator= (ClosureExpr const &other)
   expr = other.expr->clone_expr ();
   params = other.params;
   has_move = other.has_move;
+  locus = other.locus;
 
   return *this;
 }
@@ -929,29 +934,6 @@ RangeToExpr::operator= (RangeToExpr const &other)
 RangeFullExpr::RangeFullExpr (Analysis::NodeMapping mappings, location_t locus)
   : RangeExpr (std::move (mappings), locus)
 {}
-
-RangeFromToInclExpr::RangeFromToInclExpr (Analysis::NodeMapping mappings,
-					  std::unique_ptr<Expr> range_from,
-					  std::unique_ptr<Expr> range_to,
-					  location_t locus)
-  : RangeExpr (std::move (mappings), locus), from (std::move (range_from)),
-    to (std::move (range_to))
-{}
-
-RangeFromToInclExpr::RangeFromToInclExpr (RangeFromToInclExpr const &other)
-  : RangeExpr (other), from (other.from->clone_expr ()),
-    to (other.to->clone_expr ())
-{}
-
-RangeFromToInclExpr &
-RangeFromToInclExpr::operator= (RangeFromToInclExpr const &other)
-{
-  RangeExpr::operator= (other);
-  from = other.from->clone_expr ();
-  to = other.to->clone_expr ();
-
-  return *this;
-}
 
 RangeToInclExpr::RangeToInclExpr (Analysis::NodeMapping mappings,
 				  std::unique_ptr<Expr> range_to,

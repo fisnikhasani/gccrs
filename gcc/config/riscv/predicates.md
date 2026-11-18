@@ -67,7 +67,7 @@
 
 (define_predicate "movcc_operand"
   (if_then_else (match_test "TARGET_SFB_ALU || TARGET_XTHEADCONDMOV
-			     || TARGET_ZICOND_LIKE")
+			     || TARGET_ZICOND")
 		(match_operand 0 "sfb_alu_operand")
 		(match_operand 0 "arith_operand")))
 
@@ -425,6 +425,11 @@
   (and (match_code "const_int")
        (match_test "SINGLE_BIT_MASK_OPERAND (~UINTVAL (op))")))
 
+(define_predicate "arith_or_single_bit_operand"
+  (ior (match_operand 0 "arith_operand")
+       (and (match_test "TARGET_ZBS")
+	    (match_operand 0 "single_bit_mask_operand"))))
+
 (define_predicate "arith_or_mode_mask_or_zbs_operand"
   (ior (match_operand 0 "arith_operand")
        (and (match_test "TARGET_ZBS")
@@ -742,6 +747,7 @@
 ;; Shadow stack operands only allow x1, x5 registers
 (define_predicate "x1x5_operand"
   (and (match_operand 0 "register_operand")
+       (match_test "GET_CODE (op) == REG")
        (match_test "REGNO (op) == RETURN_ADDR_REGNUM
 		    || REGNO (op) == T0_REGNUM")))
 
@@ -790,3 +796,7 @@
 (define_predicate "ads_extract_size_imm_di"
   (and (match_code "const_int")
 	   (match_test "IN_RANGE (INTVAL (op), 1, 64)")))
+
+(define_predicate "riscv_atomic_memory_operand"
+  (and (match_code "mem")
+       (match_test "register_operand (XEXP (op, 0), Pmode)")))

@@ -1284,11 +1284,19 @@ gimplify_bind_expr (tree *expr_p, gimple_seq *pre_p)
 	      && DECL_CONTEXT (t) == current_function_decl
 	      && TREE_USED (t)
 	      && (attr = lookup_attribute ("omp allocate", DECL_ATTRIBUTES (t)))
-		 != NULL_TREE)
+		 != NULL_TREE
+	      /* In C++, bad attributes are marked instead of removed.  */
+	      && TREE_PURPOSE (TREE_VALUE (attr)) != error_mark_node)
 	    {
 	      gcc_assert (!DECL_HAS_VALUE_EXPR_P (t));
 	      tree alloc = TREE_PURPOSE (TREE_VALUE (attr));
 	      tree align = TREE_VALUE (TREE_VALUE (attr));
+	      /* The C++ front end smuggles a location through the chain field,
+		 this conflicts with Fortran handling, clear it.  */
+	      if (TREE_CHAIN (TREE_VALUE (attr)) != NULL_TREE
+		  && TREE_CODE (TREE_CHAIN (TREE_VALUE (attr))) == NOP_EXPR)
+		TREE_CHAIN (TREE_VALUE (attr)) = NULL_TREE;
+
 	      /* Allocate directives that appear in a target region must specify
 		 an allocator clause unless a requires directive with the
 		 dynamic_allocators clause is present in the same compilation
@@ -2113,7 +2121,7 @@ gimplify_decl_expr (tree *stmt_p, gimple_seq *seq_p)
 	     since __builtin_clear_padding will take the address of the
 	     variable.  As a result, if a long double/_Complex long double
 	     variable will spilled into stack later, its padding is 0XFE.  */
-	  if (flag_auto_var_init == AUTO_INIT_PATTERN
+	  if ((flag_auto_var_init & ~AUTO_INIT_CXX26) == AUTO_INIT_PATTERN
 	      && !is_gimple_reg (decl)
 	      && clear_padding_type_may_have_padding_p (TREE_TYPE (decl)))
 	    gimple_add_padding_init_for_auto_var (decl, is_vla, seq_p);
@@ -3153,12 +3161,19 @@ canonicalize_component_ref (tree *expr_p)
 #ifdef ENABLE_TYPES_CHECKING
       tree old_type = TREE_TYPE (expr);
 #endif
-      int type_quals;
+      auto type_quals = TYPE_QUALS (type);
+      gcc_checking_assert (/* Fields should lack address space
+			      qualification.  */
+			   ADDR_SPACE_GENERIC_P (type_quals.addr_space ()));
 
       /* We need to preserve qualifiers and propagate them from
 	 operand 0.  */
-      type_quals = TYPE_QUALS (type)
-	| TYPE_QUALS (TREE_TYPE (TREE_OPERAND (expr, 0)));
+      addr_space_t op_as;
+      cv_qualifier op_cv;
+      std::tie (op_cv, op_as)
+	= TYPE_QUALS (TREE_TYPE (TREE_OPERAND (expr, 0))).split ();
+      type_quals |= op_cv;
+      type_quals.set_as (op_as);
       if (TYPE_QUALS (type) != type_quals)
 	type = build_qualified_type (TYPE_MAIN_VARIANT (type), type_quals);
 
@@ -3359,6 +3374,13 @@ recalculate_side_effects (tree t)
 
     case tcc_constant:
       /* No side-effects.  */
+      return;
+
+    case tcc_declaration:
+      /* These can have side-effects if TREE_THIS_VOLATILE,
+	 but those should be set elsewhere, not in
+	 recalculate_side_effects.  Can be triggered e.g. if
+	 a comparison is folded into one of its operands.  */
       return;
 
     default:
@@ -8471,7 +8493,7 @@ gimplify_target_expr (tree *expr_p, gimple_seq *pre_p, gimple_seq *post_p)
       if (var_needs_auto_init_p (temp) && VOID_TYPE_P (TREE_TYPE (init)))
 	{
 	  gimple_add_init_for_auto_var (temp, flag_auto_var_init, &init_pre_p);
-	  if (flag_auto_var_init == AUTO_INIT_PATTERN
+	  if ((flag_auto_var_init & ~AUTO_INIT_CXX26) == AUTO_INIT_PATTERN
 	      && !is_gimple_reg (temp)
 	      && clear_padding_type_may_have_padding_p (TREE_TYPE (temp)))
 	    gimple_add_padding_init_for_auto_var (temp, is_vla, &init_pre_p);
@@ -10147,6 +10169,8 @@ build_omp_iterators_loops (tree *list_p, gimple_seq *loops_seq_p)
 	{
 	  /* Handle dynamic sizes.  */
 	  sorry ("dynamic iterator sizes not implemented yet");
+	  OMP_CLAUSE_ITERATORS (c) = NULL_TREE;
+	  continue;
 	}
 
       /* BEFORE LOOP:  */
@@ -14829,7 +14853,23 @@ gimplify_scan_omp_clauses (tree *list_p, gimple_seq *pre_p,
 	case OMP_CLAUSE_WORKER:
 	case OMP_CLAUSE_VECTOR:
 	  if (OMP_CLAUSE_OPERAND (c, 0)
-	      && !is_gimple_min_invariant (OMP_CLAUSE_OPERAND (c, 0)))
+	      && TREE_CODE (OMP_CLAUSE_OPERAND (c, 0)) == TREE_LIST)
+	    {
+	      for (tree t = OMP_CLAUSE_OPERAND (c, 0); t; t = TREE_CHAIN (t))
+		if (!is_gimple_min_invariant (TREE_VALUE (t)))
+		  {
+		    if (error_operand_p (TREE_VALUE (t)))
+		      {
+			remove = true;
+			break;
+		      }
+		    TREE_VALUE (t)
+		      = get_initialized_tmp_var (TREE_VALUE (t), pre_p,
+						 NULL, true);
+		  }
+	    }
+	  else if (OMP_CLAUSE_OPERAND (c, 0)
+		   && !is_gimple_min_invariant (OMP_CLAUSE_OPERAND (c, 0)))
 	    {
 	      if (error_operand_p (OMP_CLAUSE_OPERAND (c, 0)))
 		{
@@ -14877,9 +14917,9 @@ gimplify_scan_omp_clauses (tree *list_p, gimple_seq *pre_p,
 	case OMP_CLAUSE_SEQ:
 	case OMP_CLAUSE_INDEPENDENT:
 	case OMP_CLAUSE_MERGEABLE:
+	case OMP_CLAUSE_MESSAGE:
 	case OMP_CLAUSE_PROC_BIND:
 	case OMP_CLAUSE_SAFELEN:
-	case OMP_CLAUSE_SIMDLEN:
 	case OMP_CLAUSE_NOGROUP:
 	case OMP_CLAUSE_THREADS:
 	case OMP_CLAUSE_SIMD:
@@ -14891,6 +14931,15 @@ gimplify_scan_omp_clauses (tree *list_p, gimple_seq *pre_p,
 	case OMP_CLAUSE_USE:
 	case OMP_CLAUSE_DESTROY:
 	case OMP_CLAUSE_DEVICE_TYPE:
+	  break;
+
+	case OMP_CLAUSE_SIMDLEN:
+	  if (OMP_CLAUSE_SIMDLEN_TYPE (c))
+	    {
+	      remove = true;
+	      sorry_at (OMP_CLAUSE_LOCATION (c),
+			"%<simdlen%> clause with %<scaled%> modifier");
+	    }
 	  break;
 
 	case OMP_CLAUSE_DYN_GROUPPRIVATE:
@@ -16432,6 +16481,7 @@ end_adjust_omp_map_clause:
 	case OMP_CLAUSE_EXCLUSIVE:
 	case OMP_CLAUSE_USES_ALLOCATORS:
 	case OMP_CLAUSE_DEVICE_TYPE:
+	case OMP_CLAUSE_MESSAGE:
 	  break;
 
 	case OMP_CLAUSE_NOHOST:
@@ -18755,6 +18805,12 @@ computable_teams_clause (tree *tp, int *walk_subtrees, void *)
 static void
 optimize_target_teams (tree target, gimple_seq *pre_p)
 {
+  /* If the NUM_TEAMS clause is on TARGET, assume that the front end already
+     took care of the target-consistent clauses.  Note that user code cannot
+     specify 'num_teams' on 'target', only on 'teams'.  */
+  if (omp_find_clause (OMP_TARGET_CLAUSES (target), OMP_CLAUSE_NUM_TEAMS))
+    return;
+
   tree body = OMP_BODY (target);
   tree teams = walk_tree (&body, find_omp_teams, NULL, NULL);
   tree num_teams_lower = NULL_TREE;
@@ -18990,6 +19046,39 @@ gimplify_omp_workshare (tree *expr_p, gimple_seq *pre_p)
       stmt = gimple_build_omp_scope (body, OMP_CLAUSES (expr));
       break;
     case OMP_TARGET:
+      /* Handle 'device_type(nohost)'.  */
+      if (tree c = omp_find_clause (OMP_CLAUSES (expr), OMP_CLAUSE_DEVICE_TYPE))
+	if (OMP_CLAUSE_DEVICE_TYPE_KIND (c) == OMP_CLAUSE_DEVICE_TYPE_NOHOST)
+	  {
+	    location_t loc = gimple_location (body);
+	    tree fn = builtin_decl_explicit (BUILT_IN_OMP_IS_INITIAL_DEVICE);
+	    fn = build_call_expr_loc (loc, fn, 0);
+	    tree err = builtin_decl_explicit (BUILT_IN_GOMP_ERROR);
+	    const char *str = "Executing device-type 'nohost' target region "
+			      "on the host";
+	    tree msg = build_string_literal (strlen (str) + 1, str);
+	    tree msglen = build_int_cst (size_type_node, -2);
+	    err = build_call_expr_loc (loc, err, 2, msg, msglen);
+	    tree l1 = create_artificial_label (UNKNOWN_LOCATION);
+	    tree l2 = create_artificial_label (UNKNOWN_LOCATION);
+	    tree l3 = create_artificial_label (UNKNOWN_LOCATION);
+
+	    gimple_seq new_body = NULL;
+
+	    gimplify_expr (&fn, &new_body, NULL, is_gimple_val, fb_rvalue);
+	    gcond *cond = gimple_build_cond (NE_EXPR, fn,
+					     build_int_cst (TREE_TYPE (fn), 0),
+					     l1, l2);
+	    gimplify_seq_add_stmt (&new_body, cond);
+	    gimplify_seq_add_stmt (&new_body, gimple_build_label (l1));
+	    gimplify_and_add (err, &new_body);
+	    gimplify_seq_add_stmt (&new_body, gimple_build_goto (l3));
+	    gimplify_seq_add_stmt (&new_body, gimple_build_label (l2));
+	    gimple_seq_add_seq (&new_body, body);
+	    gimplify_seq_add_stmt (&new_body, gimple_build_label (l3));
+	    body = gimple_build_bind (NULL_TREE, new_body, make_node (BLOCK));
+	    gimple_set_location (body, loc);
+	  }
       stmt = gimple_build_omp_target (body, GF_OMP_TARGET_KIND_REGION,
 				      OMP_CLAUSES (expr), iterator_loops_seq);
       break;

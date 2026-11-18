@@ -28,6 +28,20 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/* The routines for handling filenames was copied from the GnuCOBOL
+   project.  We thank Simon Sobisch for suggesting that was an easy way
+   of making sure the necessary functionality matches in the two
+   compilers.  Their source code module contained the following notice:
+
+   Copyright (C) 2002-2012, 2014-2025 Free Software Foundation, Inc.
+   Written by Keisuke Nishida, Roger While, Simon Sobisch, Ron Norman
+
+   The GnuCOBOL runtime library is free software: you can redistribute it
+   and/or modify it under the terms of the GNU Lesser General Public License
+   as published by the Free Software Foundation, either version 3 of the
+   License, or (at your option) any later version.
+ */
+
 #include <err.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -50,6 +64,7 @@
 #include "io.h"
 #include "common-defs.h"
 #include "gcobolio.h"
+#include "cobol-endian.h"
 #include "libgcobol.h"
 #include "gfileio.h"
 #include "charmaps.h"
@@ -189,6 +204,459 @@ handle_errno(cblc_file_t *file, const char *function, const char *msg)
   return retval;
   }
 
+/* Start of copied code ***************************************
+
+   In order to provide compatibility with how GnuCOBOL treats filenames, which
+   in turn was driven by how MicroFocus/RocketSoftware does so, we simply
+   lifted the GnuCOBOL handler and incorporated it here. */
+
+enum {COB_FILE_MAX=4096};
+#define SLASH_CHAR '/'
+#define SLASH_STR "/"
+
+static char file_open_env[COB_FILE_MAX+2];
+static char file_open_buff[COB_FILE_MAX+2];
+static char file_open_name[COB_FILE_MAX+2];
+
+static const char	* const prefix[] = { "DD_", "dd_", "" };
+#define NUM_PREFIX	sizeof (prefix) / sizeof (char *)
+
+typedef struct
+  {
+  bool cob_env_mangle;
+  char *cob_file_path;
+  bool flag_filename_mapping;
+  } COBSET;
+static COBSET cobset{false, nullptr, true};
+static COBSET *cobsetptr = &cobset;
+#define COB_MODULE_PTR cobsetptr
+
+/* Check for DD_xx, dd_xx, xx environment variables for a filename
+   or a part specified with 'src';
+   returns either the value or NULL if not found in the environment
+   Note: MF only checks for xx if the variable started with a $,
+	 ACUCOBOL only checks for xx in general ... */
+static char *
+cob_chk_file_env(const char *src)
+  {
+  char    *p;
+  char    *q;
+  char    *s;
+  size_t   i;
+
+  /* GC-sanity rule: no environment handling if src starts with period */
+  if(*src == '.')
+    {
+    return NULL;
+    }
+
+  /* no mapping if filename begins with a slash [externally checked], hyphen or digits
+     (taken from "Programmer's Guide to File Handling, Chapter 2: File Naming") */
+  switch(*file_open_name)
+    {
+    case '-':
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
+      return NULL;
+    default:
+      break;
+    }
+
+  q = strdup(src);
+  s = q;
+  assert(s);
+
+  if(cobsetptr->cob_env_mangle)
+    {
+    for (i = 0; i < strlen(s); ++i)
+      {
+      if(!isalnum ((int)s[i]))
+        {
+        s[i] = '_';
+        }
+      }
+    }
+  else
+    {
+    for (i = 0; i < strlen(s); ++i)
+      {
+      if(s[i] == '.')
+        {
+        s[i] = '_';
+        }
+      }
+    }
+  p = NULL;
+  for (i = 0; i < NUM_PREFIX; ++i)
+    {
+    snprintf(file_open_env, (size_t)COB_FILE_MAX, "%s%s", prefix[i], s);
+    file_open_env[COB_FILE_MAX] = 0;
+    p = getenv (file_open_env);
+    if(p && *p)
+      {
+      /* Drop surrounding quotes, some implementations need those to
+         support filename with embedded spaces (like MF),
+         while others (like GC before 3.2) don't like them */
+      if(p[0] == '"'
+       || p[0] == '\'')
+        {
+        const size_t len = strlen(p) - 1;
+        if(len && p[len] == p[0])
+          {
+          p[len] = 0;
+          p++;
+          }
+        }
+      break;
+      }
+    p = NULL;
+    }
+  free(q);
+  return p;
+  }
+
+/* checks if 'src' containes a / or \ */
+static int
+has_directory_separator (char *src)
+  {
+  for (; *src; src++)
+    {
+    if(*src == '/' || *src == '\\')
+      {
+      return 1;
+      }
+    }
+  return 0;
+  }
+
+/* checks if 'src' looks like starting with name */
+static int
+looks_absolute (const char *src)
+  {
+  /* Ignore surrounding quotes, some implementations need those to
+     support filename with embedded spaces (like MF),
+     while others (like GC before 3.2) don't like them */
+  if(src[0] == '"' || src[0] == '\'')
+    {
+    src++;
+    }
+
+  /* no file path adjustment if filename is absolute
+     because it begins with a slash (or win-disk-drive) */
+  if(src[0] == '/' || src[0] == '\\' )
+    {
+    return 1;
+    }
+  return 0;
+  }
+
+/* checks for special ACUCOBOL-case: file that start with hyphen [note: -P not supported]
+   no translation at all, name starts after first non-space */
+static int
+has_acu_hyphen (const char *src)
+  {
+  if( src[0] == '-'
+      && (src[1] == 'F' || src[1] == 'D' || src[1] == 'f' || src[1] == 'd')
+      && isspace((uint8_t)src[2]))
+    {
+    return 1;
+    }
+  return 0;
+  }
+
+/* do acu translation, 'src' may not be file_open_buff! */
+static void
+do_acu_hyphen_translation (char *src)
+  {
+  size_t len;
+  /* maybe store device type to "adjust locking rules" */
+  /* find first non-space and return it in the original storage  */
+  for (src = src + 3; *src && isspace ((uint8_t)*src); src++);
+
+  len = strlen(src);
+  if(len >= COB_FILE_MAX)
+    {
+    len = COB_FILE_MAX;
+    }
+
+  /* Drop surrounding quotes, some implementations need those to
+     support filename with embedded spaces (like MF),
+     while others (like GC before 3.2) don't like them */
+  if(   (src[0] == '"' || src[0] == '\'')
+     && (src[0] == src[len - 1]))
+    {
+    src++;
+    len -= 2;
+    }
+  memcpy(file_open_buff, src, len);
+  file_open_buff[len + 1] = 0;
+
+  // We know that len is no more than 4096 at this writing.  That means
+  // the file_open_buff[4098] has no more than 4096 characters.  That means
+  // it is absolutely safe to copy file_open_buff into file_open_name[4098].
+  strcpy(file_open_name, file_open_buff);
+  }
+
+static void
+prepend_file_path (const char *path, const char *name)
+  {
+  size_t path_len = strlen (path);
+  size_t name_len = strlen (name);
+  size_t len = 0;
+
+  if( path_len > COB_FILE_MAX )
+    {
+    path_len = COB_FILE_MAX;
+    }
+
+  memcpy (file_open_buff, path, path_len);
+  len = path_len;
+
+  if( len < COB_FILE_MAX )
+    {
+    file_open_buff[len++] = SLASH_CHAR;
+    }
+
+  if( name_len > COB_FILE_MAX - len )
+    {
+    name_len = COB_FILE_MAX - len;
+    }
+
+  memcpy (file_open_buff + len, name, name_len);
+  len += name_len;
+
+  file_open_buff[len] = '\0';
+
+  memcpy (file_open_name, file_open_buff, len + 1);
+  }
+
+/* adjust static buffer file_open_name per applicable mapping rules */
+static void
+cob_chk_file_mapping (void)
+  {
+  const char    *p;
+  char    *src;
+  char    *dst;
+  char    *saveptr;
+  char    *orig;
+  unsigned int  dollar;
+
+  /* no mapping at all if explicit disabled on compile-time (dialect configuration)*/
+  if( !COB_MODULE_PTR->flag_filename_mapping )
+    {
+    return;
+    }
+
+  /* Special ACUCOBOL-case: file that start with hyphen [note: -P not supported]
+     no translation at all, name starts after first non-space */
+  if(has_acu_hyphen (file_open_name))
+    {
+    do_acu_hyphen_translation(file_open_name);
+    return ;
+    }
+
+  src = file_open_name;
+
+  /* Simple case - No separators [note: this is also the ACU and Fujitsu way] */
+  if(    !looks_absolute (src)
+      && !has_directory_separator (src))
+   {
+    /* Drop surrounding quotes, some implementations need those to
+       support filename with embedded spaces (like MF),
+       while others (like GC before 3.2) don't like them */
+    if(src[0] == '"' || src[0] == '\'')
+      {
+      const size_t len = strlen(src) - 1;
+      if(src[len] == src[0])
+        {
+        src[len] = 0;
+        src++;
+        }
+      }
+
+    /* Ignore leading dollar */
+    if(src[0] == '$')
+      {
+      src++;
+      }
+    /* Check for DD_xx, dd_xx, xx environment variables */
+    /* Note: ACU and Fujitsu would only check for xx */
+    /* If not found, use as is, possibly including the dollar character */
+    if((p = cob_chk_file_env(src)) != NULL)
+      {
+      strncpy (file_open_name, p, (size_t)COB_FILE_MAX);
+      /* Note: ACU specifies: "repeated until variable can't be resolved"
+         we don't apply this and will not in the future
+         [recursion is only one of the problems] */
+      if(looks_absolute (file_open_name))
+        {
+        return;
+        }
+      if(has_acu_hyphen(file_open_name))
+        {
+        do_acu_hyphen_translation(file_open_name);
+        return;
+        }
+      }
+    src = file_open_name; /* ensure it points to the beginning */
+
+    /* apply COB_FILE_PATH if set (similar to ACUCOBOL's FILE-PREFIX)
+       MF and Fujitsu simply don't have that - not set by default,
+       so no compatilibity issue here */
+  if( cobsetptr->cob_file_path )
+    {
+    prepend_file_path (cobsetptr->cob_file_path, src);
+    }
+  return;
+  }
+
+  /* Complex */
+
+  /* Note: ACU and Fujitsu would return the value back and stop here */
+
+  /* Isolate first element (everything before the slash) */
+  /* If it starts with a $, mark and skip over the $ */
+  /* Try mapping on resultant string - DD_xx, dd_xx, xx */
+  /* If successful, use the mapping */
+  /* If not, use original element EXCEPT if we started */
+  /* with a $, in which case we ignore the element AND */
+  /* the following slash */
+
+  dst = file_open_buff;
+  *dst = 0;
+
+  /* Drop surrounding quotes, some implementations need those to
+     support filename with embedded spaces (like MF),
+     while others (like GC before 3.2) don't like them */
+  if(src[0] == '"' || src[0] == '\'')
+    {
+    const size_t len = strlen(src) - 1;
+    if(src[len] == src[0])
+      {
+      src[len] = 0;
+      src++;
+      }
+    }
+
+  if(src[0] != '$')
+    {
+    dollar = 0;
+    }
+  else
+    {
+    dollar = 1;
+    src++;
+    }
+
+  orig = strdup(src);
+  saveptr = orig;
+
+  /* strtok strips leading delimiters */
+  if(*src == '/' || *src == '\\')
+    {
+    strcpy (file_open_buff, SLASH_STR);
+    }
+  else
+    {
+    file_open_buff[COB_FILE_MAX] = 0;
+    p = strtok (orig, "/\\");
+    orig = NULL;
+    if((src = cob_chk_file_env(p)) != NULL)
+      {
+      strncpy (file_open_buff, src, (size_t)COB_FILE_MAX);
+      dollar = 0;
+      }
+    else if(!dollar)
+      {
+      strncpy (file_open_buff, p, (size_t)COB_FILE_MAX);
+      }
+    }
+  file_open_buff[COB_FILE_MAX] = 0;
+  /* First element completed, loop through remaining */
+  /* elements delimited by slash */
+  /* Check only for $ from now on; includes the DD_xx/dd_xx/xx mapping */
+  src = NULL;
+  for(;;)
+    {
+    p = strtok (orig, "/\\");
+    if(!p)
+      {
+      break;
+      }
+    if(!orig)
+      {
+      if(!dollar)
+        {
+        strcat (file_open_buff, SLASH_STR);
+        }
+      }
+    else
+      {
+      orig = NULL;
+      }
+    if(*p != '$')
+      {
+      dollar = 0;
+      }
+    else
+      {
+      dollar = 1;
+      p++;
+      }
+    if(dollar && (src = cob_chk_file_env(p)) != NULL)
+      {
+      strncat (file_open_buff, src, (size_t)COB_FILE_MAX);
+      src = NULL;
+      }
+    else if(!dollar)
+      {
+      strncat (file_open_buff, p, (size_t)COB_FILE_MAX);
+      src = NULL;
+      }
+    else
+      {
+      src = const_cast<char *>(p) - 1;
+      }
+    }
+  /* if we have a final $something that cannot be resolved - use as plain name */
+  if(src)
+    {
+    strncat (file_open_buff, src, (size_t)COB_FILE_MAX);
+    }
+  strcpy(file_open_name, file_open_buff);
+  free(saveptr);
+
+  if(looks_absolute (file_open_name))
+    {
+    return;
+    }
+  /* apply COB_FILE_PATH if set (similar to ACUCOBOL's FILE-PREFIX) */
+  if( cobsetptr->cob_file_path )
+    {
+    prepend_file_path (cobsetptr->cob_file_path, file_open_name);
+    }
+  }
+
+static char *
+cob_setup_filename(const char *fn)
+  {
+  strncpy (file_open_name, fn, COB_FILE_MAX);
+  file_open_name[COB_FILE_MAX] = 0;
+  cob_chk_file_mapping();
+  return file_open_name;
+  }
+
+
+/* End of copied code ***************************************/
+
 static
 void
 establish_filename(       cblc_file_t  *file,
@@ -265,6 +733,7 @@ establish_filename(       cblc_file_t  *file,
       }
     }
   free(file->filename);
+  filename = cob_setup_filename(filename);
   file->filename = strdup(filename);
   free(allocated_here);
   }
@@ -359,7 +828,7 @@ __gg__file_init(
   {
   if( !(file->flags & file_flag_initialized_e) )
     {
-    charmap_t *charmap = __gg__get_charmap(encoding);
+    const charmap_t *charmap = __gg__get_charmap(encoding);
 
     file->name                = strdup(name);
     file->symbol_table_index  = symbol_table_index;
@@ -385,7 +854,6 @@ __gg__file_init(
     file->access              = (cbl_file_access_t)access ;
     file->errnum              = 0 ;
     file->io_status           = FsSuccess ;
-    file->delimiter           = charmap->mapped_character(ascii_newline) ;
     file->stride              = charmap->stride();
     file->flags               = file_flag_none_e;
         file->flags          |= (optional ? file_flag_optional_e : file_flag_none_e)
@@ -396,6 +864,18 @@ __gg__file_init(
     file->prior_op            = file_op_none;
     file->encoding            = encoding;
     file->alphabet            = alphabet;
+
+    // Note: eventually the delimiter needs to be a variable; it can be set
+    // by the programmer.
+    size_t nbytes;
+    const char ch = ascii_newline;
+    const char *delim = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                                         file->encoding,
+                                         &ch,
+                                         1,
+                                         &nbytes);
+    memset(&file->delimiter, 0, 4);
+    memcpy(&file->delimiter, delim, file->stride);
 
     if( file->access == file_inaccessible_e )
       {
@@ -701,6 +1181,7 @@ relative_file_delete(cblc_file_t *file, bool is_random)
   file->io_status = FsErrno;
 
   cbl_char_t record_marker;
+  uint8_t record_marker_ch;
 
   unsigned char *stash = static_cast<unsigned char *>(malloc(file->default_record->capacity));
   massert(stash);
@@ -746,8 +1227,9 @@ relative_file_delete(cblc_file_t *file, bool is_random)
     record_marker = 0x00;
     errno = 0;
     file->errnum = 0;
+    record_marker_ch = record_marker;
     if( pwrite( rfp.fd,
-                &record_marker,
+                &record_marker_ch,
                 1,
                 file->prior_read_location
                       + rfp.record_size - 1 ) == -1 )
@@ -765,18 +1247,19 @@ relative_file_delete(cblc_file_t *file, bool is_random)
 
     errno = 0;
     file->errnum = 0;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
+      record_marker = record_marker_ch;
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
-
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-
+    record_marker = record_marker_ch;
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
     if(    presult == 0
-        || record_marker != charmap->mapped_character(ascii_newline) )
+        || record_marker_ch != newline )
       {
       // There isn't a record there for us to delete, which is an error
       file->io_status = FsNotFound;   // "23"
@@ -787,7 +1270,8 @@ relative_file_delete(cblc_file_t *file, bool is_random)
     record_marker = 0x00;
     errno = 0;
     file->errnum = 0;
-    if( pwrite(rfp.fd, &record_marker, 1, rfp.flag_position) == -1 )
+    record_marker_ch = record_marker;
+    if( pwrite(rfp.fd, &record_marker_ch, 1, rfp.flag_position) == -1 )
       {
       file->errnum = errno;
       handle_ferror(file, __func__, "pwrite() error");
@@ -1549,9 +2033,8 @@ relative_file_start(cblc_file_t *file,
   while(      rfp.record_position >= 0
           &&  rfp.record_position+total_record_length <= rfp.file_size )
     {
-    cbl_char_t record_marker;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
@@ -1562,8 +2045,10 @@ relative_file_start(cblc_file_t *file,
       // end of file
       goto done;
       }
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if( record_marker == charmap->mapped_character(ascii_newline) )
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+    if( record_marker_ch == newline )
       {
       // The record is a valid one
       fpos = rfp.record_position;
@@ -1998,7 +2483,6 @@ relative_file_rewrite( cblc_file_t *file, size_t length, bool is_random )
     {
     // This is like a write, except the place we are putting
     // it has to be occupied instead of empty.
-    cbl_char_t record_marker;
     if( relative_file_parameters_get(   rfp,
                                         rfm_microfocus_e,
                                         file,
@@ -2009,16 +2493,18 @@ relative_file_rewrite( cblc_file_t *file, size_t length, bool is_random )
       goto done;
       }
 
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
 
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if( presult == 0 || record_marker != charmap->mapped_character(ascii_newline) )
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+    if( presult == 0 || record_marker_ch != newline )
       {
       // The record is not specified:
       file->io_status = FsNotFound;   // "23"
@@ -2511,15 +2997,28 @@ relative_file_write(cblc_file_t    *file,
     return relative_file_write_varying(file, location, length, is_random);
     }
 
+  // relative files have fixed record sizes, which end with a hardcoded ASCII
+  // CR-LF.
+
+
   file->errnum = 0;
   file->io_status = FsErrno;
 
   long necessary_file_size;
   charmap_t *charmap = __gg__get_charmap(file->encoding);
+  char ach_space[4];
+  charmap->get_byte_string(ach_space, ascii_space);
+  int stride = charmap->stride();
+
+  uint8_t carriage_return =
+                   charmap->is_like_ebcdic() ? ebcdic_return : ascii_return;
+
+  unsigned char newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
   const unsigned char achPostamble[] =
     {
-    (unsigned char)charmap->mapped_character(ascii_cr),
-    (unsigned char)charmap->mapped_character(ascii_newline)
+    carriage_return,
+    newline
     };
 
   relative_file_parameters rfp;
@@ -2560,16 +3059,15 @@ relative_file_write(cblc_file_t    *file,
         }
       }
     // Let's check to make sure the slot for this record is currently available:
-    cbl_char_t record_marker;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
 
-    if( presult == 1 && record_marker == charmap->mapped_character(ascii_newline) )
+    if( presult == 1 && record_marker_ch == newline )
       {
       // The slot has something in it already:
       file->io_status = FsDupWrite;   // "22"
@@ -2609,9 +3107,17 @@ relative_file_write(cblc_file_t    *file,
   if( file->record_area_max > length )
     {
     size_t padding = file->record_area_max - length;
+    while(padding)
+      {
+      fwrite(ach_space, stride, 1, file->file_pointer);
+      padding -= stride;
+      }
     while(padding--)
       {
-      fputc(charmap->mapped_character(ascii_space), file->file_pointer);
+      // This probably shouldn't happen.  It means that the file record area
+      // size wasn't a multiple of the stride.  <shrug>  That's the COBOL
+      // programmer's problem.
+      fputc(0, file->file_pointer);
       }
     }
 
@@ -2639,6 +3145,20 @@ done:
   }
 
 static void
+write_a_char(cblc_file_t *file, cbl_char_t ch)
+  {
+  size_t nbytes;
+  // Whether big- or little-endian, this will give us the character we want
+  unsigned char uch = ch % 256;
+  const char *converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                                           file->encoding,
+                                           &uch,
+                                           1,
+                                           &nbytes);
+  fwrite(converted, nbytes, 1, file->file_pointer);
+  }
+
+static void
 sequential_file_write(cblc_file_t    *file,
                 const unsigned char  *location,
                       size_t          length,
@@ -2649,34 +3169,45 @@ sequential_file_write(cblc_file_t    *file,
   charmap_t *charmap = __gg__get_charmap(file->encoding);
   int stride = charmap->stride();
 
-  // ch is the vertical control character
-  cbl_char_t ch = '\0';
+  // chvert is the vertical control character
+  uint8_t chvert = '\0';
   size_t bytes_to_write;
 
-  int lcount;
+  int lcount=0;
 
-  if( lines < -1 )
-    {
-    // We are using -666 for a form feed
-    ch = charmap->mapped_character(ascii_ff);  // Form feed
-    lcount = 1;
-    }
-  else if( lines == -1 )
-    {
-    // -1 is a flag that no vertical control is requested
+  switch(file->org) {
+  case file_disorganized_e:
+  case file_indexed_e:
+  case file_relative_e:
+    assert(false);
+    break;
+  case file_sequential_e:
     lcount = 0;
-    }
-  else if( lines == 0 )
-    {
-    lcount = 1;
-    ch = charmap->mapped_character(ascii_return);
-    }
-  else /* if( lines > 0 ) */
-    {
-    lcount = lines;
-    ch = charmap->mapped_character(ascii_newline);
-    }
-
+    break;
+  case file_line_sequential_e:
+    if( lines < -1 )
+      {
+      // We are using -666 for a form feed
+      chvert = ascii_ff;
+      lcount = 1;
+      }
+    else if( lines == -1 )
+      {
+      // -1 is a flag that no vertical control is requested
+      lcount = 0;
+      }
+    else if( lines == 0 )
+      {
+      lcount = 1;
+      chvert = ascii_newline;
+      }
+    else /* if( lines > 0 ) */
+      {
+      lcount = lines;
+      chvert = ascii_newline;
+      }
+    break;
+  }
   // By default, we write out the number of characters in the record area
   bytes_to_write = length;
 
@@ -2691,7 +3222,7 @@ sequential_file_write(cblc_file_t    *file,
 
   if( file->org == file_line_sequential_e )
     {
-    // If file-sequential, then trailing spaces are removed:
+    // If line-sequential, then trailing spaces are removed:
     while(bytes_to_write > 0
            && charmap->getch(location, bytes_to_write-stride)
                                   == charmap->mapped_character(ascii_space) )
@@ -2700,15 +3231,16 @@ sequential_file_write(cblc_file_t    *file,
       }
     }
 
-  if( after && file->org == file_line_sequential_e
-                           && ch == charmap->mapped_character(ascii_newline) )
+  if(    after
+      && file->org == file_line_sequential_e
+      && chvert == ascii_newline )
     {
     // In general, we terminate every line with a newline.  Because this
     // line is supposed to start with a newline, we decrement the line
     // counter by one if we had already sent one.
-    if( lcount &&
-            (   file->recent_char == charmap->mapped_character(ascii_newline)
-                || file->recent_char == charmap->mapped_character(ascii_ff)) )
+    if(    lcount
+        && (   file->recent_char == charmap->mapped_character(ascii_newline)
+            || file->recent_char == charmap->mapped_character(ascii_ff)) )
       {
       lcount -= 1;
       }
@@ -2716,20 +3248,20 @@ sequential_file_write(cblc_file_t    *file,
 
   if( after )
     {
+    // We send out any vertical control character here, because the content
+    // comes AFTER the vertical control
+
     while(lcount--)
       {
-      fwrite( &ch,
-              stride,
-              1,
-              file->file_pointer);
-      if( handle_ferror(file, __func__, "fputc() error [3]") )
+      write_a_char(file, chvert);
+      if( handle_ferror(file, __func__, "fwrite() error") )
         {
         goto done;
         }
-      file->recent_char = ch;
+      file->recent_char = charmap->mapped_character(chvert);
       }
     // That might have been a formfeed; switch back to newline:
-    ch = charmap->mapped_character(ascii_newline);
+    chvert = ascii_newline;
     }
 
   switch(file->org)
@@ -2809,15 +3341,12 @@ sequential_file_write(cblc_file_t    *file,
     {
     // Special case:  when AFTER NON-ZERO lines, we stick a newline on the
     // end of this record:
-    fwrite( &ch,
-            stride,
-            1,
-            file->file_pointer);
-    if( handle_ferror(file, __func__, "fputc() error [4]") )
+    write_a_char(file, chvert);
+    if( handle_ferror(file, __func__, "fwrite() error [4]") )
       {
       goto done;
       }
-    file->recent_char = charmap->mapped_character(ascii_newline);
+    file->recent_char = charmap->mapped_character(chvert);
     }
 
   if( !after  )
@@ -2825,15 +3354,12 @@ sequential_file_write(cblc_file_t    *file,
     // We did the output BEFORE, so now it's time to send some newlines
     while(lcount--)
       {
-      fwrite( &ch,
-              stride,
-              1,
-              file->file_pointer);
-      if( handle_ferror(file, __func__, "fputc() error [5]") )
+      write_a_char(file, chvert);
+      if( handle_ferror(file, __func__, "fwrite() error [5]") )
         {
         goto done;
         }
-      file->recent_char = ch;
+      file->recent_char = charmap->mapped_character(chvert);
       }
     }
 
@@ -3153,8 +3679,9 @@ line_sequential_file_read_sbc(cblc_file_t *file, char space)
       }
     // Much hinges on where the next newline is to be found:
     pstart = file->buffer+file->buffer_pos;
+    char ch = reinterpret_cast<const char *>(&file->delimiter)[0];
     pnewline = reinterpret_cast<const char *>(memchr(pstart,
-                      static_cast<char>(file->delimiter),
+                      ch,
                       file->buffer_len - file->buffer_pos));
     if( file->buffer_pos >= file->buffer_len )
       {
@@ -3279,8 +3806,9 @@ line_sequential_file_read_sbc(cblc_file_t *file, char space)
           }
         }
       pstart = file->buffer+file->buffer_pos;
+      char ch = reinterpret_cast<const char *>(&file->delimiter)[0];
       pnewline = reinterpret_cast<const char *>(memchr(pstart,
-                        static_cast<char>(file->delimiter),
+                        ch,
                         file->buffer_len - file->buffer_pos));
       if( pnewline )
         {
@@ -3346,7 +3874,7 @@ line_sequential_file_read(  cblc_file_t *file)
   // it makes more sense to me.
 
   // We first stage the data into the record area.
-  cbl_char_t ch;
+  uint8_t ch[4];
 
   long fpos = static_cast<long>(file->file_fpos);
 
@@ -3393,11 +3921,10 @@ line_sequential_file_read(  cblc_file_t *file)
 
     // There are still characters in the file->buffer, and we are still looking
     // to fill the record_area, and we are still looking for a end-of-line.
-    ch = 0;
-    memcpy(&ch, file->buffer+file->buffer_pos, stride);
+    memcpy(ch, file->buffer+file->buffer_pos, stride);
     file->buffer_pos += stride;
     file->file_fpos += stride;
-    if( ch == file->delimiter )
+    if( memcmp(ch, &file->delimiter, stride) == 0)
       {
       break;
       }
@@ -3451,13 +3978,12 @@ line_sequential_file_read(  cblc_file_t *file)
           goto done;
           }
         }
-      ch = 0;
-      memcpy(&ch, file->buffer+file->buffer_pos, stride);
+      memcpy(ch, file->buffer+file->buffer_pos, stride);
       file->buffer_pos += stride;
       file->file_fpos += stride;
       // We can't use handle_ferror() directly, because an EOF is
       // a legitimate way to end the last line.
-      if( ch == file->delimiter )
+    if( memcmp(ch, &file->delimiter, stride) == 0 )
         {
         clearerr(file->file_pointer);
         break;
@@ -3810,6 +4336,10 @@ relative_file_read( cblc_file_t *file,
     return relative_file_read_varying(file, where);
     }
 
+  const charmap_t *charmap = __gg__get_charmap(file->encoding);
+  unsigned char newline_ch =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+
   bool is_random = where > 0;
 
   file->errnum = 0;
@@ -3877,14 +4407,12 @@ relative_file_read( cblc_file_t *file,
       file->prior_read_location = -1;
       goto done;
       }
-    cbl_char_t record_marker;
-    record_marker = 0;
-    if( pread(rfp.fd, &record_marker, 1, rfp.flag_position) <= 0)
+    uint8_t record_marker_ch;
+    if( pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position) <= 0)
       {
       goto done;
       }
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if(record_marker == charmap->mapped_character(ascii_newline) )
+    if(record_marker_ch == newline_ch )
       {
       // We have a good record to read:
 
@@ -4820,114 +5348,6 @@ __gg__file_stash( cblc_file_t *file )
   ::stashed = file;
   }
 
-    /*
-     * The following constitutes a proposal for a public API to gcobol I/O.
-     *
-     * The class gcobol_io_t would be in a public header file that
-     * would be used by any library that provides an I/O
-     * implementation.  Additionally, that header would be where
-     * cblc_file_t is defined, and where the valid file status values
-     * (and relops) are enumerated.
-     *
-     * The library constructs the class, providing its own pointers,
-     * and supplies a known function, gcobol_fileops, to return
-     * it. gcobol-compiled programs call the functions, or others
-     * supplied by a different implementation, through the pointers.
-     *
-     * This design makes it possible to run the same code, unaltered,
-     * simply by relinking.
-     *
-     * This design is commonly used, and is similar to the one used in
-     * GnuCOBOL.  One difference is that the file status is captured
-     * in the cblc_file_t, whereas in GnuCOBOL it is the return value.
-     *
-     * There is no provision for using more than one implementation at
-     * a time in the same program, as would be needed for CODE-SET
-     * support.  To achieve that in C++ without dynamic linking, there
-     * would have to be a set of known implementations, each with its
-     * own namespace, in which gcobol_fileops would be defined.
-     */
-
-class gcobol_io_t {
-public:
-  static const char constexpr marquee[64] = "libgcobol: gfileio.cc";
-
-  typedef void (open_t)( cblc_file_t *file,
-                   const char *filename,
-                         int mode_char);
-  typedef void (close_t)( cblc_file_t *file,
-                          int how );
-  typedef void (start_t)( cblc_file_t *file,
-                          int relop, // needs enum
-                          int first_last_key,
-                          size_t length );
-  typedef void (read_t)( cblc_file_t *file,
-                         int where );
-  typedef void (write_t)( cblc_file_t *file,
-                          const unsigned char  *location,
-                          size_t length,
-                          int after,
-                          int lines,
-                          int is_random );
-  typedef void (rewrite_t)(cblc_file_t *file,
-                           size_t length, bool is_random );
-  typedef void (delete_t)(cblc_file_t *file,
-                          bool is_random );
-  typedef void (remove_t)(cblc_file_t  *file,
-                    const char         *filename);
-  open_t      *Open;
-  close_t     *Close;
-  start_t     *Start;
-  read_t      *Read;
-  write_t     *Write;
-  rewrite_t   *Rewrite;
-  delete_t    *Delete;
-  remove_t    *Remove;
-
-  gcobol_io_t()
-    : Open(NULL)
-    , Close(NULL)
-    , Start(NULL)
-    , Read(NULL)
-    , Write(NULL)
-    , Rewrite(NULL)
-    , Delete(NULL)
-    , Remove(NULL)
-  {}
-
-  gcobol_io_t(   open_t      *Open,
-                 close_t     *Close,
-                 start_t     *Start,
-                 read_t      *Read,
-                 write_t     *Write,
-                 rewrite_t   *Rewrite,
-                 delete_t    *Delete,
-                 remove_t    *Remove)
-    : Open(Open)
-    , Close(Close)
-    , Start(Start)
-    , Read(Read)
-    , Write(Write)
-    , Rewrite(Rewrite)
-    , Delete(Delete)
-    , Remove(Remove)
-  {}
-
-#if FILE_IO_IMPLEMENTED
-  int     read_next();
-  int     fildelete();
-  void    ioinit();
-  void    ioexit();
-  int     iofork();
-  int     iosync();
-  int     commit();
-  int     rollback();
-  int     iounlock();
-  char *  ioversion();
-#endif
-};
-
-
 // Our implementation returns this populated structure
 
 gcobol_io_t*
@@ -4977,6 +5397,11 @@ gcobol_io_funcs() {
         }
     }
   return gcobol_io;
+}
+
+gcobol_io_t *
+__gg__file_io_funcs() {
+  return gcobol_io_funcs();
 }
 
 extern "C"
@@ -5062,4 +5487,3 @@ __gg__file_remove(      cblc_file_t *file,
   }
 
 /* end interface functions */
-

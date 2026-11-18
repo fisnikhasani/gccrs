@@ -826,7 +826,17 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
 	basic_string(from_range_t, _Rg&& __rg, const _Alloc& __a = _Alloc())
 	: basic_string(__a)
 	{
-	  if constexpr (ranges::forward_range<_Rg> || ranges::sized_range<_Rg>)
+	  using _SbufIter = istreambuf_iterator<_CharT, char_traits<_CharT>>;
+	  if constexpr (requires {
+	    requires is_same_v<ranges::iterator_t<_Rg>, _SbufIter>;
+	    requires is_same_v<ranges::sentinel_t<_Rg>, _SbufIter> ||
+		     is_same_v<ranges::sentinel_t<_Rg>, default_sentinel_t>; })
+	    {
+	      _M_construct(ranges::begin(__rg), _SbufIter(),
+		input_iterator_tag{});
+	    }
+	  else if constexpr (ranges::forward_range<_Rg>
+			  || ranges::sized_range<_Rg>)
 	    {
 	      const auto __n = static_cast<size_type>(ranges::distance(__rg));
 	      reserve(__n);
@@ -1767,6 +1777,20 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
 	      + std::__sv_check(__sv.size(), __pos, "basic_string::append"),
 	      std::__sv_limit(__sv.size(), __pos, __n));
 	}
+
+      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+      // 3662. basic_string::append/assign(NTBS, pos, n) suboptimal
+      /**
+       *  @brief  Append a C substring.
+       *  @param __s  The C string to append.
+       *  @param __pos  The position in the C string to append from.
+       *  @param __n  The number of characters to append.
+       *  @return  Reference to this string.
+       */
+      _GLIBCXX20_CONSTEXPR
+      basic_string&
+      append(const _CharT* __s, size_type __pos, size_type __n)
+      { return append(__sv_type(__s).substr(__pos, __n)); }
 #endif // C++17
 
       /**
@@ -2040,6 +2064,20 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
 	      + std::__sv_check(__sv.size(), __pos, "basic_string::assign"),
 	      std::__sv_limit(__sv.size(), __pos, __n));
 	}
+
+      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+      // 3662. basic_string::append/assign(NTBS, pos, n) suboptimal
+      /**
+       *  @brief  Set value to a C substring.
+       *  @param __s  The C string to use.
+       *  @param __pos  The position in the C string to assign from.
+       *  @param __n  Number of characters to use.
+       *  @return  Reference to this string.
+       */
+      _GLIBCXX20_CONSTEXPR
+      basic_string&
+      assign(const _CharT* __s, size_type __pos, size_type __n)
+      { return assign(__sv_type(__s).substr(__pos, __n)); }
 #endif // C++17
 
 #if __cplusplus >= 201103L

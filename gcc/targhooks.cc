@@ -89,7 +89,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "function-abi.h"
 #include "attribs.h"
 #include "asan.h"
-#include "emit-rtl.h"
 #include "gimple.h"
 #include "cfgloop.h"
 #include "tree-vectorizer.h"
@@ -397,6 +396,14 @@ default_print_operand (FILE *stream ATTRIBUTE_UNUSED, rtx x ATTRIBUTE_UNUSED,
 #else
   gcc_unreachable ();
 #endif
+}
+
+/* No named operand modifiers are supported by default.  */
+
+int
+default_print_operand_modifier (string_slice, bool)
+{
+  return 0;
 }
 
 /* Emit to STREAM the assembler syntax for an insn operand whose memory
@@ -1700,8 +1707,8 @@ default_ref_may_alias_errno (ao_ref *ref)
   else if (TREE_CODE (base) == MEM_REF
 	   && TREE_CODE (TREE_OPERAND (base, 0)) == SSA_NAME)
     {
-      struct ptr_info_def *pi = SSA_NAME_PTR_INFO (TREE_OPERAND (base, 0));
-      return !pi || pi->pt.anything || pi->pt.nonlocal;
+      const pt_solution *pt = ssa_name_pt_solution (TREE_OPERAND (base, 0));
+      return !pt || pt->anything || pt->nonlocal;
     }
   return false;
 }
@@ -1728,10 +1735,13 @@ default_addr_space_address_mode (addr_space_t addrspace ATTRIBUTE_UNUSED)
    To match the above, the same modes apply to all address spaces.  */
 
 bool
-default_addr_space_valid_pointer_mode (scalar_int_mode mode,
+default_addr_space_valid_pointer_mode (machine_mode mode,
 				       addr_space_t as ATTRIBUTE_UNUSED)
 {
-  return targetm.valid_pointer_mode (mode);
+  if (! SCALAR_INT_MODE_P (mode))
+    return false;
+
+  return targetm.valid_pointer_mode (as_a <scalar_int_mode> (mode));
 }
 
 /* Some places still assume that all pointer or address modes are the
@@ -1958,6 +1968,15 @@ bool
 default_have_ccmp (void)
 {
   return targetm.gen_ccmp_first != NULL;
+}
+
+/* Default implementation of TARGET_CCMP_FIRST_PREFERENCE.  */
+
+ccmp_first_kind
+default_ccmp_first_preference (machine_mode, tree_code, const_tree,
+			       const_tree)
+{
+  return CCMP_FIRST_UNSUPPORTED;
 }
 
 /* By default we assume that c99 functions are present at the runtime,
@@ -2320,6 +2339,37 @@ default_preferred_output_reload_class (rtx x ATTRIBUTE_UNUSED,
 				       reg_class_t rclass)
 {
   return rclass;
+}
+
+/* The default implementation of TARGET_BASE_REG_CLASS.  */
+
+reg_class_t
+default_base_reg_class (machine_mode mode ATTRIBUTE_UNUSED,
+			addr_space_t as ATTRIBUTE_UNUSED,
+			enum rtx_code outer_code ATTRIBUTE_UNUSED,
+			enum rtx_code index_code ATTRIBUTE_UNUSED,
+			rtx mem ATTRIBUTE_UNUSED,
+			rtx_insn *insn ATTRIBUTE_UNUSED)
+{
+#ifdef MODE_CODE_BASE_REG_CLASS
+  return MODE_CODE_BASE_REG_CLASS (MACRO_MODE (mode), as, outer_code,
+				   index_code);
+#else
+#ifdef MODE_BASE_REG_REG_CLASS
+  if (index_code == REG)
+    return MODE_BASE_REG_REG_CLASS (MACRO_MODE (mode));
+#endif
+#ifdef MODE_BASE_REG_CLASS
+  return MODE_BASE_REG_CLASS (MACRO_MODE (mode));
+#elif defined (BASE_REG_CLASS)
+  return BASE_REG_CLASS;
+#else
+  /* No target that leaves TARGET_BASE_REG_CLASS at its default also fails
+     to define BASE_REG_CLASS or one of the other macros above; a target
+     that defines none of them must override the hook directly instead.  */
+  gcc_unreachable ();
+#endif
+#endif
 }
 
 /* The default implementation of TARGET_PREFERRED_RENAME_CLASS.  */

@@ -341,22 +341,43 @@ is_removable_allocation_p (gcall *stmt, bool non_null_check)
     }
 }
 
-/* Return true if STMT is a conditional
+/* Return true if STMT is an assignment
+     foo = (ptr != NULL)
+     foo = (ptr == NULL)
+   or a conditional
      if (ptr != NULL)
+     if (ptr == NULL)
    where ptr was returned by a removable allocation function.  */
 
 static bool
 checks_return_value_of_removable_allocation_p (gimple *stmt)
 {
-  gcall *def_stmt;
-  return gimple_code (stmt) == GIMPLE_COND
-	 && (gimple_cond_code (stmt) == EQ_EXPR
-	     || gimple_cond_code (stmt) == NE_EXPR)
-	 && integer_zerop (gimple_cond_rhs (stmt))
-	 && TREE_CODE (gimple_cond_lhs (stmt)) == SSA_NAME
-	 && (def_stmt = dyn_cast <gcall *>
-			 (SSA_NAME_DEF_STMT (gimple_cond_lhs (stmt))))
-	 && is_removable_allocation_p (def_stmt, true);
+  enum tree_code code;
+  tree ptr, value;
+
+  if (gassign *assign = dyn_cast <gassign *> (stmt))
+    {
+      code = gimple_assign_rhs_code (assign);
+      ptr = gimple_assign_rhs1 (assign);
+      value = gimple_assign_rhs2 (assign);
+    }
+  else if (gcond *cond = dyn_cast <gcond *> (stmt))
+    {
+      code = gimple_cond_code (cond);
+      ptr = gimple_cond_lhs (cond);
+      value = gimple_cond_rhs (cond);
+    }
+  else
+    return false;
+
+  if (code != EQ_EXPR && code != NE_EXPR)
+    return false;
+
+  if (!integer_zerop (value) || TREE_CODE (ptr) != SSA_NAME)
+    return false;
+
+  gcall *def_stmt = dyn_cast <gcall *> (SSA_NAME_DEF_STMT (ptr));
+  return def_stmt && is_removable_allocation_p (def_stmt, true);
 }
 
 
@@ -1624,6 +1645,30 @@ eliminate_unnecessary_stmts (bool aggressive)
 		    gimple_set_plf (stmt, STMT_NECESSARY, false);
 		}
 	    }
+
+	  /* Comparisons of the return value of an allocation against NULL
+	     can be turned to a constant if the allocation itself is
+	     unnecessary.  */
+	  if (gimple_plf (stmt, STMT_NECESSARY) && is_gimple_assign (stmt)
+	      && (gimple_assign_rhs_code (stmt) == EQ_EXPR
+		  || gimple_assign_rhs_code (stmt) == NE_EXPR)
+	      && TREE_CODE (gimple_assign_rhs1 (stmt)) == SSA_NAME)
+	    {
+	      tree rhs1 = gimple_assign_rhs1 (stmt);
+	      gimple *def_stmt = SSA_NAME_DEF_STMT (rhs1);
+	      if (!gimple_nop_p (def_stmt)
+		  && !gimple_plf (def_stmt, STMT_NECESSARY))
+		{
+		  gcc_checking_assert
+		    (checks_return_value_of_removable_allocation_p (stmt));
+		  tree lhs = gimple_assign_lhs (stmt);
+		  bool is_ne = gimple_assign_rhs_code (stmt) == NE_EXPR;
+		  tree cst = constant_boolean_node (is_ne, TREE_TYPE (lhs));
+		  gimple_assign_set_rhs_with_ops (&gsi, TREE_CODE (cst), cst);
+		  update_stmt (gsi_stmt (gsi));
+		}
+	    }
+
 	  /* Conditional checking that return value of allocation is non-NULL
 	     can be turned to constant if the allocation itself
 	     is unnecessary.  */
@@ -2170,10 +2215,16 @@ make_pass_cd_dce (gcc::context *ctxt)
 /* A cheap DCE interface.  WORKLIST is a list of possibly dead stmts and
    is consumed by this function.  The function has linear complexity in
    the number of dead stmts with a constant factor like the average SSA
-   use operands number.  */
+   use operands number.
+   If no_delete is true (defaults to false) then rather than deleting the
+   statement, it is replaced with an assignment to 0.  This allows the
+   same elimination of statement dependencies, but delays the actual statement
+   removal from the IL until the next time DCE is run and they are detected
+   as dead statements with no uses. */
 
 void
-simple_dce_from_worklist (bitmap worklist, bitmap need_eh_cleanup)
+simple_dce_from_worklist (bitmap worklist, bitmap need_eh_cleanup,
+			  bool no_delete)
 {
   int phiremoved = 0;
   int stmtremoved = 0;
@@ -2217,7 +2268,9 @@ simple_dce_from_worklist (bitmap worklist, bitmap need_eh_cleanup)
       gimple *t = SSA_NAME_DEF_STMT (def);
       if (gimple_has_side_effects (t))
 	{
-	  if (gcall *call = dyn_cast <gcall *> (t))
+	  gcall *call = dyn_cast <gcall *> (t);
+	  // Remove the lhs for a call if not no_delete.
+	  if (call && !no_delete)
 	    {
 	      gimple_call_set_lhs (call, NULL_TREE);
 	      update_stmt (call);
@@ -2263,19 +2316,42 @@ simple_dce_from_worklist (bitmap worklist, bitmap need_eh_cleanup)
       gimple_stmt_iterator gsi = gsi_for_stmt (t);
       if (gimple_code (t) == GIMPLE_PHI)
 	{
-	  remove_phi_node (&gsi, true);
+	  if (no_delete)
+	    {
+	      gphi *phi = as_a<gphi *> (t);
+	      tree zero = build_zero_cst (TREE_TYPE (def));
+	      edge_iterator ei;
+	      edge e;
+	      FOR_EACH_EDGE (e, ei, gimple_bb (phi)->preds)
+		if (!(e->flags & EDGE_ABNORMAL))
+		  SET_PHI_ARG_DEF (phi, e->dest_idx, zero);
+	      reset_flow_sensitive_info (def);
+	    }
+	  else
+	    remove_phi_node (&gsi, true);
+
 	  phiremoved++;
 	}
       else
 	{
 	  unlink_stmt_vdef (t);
-	  gsi_remove (&gsi, true);
-	  release_defs (t);
+	  if (no_delete)
+	    {
+	      tree zero = build_zero_cst (TREE_TYPE (def));
+	      gassign *new_stmt = gimple_build_assign (def, zero);
+	      gsi_replace (&gsi, new_stmt, true);
+	      reset_flow_sensitive_info (def);
+	    }
+	  else
+	    {
+	      gsi_remove (&gsi, true);
+	      release_defs (t);
+	    }
 	  stmtremoved++;
 	}
     }
-  statistics_counter_event (cfun, "PHIs removed",
+  statistics_counter_event (cfun, no_delete ? "PHIs rewritten" : "PHIs removed",
 			    phiremoved);
-  statistics_counter_event (cfun, "Statements removed",
-			    stmtremoved);
+  statistics_counter_event (cfun, no_delete ? "Statements rewritten"
+					    : "Statements removed", stmtremoved);
 }

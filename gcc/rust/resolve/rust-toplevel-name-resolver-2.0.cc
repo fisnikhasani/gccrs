@@ -50,8 +50,18 @@ TopLevel::check_multiple_insertion_error (
     {
       rich_location rich_loc (line_table, locus);
       rich_loc.add_range (node_locations[result.error ().existing]);
+      auto &mappings = Analysis::Mappings::get ();
+      ErrorCode code;
+      if (mappings.is_extern_crate (node_id)
+	  && mappings.is_extern_crate (result.error ().existing))
+	code = ErrorCode::E0259;
+      else if (mappings.is_extern_crate (node_id)
+	       || mappings.is_extern_crate (result.error ().existing))
+	code = ErrorCode::E0260;
+      else
+	code = ErrorCode::E0428;
 
-      rust_error_at (rich_loc, ErrorCode::E0428, "%qs defined multiple times",
+      rust_error_at (rich_loc, code, "%qs defined multiple times",
 		     identifier.as_string ().c_str ());
     }
 }
@@ -128,6 +138,34 @@ TopLevel::visit (AST::Trait &trait)
 }
 
 void
+TopLevel::visit (AST::ExternCrate &crate)
+{
+  auto &name = crate.has_as_clause () ? crate.get_as_clause ()
+				      : crate.get_referenced_crate ();
+  auto &mappings = Analysis::Mappings::get ();
+  mappings.insert_extern_crate_id (crate.get_node_id ());
+  insert_or_error_out (name, crate, Namespace::Types);
+
+  DefaultResolver::visit (crate);
+
+  if (crate.get_referenced_crate () != Values::Keywords::SELF)
+    {
+      if (auto extern_crate_num
+	  = mappings.crate.lookup_crate_name (crate.get_referenced_crate ()))
+	{
+	  auto &extern_crate
+	    = mappings.crate.get_ast_crate (extern_crate_num.value ());
+	  if (!mappings.lookup_glob_container (extern_crate.get_node_id ()))
+	    mappings.insert_glob_container (extern_crate.get_node_id (),
+					    &extern_crate);
+	  // Insert the crate within the extern prelude only after the scope has
+	  // been created
+	  ctx.insert_crate_in_prelude (name, extern_crate.get_node_id ());
+	}
+    }
+}
+
+void
 TopLevel::maybe_insert_big_self (AST::Impl &impl)
 {
   insert_or_error_out (Identifier ("Self", impl.get_type ().get_locus ()),
@@ -166,30 +204,32 @@ TopLevel::visit_extern_crate (AST::ExternCrate &extern_crate, AST::Crate &crate,
 {
   auto &mappings = Analysis::Mappings::get ();
 
-  auto attribute_macros = mappings.lookup_attribute_proc_macros (num);
+  auto attribute_macros = mappings.crate.attributes.lookup (num);
 
-  auto bang_macros = mappings.lookup_bang_proc_macros (num);
+  auto bang_macros = mappings.crate.bangs.lookup (num);
 
-  auto derive_macros = mappings.lookup_derive_proc_macros (num);
+  auto derive_macros = mappings.crate.derives.lookup (num);
 
   // TODO: Find a way to keep this part clean without the double dispatch.
   if (derive_macros.has_value ())
     {
       insert_macros (derive_macros.value (), ctx);
       for (auto &macro : derive_macros.value ())
-	mappings.insert_derive_proc_macro_def (macro);
+	mappings.pmacro.definitions.derives.insert (macro.get_node_id (),
+						    macro);
     }
   if (attribute_macros.has_value ())
     {
       insert_macros (attribute_macros.value (), ctx);
       for (auto &macro : attribute_macros.value ())
-	mappings.insert_attribute_proc_macro_def (macro);
+	mappings.pmacro.definitions.attributes.insert (macro.get_node_id (),
+						       macro);
     }
   if (bang_macros.has_value ())
     {
       insert_macros (bang_macros.value (), ctx);
       for (auto &macro : bang_macros.value ())
-	mappings.insert_bang_proc_macro_def (macro);
+	mappings.pmacro.definitions.bangs.insert (macro.get_node_id (), macro);
     }
 
   // We do *NOT* visit the crate because loaded crates are resolved
@@ -392,6 +432,15 @@ TopLevel::visit (AST::TypeAlias &type_item)
 }
 
 void
+TopLevel::visit (AST::TraitAlias &trait_item)
+{
+  insert_or_error_out (trait_item.get_alias_name (), trait_item,
+		       Namespace::Types);
+
+  DefaultResolver::visit (trait_item);
+}
+
+void
 TopLevel::visit (AST::ExternalTypeItem &type_item)
 {
   insert_or_error_out (type_item.get_identifier (), type_item,
@@ -440,7 +489,6 @@ flatten (
 	flatten_glob (*glob, glob_paths, ctx);
 	break;
       }
-      break;
     }
 }
 

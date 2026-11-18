@@ -709,6 +709,12 @@ proper position among the other output files.  */
 #define ASM_SPEC ""
 #endif
 
+/* config.h can define ASM_V_SPEC to pass equivalents of -v, -w (no warnings),
+   and -I to the assembler.  */
+#ifndef ASM_V_SPEC
+#define ASM_V_SPEC "%{v} %{w:-W} %{I*}"
+#endif
+
 /* config.h can define ASM_FINAL_SPEC to run a post processor after
    the assembler has run.  */
 #ifndef ASM_FINAL_SPEC
@@ -1327,12 +1333,8 @@ static const char *cc1_options =
 
 static const char *asm_options =
 "%{-target-help:%:print-asm-header()} "
-#if HAVE_GNU_AS
-/* If GNU AS is used, then convert -w (no warnings), -I, and -v
-   to the assembler equivalents.  */
-"%{v} %{w:-W} %{I*} "
-#endif
-"%(asm_debug_option)"
+ASM_V_SPEC
+" %(asm_debug_option)"
 ASM_COMPRESS_DEBUG_SPEC
 "%a %Y %{c:%W{o*}%{!o*:-o %w%b%O}}%{!c:-o %d%w%u%O}";
 
@@ -3561,9 +3563,9 @@ execute (void)
 		 thinking there's a compiler bug.  Much more likely is
 		 the user or OOM killer nuked it.  */
 	      fatal_error (input_location,
-			   "%s signal terminated program %s",
-			   strsignal (WTERMSIG (status)),
-			   commands[i].prog);
+			   "%s terminated by signal %d (%s)",
+			   commands[i].prog, WTERMSIG (status),
+			   strsignal (WTERMSIG (status)));
 	      break;
 
 #ifdef SIGPIPE
@@ -3585,9 +3587,9 @@ execute (void)
 
 	    default:
 	      /* The inferior failed to catch the signal.  */
-	      internal_error_no_backtrace ("%s signal terminated program %s",
-					   strsignal (WTERMSIG (status)),
-					   commands[i].prog);
+	      internal_error_no_backtrace ("%s terminated by signal %d (%s)",
+					   commands[i].prog, WTERMSIG (status),
+					   strsignal (WTERMSIG (status)));
 	    }
 	else if (WIFEXITED (status)
 		 && WEXITSTATUS (status) >= MIN_FATAL_STATUS)

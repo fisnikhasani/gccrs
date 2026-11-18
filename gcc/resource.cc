@@ -130,9 +130,9 @@ find_basic_block (rtx_insn *insn, int search_limit)
 {
   /* Scan backwards to the previous BARRIER.  Then see if we can find a
      label that starts a basic block.  Return the basic block number.  */
-  for (insn = prev_nonnote_insn (insn);
+  for (insn = prev_nonnote_nondebug_insn (insn);
        insn && !BARRIER_P (insn) && search_limit != 0;
-       insn = prev_nonnote_insn (insn), --search_limit)
+       insn = prev_nonnote_nondebug_insn (insn), --search_limit)
     ;
 
   /* The closest BARRIER is too far away.  */
@@ -145,9 +145,9 @@ find_basic_block (rtx_insn *insn, int search_limit)
 
   /* See if any of the upcoming CODE_LABELs start a basic block.  If we reach
      anything other than a CODE_LABEL or note, we can't find this code.  */
-  for (insn = next_nonnote_insn (insn);
+  for (insn = next_nonnote_nondebug_insn (insn);
        insn && LABEL_P (insn);
-       insn = next_nonnote_insn (insn))
+       insn = next_nonnote_nondebug_insn (insn))
     if (BLOCK_FOR_INSN (insn))
       return BLOCK_FOR_INSN (insn)->index;
 
@@ -299,13 +299,14 @@ mark_referenced_resources (rtx x, struct resources *res,
 	     However, we may have moved some of the parameter loading insns
 	     into the delay slot of this CALL.  If so, the USE's for them
 	     don't count and should be skipped.  */
-	  rtx_insn *insn = PREV_INSN (as_a <rtx_insn *> (x));
+	  rtx_insn *call_insn = as_a <rtx_insn *> (x);
+	  rtx_insn *insn = PREV_INSN (call_insn);
 	  rtx_sequence *sequence = 0;
 	  int seq_size = 0;
 	  int i;
 
 	  /* If we are part of a delay slot sequence, point at the SEQUENCE.  */
-	  if (NEXT_INSN (insn) != x)
+	  if (NEXT_INSN (insn) != call_insn)
 	    {
 	      sequence = as_a <rtx_sequence *> (PATTERN (NEXT_INSN (insn)));
 	      seq_size = sequence->len ();
@@ -333,13 +334,13 @@ mark_referenced_resources (rtx x, struct resources *res,
 	     registers ensures that a register will not be considered dead
 	     just because it crosses a setjmp call.  A register should be
 	     considered dead only if the setjmp call returns nonzero.  */
-	  if (find_reg_note (x, REG_SETJMP, NULL))
+	  if (find_reg_note (call_insn, REG_SETJMP, NULL))
 	    SET_HARD_REG_SET (res->regs);
 
 	  {
 	    rtx link;
 
-	    for (link = CALL_INSN_FUNCTION_USAGE (x);
+	    for (link = CALL_INSN_FUNCTION_USAGE (call_insn);
 		 link;
 		 link = XEXP (link, 1))
 	      if (GET_CODE (XEXP (link, 0)) == USE)
@@ -619,13 +620,13 @@ mark_set_resources (rtx x, struct resources *res, int in_dest,
 /* Return TRUE if INSN is a return, possibly with a filled delay slot.  */
 
 static bool
-return_insn_p (const_rtx insn)
+return_insn_p (const rtx_insn *insn)
 {
   if (JUMP_P (insn) && ANY_RETURN_P (PATTERN (insn)))
     return true;
 
   if (NONJUMP_INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
-    return return_insn_p (XVECEXP (PATTERN (insn), 0, 0));
+    return return_insn_p (as_a <rtx_insn *> (XVECEXP (PATTERN (insn), 0, 0)));
 
   return false;
 }

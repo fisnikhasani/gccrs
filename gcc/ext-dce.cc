@@ -37,6 +37,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "dbgcnt.h"
 #include "diagnostic-core.h"
 #include "target.h"
+#include "regs.h"
 
 /* These should probably move into a C++ class.  */
 static vec<bitmap_head> livein;
@@ -476,6 +477,43 @@ ext_dce_try_optimize_rshift (rtx_insn *insn, rtx set, rtx new_src, rtx_insn *new
     }
 }
 
+/* Return true if the extension of INNER to OUTER_MODE is already
+   guaranteed by its definition, making the SIGN_EXTEND redundant.  */
+static bool
+is_trivially_redundant_extension (rtx inner, scalar_int_mode inner_mode,
+				  scalar_int_mode outer_mode)
+{
+  rtx def_reg = inner;
+
+  if (SUBREG_P (def_reg) && subreg_lowpart_p (def_reg))
+    def_reg = SUBREG_REG (def_reg);
+
+  if (!REG_P (def_reg))
+    return false;
+
+  unsigned int regno = REGNO (def_reg);
+  if (HARD_REGISTER_NUM_P (regno) || DF_REG_DEF_COUNT (regno) != 1)
+    return false;
+
+  df_ref def = DF_REG_DEF_CHAIN (regno);
+  if (!def)
+    return false;
+
+  rtx_insn *def_insn = DF_REF_INSN (def);
+  rtx def_set = def_insn ? single_set (def_insn) : NULL_RTX;
+  if (!def_set)
+    return false;
+
+  rtx def_src = SET_SRC (def_set);
+
+  unsigned int diff = GET_MODE_PRECISION (outer_mode)
+		      - GET_MODE_PRECISION (inner_mode);
+
+  if (num_sign_bit_copies (def_src, outer_mode) > diff)
+    return true;
+
+  return false;
+}
 
 /* INSN has a sign/zero extended source inside SET that we will
    try to turn into a SUBREG.  If NEW_SRC is non-null, use that
@@ -538,6 +576,18 @@ ext_dce_try_optimize_extension (rtx_insn *insn, rtx set)
   if (!(REG_P (inner) || (SUBREG_P (inner) && REG_P (SUBREG_REG (inner)))))
     return;
 
+  /* If the extension is trivially redundant, then we leave it in the IL
+     as we know combine can easily remove it.  By doing so those sign
+     bits keep a known state rather than unknown state which helps combine
+     make more improvements.  */
+  scalar_int_mode inner_mode, outer_mode;
+  if (GET_CODE (src) == SIGN_EXTEND
+      && is_a <scalar_int_mode> (GET_MODE (inner), &inner_mode)
+      && is_a <scalar_int_mode> (GET_MODE (src), &outer_mode))
+    {
+      if (is_trivially_redundant_extension (inner, inner_mode, outer_mode))
+	return;
+    }
   rtx new_pattern;
   if (dump_file)
     {
@@ -920,7 +970,23 @@ carry_backpropagate (unsigned HOST_WIDE_INT mask, enum rtx_code code, rtx x)
   if (mask == 0)
     return 0;
 
-  enum machine_mode mode = GET_MODE_INNER (GET_MODE (x));
+  /* Consider a vector operation, the bits live are the element bits live
+     broadcasted across the vector.  So there can be holes (consider a
+     logical shift).
+
+     Vector modes aren't likely to represent cases we can optimize with
+     any regularity.  It seems sensible to just punt that case in a
+     conservatively correct way.
+
+     The conservatively corect choice here would be to return the mode
+     mask for the outer mode.  We're already doing that for modes larger
+     than HOST_BITS_PER_WIDE_INT, so it should be safe for larger vectors
+     as well as something like V2HI.  */
+  if (VECTOR_MODE_P (GET_MODE (x)) || COMPLEX_MODE_P (GET_MODE (x)))
+    return GET_MODE_MASK (GET_MODE (x));
+    
+
+  enum machine_mode mode = GET_MODE (x);
   unsigned HOST_WIDE_INT mmask = GET_MODE_MASK (mode);
 
   /* While we don't try to optimize operations on types larger
@@ -993,6 +1059,11 @@ carry_backpropagate (unsigned HOST_WIDE_INT mask, enum rtx_code code, rtx x)
       if (!GET_MODE_BITSIZE (GET_MODE (x)).is_constant ()
 	  || !GET_MODE_BITSIZE (GET_MODE (XEXP (x, 0))).is_constant ())
 	return -1;
+
+      /* See note about vector modes near the start of this function.  */
+      if (VECTOR_MODE_P (GET_MODE (XEXP (x, 0)))
+	  || COMPLEX_MODE_P (GET_MODE (XEXP (x, 0))))
+	return GET_MODE_MASK (GET_MODE (XEXP (x, 0)));
 
       /* We want the mode of the inner object.  We need to ensure its
 	 sign bit is on in MASK.  */
@@ -1142,7 +1213,7 @@ ext_dce_process_uses (rtx_insn *insn, rtx obj,
 		{
 		  rtx inner = XEXP (src, 0);
 		  unsigned HOST_WIDE_INT src_mask
-		    = GET_MODE_MASK (GET_MODE_INNER (GET_MODE (inner)));
+		    = GET_MODE_MASK (GET_MODE (inner));
 
 		  /* DST_MASK could be zero if we had something in the SET
 		     that we couldn't handle.  */
@@ -1335,8 +1406,7 @@ ext_dce_process_uses (rtx_insn *insn, rtx obj,
 			 propagate destination liveness through, then just
 			 set the mask to the mode's mask.  */
 		      if (!safe_for_live_propagation (code))
-			tmp_mask
-			  = GET_MODE_MASK (GET_MODE_INNER (GET_MODE (y)));
+			tmp_mask = GET_MODE_MASK (GET_MODE (y));
 
 		      if (tmp_mask & 0xff)
 			bitmap_set_bit (livenow, rn);
@@ -1406,7 +1476,16 @@ ext_dce_process_uses (rtx_insn *insn, rtx obj,
       /* If we have a register reference that is not otherwise handled,
 	 just assume all the chunks are live.  */
       else if (REG_P (x))
-	bitmap_set_range (livenow, REGNO (x) * 4, group_limit (x));
+	{
+	  if (HARD_REGISTER_P (x))
+	    {
+	      unsigned int end = end_hard_regno (GET_MODE (x), REGNO (x));
+	      for (unsigned int r = REGNO (x); r < end; r++)
+		bitmap_set_range (livenow, r * 4, 4);
+	    }
+	  else
+	    bitmap_set_range (livenow, REGNO (x) * 4, group_limit (x));
+	}
     }
 }
 

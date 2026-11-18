@@ -49,6 +49,7 @@
 #include "attribs.h"
 #include "value-range.h"
 #include "tree-ssanames.h"
+#include "gimple-ssa.h"
 #include "aarch64-acle-builtins.h"
 #include "aarch64-sve-builtins-base.h"
 #include "aarch64-sve-builtins-sve2.h"
@@ -105,9 +106,11 @@ struct registered_function_hasher : ggc_ptr_hash <registered_function>
 };
 
 /* Information about each single-predicate or single-vector type.  */
-static CONSTEXPR const vector_type_info vector_types[] = {
+static constexpr vector_type_info vector_types[] = {
 #define DEF_SVE_TYPE(ACLE_NAME, NCHARS, ABI_NAME, SCALAR_TYPE) \
-  { #ACLE_NAME, #ABI_NAME, "u" #NCHARS #ABI_NAME },
+  { /* .acle_name    = */ #ACLE_NAME,			       \
+    /* .abi_name     = */ #ABI_NAME,			       \
+    /* .mangled_name = */ "u" #NCHARS #ABI_NAME },
 #include "aarch64-sve-builtins.def"
 };
 
@@ -123,61 +126,63 @@ static const char *const pred_suffixes[NUM_PREDS + 1] = {
 };
 
 /* Static information about each mode_suffix_index.  */
-CONSTEXPR const mode_suffix_info mode_suffixes[] = {
-#define VECTOR_TYPE_none NUM_VECTOR_TYPES
-#define DEF_SVE_MODE(NAME, BASE, DISPLACEMENT, UNITS) \
-  { "_" #NAME, VECTOR_TYPE_##BASE, VECTOR_TYPE_##DISPLACEMENT, UNITS_##UNITS },
+constexpr mode_suffix_info mode_suffixes[] = {
+#define DEF_SVE_MODE(NAME, BASE, DISPLACEMENT, UNITS)		  \
+  { /* .string			 = */ "_" #NAME,		  \
+    /* .base_vector_type	 = */ VECTOR_TYPE_##BASE,	  \
+    /* .displacement_vector_type = */ VECTOR_TYPE_##DISPLACEMENT, \
+    /* .displacement_units	 = */ UNITS_##UNITS },
 #include "aarch64-sve-builtins.def"
-#undef VECTOR_TYPE_none
-  { "", NUM_VECTOR_TYPES, NUM_VECTOR_TYPES, UNITS_none }
+  { "", VECTOR_TYPE_none, VECTOR_TYPE_none, UNITS_none }
 };
 
 /* Static information about each type_suffix_index.  */
-CONSTEXPR const type_suffix_info type_suffixes[NUM_TYPE_SUFFIXES + 1] = {
+constexpr type_suffix_info type_suffixes[NUM_TYPE_SUFFIXES + 1] = {
 #define DEF_SVE_NEON_TYPE_SUFFIX(NAME, ACLE_TYPE, CLASS, BITS, MODE, \
-				 NEON64, NEON128) \
-  { "_" #NAME, \
-    VECTOR_TYPE_##ACLE_TYPE, \
-    TYPE_##CLASS, \
-    BITS, \
-    BITS / BITS_PER_UNIT, \
-    TYPE_##CLASS == TYPE_signed || TYPE_##CLASS == TYPE_unsigned, \
-    TYPE_##CLASS == TYPE_unsigned, \
-    TYPE_##CLASS == TYPE_float || TYPE_##CLASS == TYPE_bfloat, \
-    TYPE_##CLASS != TYPE_bool, \
-    TYPE_##CLASS == TYPE_bool, \
-    false, \
-    0, \
-    MODE, \
-    NEON64, \
-    NEON128 },
-#define DEF_SVE_TYPE_SUFFIX(NAME, ACLE_TYPE, CLASS, BITS, MODE) \
-  DEF_SVE_NEON_TYPE_SUFFIX (NAME, ACLE_TYPE, CLASS, BITS, MODE, \
-			    ARM_NEON_H_TYPES_LAST, ARM_NEON_H_TYPES_LAST)
-#define DEF_SME_ZA_SUFFIX(NAME, BITS, MODE) \
-  { "_" #NAME, \
-    NUM_VECTOR_TYPES, \
-    NUM_TYPE_CLASSES, \
-    BITS, \
-    BITS / BITS_PER_UNIT, \
-    false, \
-    false, \
-    false, \
-    false, \
-    false, \
-    true, \
-    0, \
-    MODE, \
-    ARM_NEON_H_TYPES_LAST, \
-    ARM_NEON_H_TYPES_LAST },
+				 NEON64, NEON128)	  \
+  { /* .string	      = */ "_" #NAME,			  \
+    /* .vector_type   = */ VECTOR_TYPE_##ACLE_TYPE,	  \
+    /* .tclass	      = */ TYPE_##CLASS,		  \
+    /* .element_bits  = */ BITS,			  \
+    /* .element_bytes = */ BITS / BITS_PER_UNIT,	  \
+    /* .integer_p     = */ TYPE_##CLASS == TYPE_signed    \
+			|| TYPE_##CLASS == TYPE_unsigned, \
+    /* .unsigned_p    = */ TYPE_##CLASS == TYPE_unsigned, \
+    /* .float_p	      = */ TYPE_##CLASS == TYPE_float     \
+			|| TYPE_##CLASS == TYPE_bfloat,   \
+    /* .vector_p      = */ TYPE_##CLASS != TYPE_bool,     \
+    /* .bool_p	      = */ TYPE_##CLASS == TYPE_bool,     \
+    /* .za_p	      = */ false,			  \
+    /* .spare	      = */ 0,				  \
+    /* .vector_mode   = */ MODE,			  \
+    /* .neon64_type   = */ NEON64,			  \
+    /* .neon128_type  = */ NEON128 },
+#define DEF_SME_ZA_SUFFIX(NAME, BITS, MODE)	  \
+  { /* .string	      = */ "_" #NAME,		  \
+    /* .vector_type   = */ NUM_VECTOR_TYPES,	  \
+    /* .tclass	      = */ NUM_TYPE_CLASSES,	  \
+    /* .element_bits  = */ BITS,		  \
+    /* .element_bytes = */ BITS / BITS_PER_UNIT,  \
+    /* .integer_p     = */ false,		  \
+    /* .unsigned_p    = */ false,		  \
+    /* .float_p       = */ false,		  \
+    /* .vector_p      = */ false,		  \
+    /* .bool_p	      = */ false,		  \
+    /* .za_p	      = */ true,		  \
+    /* .spare	      = */ 0,			  \
+    /* .vector_mode   = */ MODE,		  \
+    /* .neon64_type   = */ ARM_NEON_H_TYPES_LAST, \
+    /* .neon128_type  = */ ARM_NEON_H_TYPES_LAST },
 #include "aarch64-sve-builtins.def"
-  { "", NUM_VECTOR_TYPES, TYPE_bool, 0, 0, false, false, false, false,
-    false, false, 0, VOIDmode, ARM_NEON_H_TYPES_LAST, ARM_NEON_H_TYPES_LAST }
+  { "", NUM_VECTOR_TYPES, TYPE_bool, 0, 0, false, false, false, false, false,
+   false, 0, VOIDmode, ARM_NEON_H_TYPES_LAST, ARM_NEON_H_TYPES_LAST }
 };
 
-CONSTEXPR const group_suffix_info group_suffixes[] = {
+constexpr group_suffix_info group_suffixes[] = {
 #define DEF_SVE_GROUP_SUFFIX(NAME, VG, VECTORS_PER_TUPLE) \
-  { "_" #NAME, VG, VECTORS_PER_TUPLE },
+  { /* .string		  = */ "_" #NAME,		  \
+    /* .vectors_per_group = */ VG,			  \
+    /* .vectors_per_tuple = */ VECTORS_PER_TUPLE },
 #include "aarch64-sve-builtins.def"
   { "", 0, 1 }
 };
@@ -198,34 +203,54 @@ constexpr const aarch64_acle::function_group_info neon_function_groups[] = {
 };
 
 /* A list of all arm_sve.h functions.  */
-static CONSTEXPR const function_group_info function_groups[] = {
+static constexpr function_group_info function_groups[] = {
 #define DEF_SVE_FUNCTION_GS_FPM(NAME, SHAPE, TYPES, GROUPS, PREDS, FPM_MODE) \
-  { #NAME, &functions::NAME, &shapes::SHAPE, types_##TYPES, groups_##GROUPS, \
-    preds_##PREDS, aarch64_required_extensions::REQUIRED_EXTENSIONS, \
-    FPM_##FPM_MODE },
+  { /* .base_name  = */ #NAME,						\
+    /* .base       = */ &functions::NAME,				\
+    /* .shape      = */ &shapes::SHAPE,					\
+    /* .types      = */ types_##TYPES,					\
+    /* .groups     = */ groups_##GROUPS,				\
+    /* .preds      = */ preds_##PREDS,					\
+    /* .extensions = */ aarch64_required_extensions::REQUIRED_EXTENSIONS, \
+    /* .fpm_mode   = */ FPM_##FPM_MODE },
 #include "aarch64-sve-builtins.def"
 };
 
 /* A list of all arm_neon_sve_bridge.h ACLE functions.  */
-static CONSTEXPR const function_group_info neon_sve_function_groups[] = {
+static constexpr function_group_info neon_sve_function_groups[] = {
 #define DEF_NEON_SVE_FUNCTION(NAME, SHAPE, TYPES, GROUPS, PREDS) \
-  { #NAME, &neon_sve_bridge_functions::NAME, &shapes::SHAPE, types_##TYPES, \
-    groups_##GROUPS, preds_##PREDS, aarch64_required_extensions::ssve (0), \
-    FPM_unused },
+  { /* .base_name  = */ #NAME,					 \
+    /* .base       = */ &neon_sve_bridge_functions::NAME,	 \
+    /* .shape      = */ &shapes::SHAPE,				 \
+    /* .types      = */ types_##TYPES,				 \
+    /* .groups     = */ groups_##GROUPS,			 \
+    /* .preds      = */ preds_##PREDS,				 \
+    /* .extensions = */ aarch64_required_extensions::ssve (0),	 \
+    /* .fpm_mode   = */ FPM_unused },
 #include "aarch64-neon-sve-bridge-builtins.def"
 };
 
 /* A list of all arm_sme.h functions.  */
-static CONSTEXPR const function_group_info sme_function_groups[] = {
+static constexpr function_group_info sme_function_groups[] = {
 #define DEF_SME_FUNCTION_GS_FPM(NAME, SHAPE, TYPES, GROUPS, PREDS, FPM_MODE) \
-  { #NAME, &functions::NAME, &shapes::SHAPE, types_##TYPES, groups_##GROUPS, \
-    preds_##PREDS, aarch64_required_extensions::REQUIRED_EXTENSIONS, \
-    FPM_##FPM_MODE },
+  { /* .base_name  = */ #NAME,						\
+    /* .base       = */ &functions::NAME,				\
+    /* .shape      = */ &shapes::SHAPE,					\
+    /* .types      = */ types_##TYPES,					\
+    /* .groups     = */ groups_##GROUPS,				\
+    /* .preds      = */ preds_##PREDS,					\
+    /* .extensions = */ aarch64_required_extensions::REQUIRED_EXTENSIONS, \
+    /* .fpm_mode   = */ FPM_##FPM_MODE },
 #define DEF_SME_ZA_FUNCTION_GS_FPM(NAME, SHAPE, TYPES, GROUPS, PREDS, FPM_MODE) \
-  { #NAME, &functions::NAME##_za, &shapes::SHAPE, types_##TYPES, \
-    groups_##GROUPS, preds_##PREDS, \
-    aarch64_required_extensions::REQUIRED_EXTENSIONS \
-      .and_also (AARCH64_FL_ZA_ON), FPM_##FPM_MODE },
+  { /* .base_name  = */ #NAME,					  \
+    /* .base       = */ &functions::NAME##_za,			  \
+    /* .shape      = */ &shapes::SHAPE,				  \
+    /* .types      = */ types_##TYPES,				  \
+    /* .groups     = */ groups_##GROUPS,			  \
+    /* .preds      = */ preds_##PREDS,				  \
+    /* .extensions = */ aarch64_required_extensions::REQUIRED_EXTENSIONS \
+			.and_also (AARCH64_FL_ZA_ON),		  \
+    /* .fpm_mode   = */ FPM_##FPM_MODE },
 #include "aarch64-sve-builtins-sme.def"
 };
 
@@ -432,8 +457,10 @@ function_instance::hash () const
 {
   inchash::hash h;
   /* BASE uniquely determines BASE_NAME, so we don't need to hash both.  */
-  h.add_ptr (base);
-  h.add_ptr (shape);
+  /* FUNCTION_TABLE has a fixed address relative to BASE and SHAPE within
+     the compiler binary, even if PIE changes the binary's load address.  */
+  h.add_hwi ((uintptr_t) base - (uintptr_t) &function_table);
+  h.add_hwi ((uintptr_t) shape - (uintptr_t) &function_table);
   h.add_int (mode_suffix_id);
   h.add_int (type_suffix_ids[0]);
   h.add_int (type_suffix_ids[1]);
@@ -1075,7 +1102,7 @@ function_resolver::lookup_form (mode_suffix_index mode, sve_type type)
 }
 
 /* Resolve the function to one with the mode suffix given by MODE, the
-   type suffixes given by TYPE0 and TYPE1, and group suffix given by
+   type suffixes given by TYPE0, TYPE1 and TYPE2, and group suffix given by
    GROUP.  Return its function decl on success, otherwise report an
    error and return error_mark_node.  */
 tree
@@ -1265,7 +1292,7 @@ function_resolver::infer_pointer_type (unsigned int argno,
     {
       error_at (location, "passing %qT to argument %d of %qE, but %qT is not"
 		" a valid SVE element type", actual, argno + 1, fndecl,
-		build_qualified_type (target, 0));
+		build_qualified_type (target, TYPE_UNQUALIFIED));
       return NUM_TYPE_SUFFIXES;
     }
   unsigned int bits = type_suffixes[type].element_bits;
@@ -2302,8 +2329,22 @@ finish_opt_n_resolution (unsigned int argno, unsigned int first_argno,
 			 unsigned int expected_bits,
 			 type_suffix_index inferred_type)
 {
-  if (inferred_type == NUM_TYPE_SUFFIXES)
-    inferred_type = first_type;
+  return finish_opt_n_resolution (argno, first_argno, first_type,
+				  expected_tclass, expected_bits,
+				  (inferred_type == NUM_TYPE_SUFFIXES
+				   ? sve_type (first_type)
+				   : sve_type (inferred_type)));
+}
+
+tree function_resolver::
+finish_opt_n_resolution (unsigned int argno, unsigned int first_argno,
+			 type_suffix_index first_type,
+			 type_class_index expected_tclass,
+			 unsigned int expected_bits,
+			 sve_type inferred_type)
+{
+  if (!inferred_type)
+    inferred_type = sve_type (first_type);
   tree scalar_form = lookup_form (MODE_n, inferred_type);
 
   /* Allow the final argument to be scalar, if an _n form exists.  */
@@ -2763,15 +2804,15 @@ is_pfalse (tree v)
 gimple_folder::gimple_folder (const function_instance &instance, tree fndecl,
 			      gimple_stmt_iterator *gsi_in, gcall *call_in)
   : function_call_info (gimple_location (call_in), instance, fndecl),
-    gsi (gsi_in), call (call_in), lhs (gimple_call_lhs (call_in))
+    gsi (gsi_in), call (call_in), lhs (gimple_call_lhs (call_in)),
+    stmts (nullptr)
 {
 }
 
 /* VALUE might be a vector of type VECTYPE or a single scalar element.
-   Duplicate it into a vector of type VECTYPE in the latter case, adding any
-   new statements to STMTS.  */
+   Duplicate it into a vector of type VECTYPE in the latter case.  */
 tree
-gimple_folder::force_vector (gimple_seq &stmts, tree vectype, tree value)
+gimple_folder::force_vector (tree vectype, tree value)
 {
   if (!VECTOR_TYPE_P (TREE_TYPE (value)))
     value = gimple_build_vector_from_val (&stmts, vectype, value);
@@ -2779,10 +2820,9 @@ gimple_folder::force_vector (gimple_seq &stmts, tree vectype, tree value)
 }
 
 /* Convert predicate argument ARGNO so that it has the type appropriate for
-   an operation on VECTYPE.  Add any new statements to STMTS.  */
+   an operation on VECTYPE.  */
 tree
-gimple_folder::convert_pred (gimple_seq &stmts, tree vectype,
-			     unsigned int argno)
+gimple_folder::convert_pred (tree vectype, unsigned int argno)
 {
   tree pred = gimple_call_arg (call, argno);
   if (known_eq (TYPE_VECTOR_SUBPARTS (TREE_TYPE (pred)),
@@ -2794,10 +2834,9 @@ gimple_folder::convert_pred (gimple_seq &stmts, tree vectype,
 }
 
 /* Return a pointer to the address in a contiguous load or store,
-   given that each memory vector has type VECTYPE.  Add any new
-   statements to STMTS.  */
+   given that each memory vector has type VECTYPE.  */
 tree
-gimple_folder::fold_contiguous_base (gimple_seq &stmts, tree vectype)
+gimple_folder::fold_contiguous_base (tree vectype)
 {
   tree base = gimple_call_arg (call, 1);
   if (mode_suffix_id == MODE_vnum)
@@ -2810,6 +2849,28 @@ gimple_folder::fold_contiguous_base (gimple_seq &stmts, tree vectype)
 			   base, offset);
     }
   return base;
+}
+
+/* Common code to fold a contiguous load intrinsic call into a gimple
+   call to IFN_CODE.  */
+gimple *
+gimple_folder::fold_contiguous_load (internal_fn ifn_code)
+{
+  if (vectors_per_tuple () != 1)
+    return nullptr;
+
+  tree vectype = vector_type (0);
+
+  /* Get the predicate and base pointer.  */
+  tree pred = convert_pred (vectype, 0);
+  tree base = fold_contiguous_base (vectype);
+  tree els = build_zero_cst (vectype);
+
+  tree cookie = load_store_cookie (TREE_TYPE (vectype));
+  gcall *new_call = gimple_build_call_internal (ifn_code, 4,
+						base, cookie, pred, els);
+  gimple_call_set_lhs (new_call, lhs);
+  return new_call;
 }
 
 /* Return the alignment and TBAA argument to an internal load or store
@@ -2899,7 +2960,7 @@ gimple_folder::fold_pfalse ()
 	  && !AGGREGATE_TYPE_P (TREE_TYPE (lhs)))
 	return fold_call_to (build_zero_cst (TREE_TYPE (lhs)));
       if (flags & (CP_WRITE_MEMORY | CP_PREFETCH_MEMORY))
-	return fold_to_stmt_vops (gimple_build_nop ());
+	return gimple_build_nop ();
     }
   return nullptr;
 }
@@ -2917,7 +2978,6 @@ gimple_folder::convert_and_fold (tree type,
   gcc_assert (VECTOR_TYPE_P (type)
 	      && TYPE_MODE (type) != VNx16BImode);
   tree old_ty = TREE_TYPE (lhs);
-  gimple_seq stmts = NULL;
   bool convert_lhs_p = !useless_type_conversion_p (type, old_ty);
   tree lhs_conv = convert_lhs_p ? make_ssa_name (type) : lhs;
   unsigned int num_args = gimple_call_num_args (call);
@@ -2935,7 +2995,6 @@ gimple_folder::convert_and_fold (tree type,
     }
 
   gimple *new_stmt = fp (*this, lhs_conv, args_conv);
-  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
   if (convert_lhs_p)
     {
       tree t = build1 (VIEW_CONVERT_EXPR, old_ty, lhs_conv);
@@ -2973,7 +3032,16 @@ gimple_folder::fold_to_ptrue ()
 gimple *
 gimple_folder::fold_to_pfalse ()
 {
-  return gimple_build_assign (lhs, build_zero_cst (TREE_TYPE (lhs)));
+  if (type_suffix (0).tclass == TYPE_bool)
+    return gimple_build_assign (lhs, build_zero_cst (TREE_TYPE (lhs)));
+
+  if (type_suffix (0).tclass == TYPE_count)
+    {
+      tree svbool_type = abi_vector_types[VECTOR_TYPE_svbool_t];
+      return fold_call_to (build_zero_cst (svbool_type));
+    }
+
+  return NULL;
 }
 
 /* Fold an operation to a constant predicate in which the first VL
@@ -2983,22 +3051,9 @@ gimple *
 gimple_folder::fold_to_vl_pred (unsigned int vl)
 {
   tree vectype = TREE_TYPE (lhs);
-  tree element_type = TREE_TYPE (vectype);
-  tree minus_one = build_all_ones_cst (element_type);
-  tree zero = build_zero_cst (element_type);
   unsigned int element_bytes = type_suffix (0).element_bytes;
-
-  /* Construct COUNT elements that contain the ptrue followed by
-     a repeating sequence of COUNT elements.  */
-  unsigned int count = constant_lower_bound (TYPE_VECTOR_SUBPARTS (vectype));
-  gcc_assert (vl * element_bytes <= count);
-  tree_vector_builder builder (vectype, count, 2);
-  for (unsigned int i = 0; i < count * 2; ++i)
-    {
-      bool bit = (i & (element_bytes - 1)) == 0 && i < vl * element_bytes;
-      builder.quick_push (bit ? minus_one : zero);
-    }
-  return gimple_build_assign (lhs, builder.build ());
+  tree pred = aarch64_fold_sve_ptrue_vl (vectype, vl, element_bytes);
+  return gimple_build_assign (lhs, pred);
 }
 
 /* Try to fold the call to a constant, given that, for integers, the call
@@ -3041,10 +3096,8 @@ gimple_folder::fold_active_lanes_to (tree x)
   if (operand_equal_p (x, vec_inactive, 0))
     return gimple_build_assign (lhs, x);
 
-  gimple_seq stmts = NULL;
-  tree pred = convert_pred (stmts, vector_type (0), 0);
-  x = force_vector (stmts, TREE_TYPE (lhs), x);
-  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  tree pred = convert_pred (vector_type (0), 0);
+  x = force_vector (TREE_TYPE (lhs), x);
   return gimple_build_assign (lhs, VEC_COND_EXPR, pred, x, vec_inactive);
 }
 
@@ -3053,20 +3106,10 @@ gimple *
 gimple_folder::fold_call_to (tree t)
 {
   if (types_compatible_p (TREE_TYPE (lhs), TREE_TYPE (t)))
-    return fold_to_stmt_vops (gimple_build_assign (lhs, t));
+    return gimple_build_assign (lhs, t);
 
   tree rhs = build1 (VIEW_CONVERT_EXPR, TREE_TYPE (lhs), t);
-  return fold_to_stmt_vops (gimple_build_assign (lhs, VIEW_CONVERT_EXPR, rhs));
-}
-
-/* Fold call to G, incl. adjustments to the virtual operands.  */
-gimple *
-gimple_folder::fold_to_stmt_vops (gimple *g)
-{
-  gimple_seq stmts = NULL;
-  gimple_seq_add_stmt_without_update (&stmts, g);
-  gsi_replace_with_seq_vops (gsi, stmts);
-  return g;
+  return gimple_build_assign (lhs, VIEW_CONVERT_EXPR, rhs);
 }
 
 /* Try to fold the call.  Return the new statement on success and null
@@ -3079,19 +3122,32 @@ gimple_folder::fold ()
   if (!TARGET_SIMD && !TARGET_SVE)
     return NULL;
 
-  /* Punt if the function has a return type and no result location is
-     provided.  The attributes should allow target-independent code to
-     remove the calls if appropriate.  */
+  /* Create a placeholder variable for the result.
+     This allows implementers of `fold` to assume `lhs` will never be null.
+     If the result is unused, it will be optimized away later.  */
   if (!lhs && TREE_TYPE (gimple_call_fntype (call)) != void_type_node)
-    return NULL;
+    lhs = create_tmp_var (TREE_TYPE (gimple_call_fntype (call)));
 
   /* First try some simplifications that are common to many functions.  */
-  if (auto *call = redirect_pred_x ())
-    return call;
-  if (auto *call = fold_pfalse ())
-    return call;
+  gimple *res = redirect_pred_x ();
+  if (!res)
+    res = fold_pfalse ();
+  if (!res)
+    res = base->fold (*this);
 
-  return base->fold (*this);
+  if (res == call)
+    /* Folds can only reuse the existing call if there are no extra vops
+       to worry about.  */
+    gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  else if (res)
+    {
+      gimple_seq_add_stmt_without_update (&stmts, res);
+      if (gimple_in_ssa_p (cfun))
+	gsi_replace_with_seq_vops (gsi, stmts);
+      else
+	gsi_replace_with_seq (gsi, stmts, true);
+    }
+  return res;
 }
 
 /* Force EXPR to be a GIMPLE value, putting it into a new variable if
@@ -3105,7 +3161,7 @@ gimple_folder::force_val (tree expr)
   auto type = TREE_TYPE (expr);
   auto var = create_tmp_var (type);
   auto stmt = gimple_build_assign (var, expr);
-  gsi_insert_before (this->gsi, stmt, GSI_SAME_STMT);
+  gimple_seq_add_stmt_without_update (&stmts, stmt);
   return var;
 }
 
@@ -3115,19 +3171,7 @@ gassign *
 gimple_folder::assign (tree lhs, tree rhs)
 {
   auto stmt = gimple_build_assign (lhs, rhs);
-  gsi_insert_before (this->gsi, stmt, GSI_SAME_STMT);
-  return stmt;
-}
-
-/* Insert a `lhs = code<rhs1, rhs2, rhs3>` statement before the current
-   statement.
-   Returns the new statement.  */
-gassign *
-gimple_folder::assign (tree lhs, tree_code code, tree rhs1, tree rhs2,
-		       tree rhs3)
-{
-  auto stmt = gimple_build_assign (lhs, code, rhs1, rhs2, rhs3);
-  gsi_insert_before (this->gsi, stmt, GSI_SAME_STMT);
+  gimple_seq_add_stmt_without_update (&stmts, stmt);
   return stmt;
 }
 
@@ -3751,8 +3795,8 @@ function_expander::use_contiguous_store_insn (insn_code icode)
 rtx
 function_expander::map_to_rtx_codes (rtx_code code_for_sint,
 				     rtx_code code_for_uint,
-				     int unspec_for_cond_fp,
-				     int unspec_for_uncond_fp,
+				     unspec unspec_for_cond_fp,
+				     unspec unspec_for_uncond_fp,
 				     unsigned int merge_argno)
 {
   machine_mode mode = tuple_mode (0);
@@ -3828,13 +3872,13 @@ function_expander::map_to_rtx_codes (rtx_code code_for_sint,
    MERGE_ARGNO is the argument that provides the values of inactive lanes for
    _m functions, or DEFAULT_MERGE_ARGNO if we should apply the usual rules.  */
 rtx
-function_expander::map_to_unspecs (int unspec_for_sint, int unspec_for_uint,
-				   int unspec_for_fp, unsigned int merge_argno)
+function_expander::map_to_unspecs (unspec unspec_for_sint, unspec unspec_for_uint,
+				   unspec unspec_for_fp, unsigned int merge_argno)
 {
   machine_mode mode = tuple_mode (0);
-  int unspec = (!type_suffix (0).integer_p ? unspec_for_fp
-		: type_suffix (0).unsigned_p ? unspec_for_uint
-		: unspec_for_sint);
+  unspec unspec = (!type_suffix (0).integer_p ? unspec_for_fp
+		   : type_suffix (0).unsigned_p ? unspec_for_uint
+						: unspec_for_sint);
 
   if (mode_suffix_id == MODE_single)
     {
@@ -4647,8 +4691,14 @@ gt_pch_nx (function_instance *)
 }
 
 inline void
-gt_pch_nx (function_instance *, gt_pointer_operator, void *)
+gt_pch_nx (function_instance *instance, gt_pointer_operator, void *)
 {
+  /* The instance is the first member of its containing GC object.  PCH
+     adjusts these pointers if the compiler has a different PIE load base.  */
+  static_assert (offsetof (registered_function, instance) == 0);
+  gt_pch_note_callback (&instance->base_name, instance);
+  gt_pch_note_callback (&instance->base, instance);
+  gt_pch_note_callback (&instance->shape, instance);
 }
 
 #include "gt-aarch64-acle-builtins.h"

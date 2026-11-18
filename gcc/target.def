@@ -233,6 +233,23 @@ DEFHOOK_UNDOC
  void, (char *buf, const char *prefix, unsigned long labelno),
  default_generate_internal_label)
 
+/* Emit whatever a shared jump table's entries are relative to, once per
+   table, in the function's own section.  */
+DEFHOOK
+(jump_table_base,
+ "Define this hook if the output of a dispatching jump defines the base that\n\
+the entries of its jump table are relative to.  Several jumps can share one\n\
+table, and the base then has to be defined once.  The hook is called once\n\
+for a shared table, with the function's own section still selected,\n\
+immediately before the label of the jump table @var{table}, whose label\n\
+number is @var{labelno}.  It should write that base to the stdio stream\n\
+@var{stream}, typically as a text label for a PC-relative table.\n\
+\n\
+A target whose table entries are absolute or relative to the label of the\n\
+table has nothing to emit and does not need this hook.",
+ void, (FILE *stream, rtx_jump_table_data *table, unsigned long labelno),
+ NULL)
+
 /* Output an internal label.  */
 DEFHOOK
 (internal_label,
@@ -894,6 +911,16 @@ DEFHOOK_UNDOC
  "",
  void, (FILE *file, rtx x, int code),
  default_print_operand)
+
+/* Validate a multi-character operand modifier and return its target code.  */
+DEFHOOK
+(print_operand_modifier,
+ "Return the code to pass to @code{TARGET_PRINT_OPERAND} for the named\n\
+modifier @var{name}.  @var{user_p} is true for a modifier in a user\n\
+@code{asm}.  Return zero if the modifier is unavailable in that context.\n\
+Valid codes must be at least @code{PRINT_OPERAND_MODIFIER_BASE}.",
+ int, (string_slice name, bool user_p),
+ default_print_operand_modifier)
 
 /* Emit a machine-specific memory address.  */
 /* ??? tm.texi only documents the old macro PRINT_OPERAND_ADDRESS,
@@ -2810,6 +2837,31 @@ follow through a hot/cold partitioning.",
  bool, (const rtx_insn *follower, const rtx_insn *followee),
  hook_bool_const_rtx_insn_const_rtx_insn_true)
 
+/* Return true if INSN can share its jump table with copies of itself.  */
+DEFHOOK
+(can_share_jump_table_p,
+ "Return true if the tablejump instruction @var{insn} can share its jump\n\
+table with copies of itself.  The hook is called before duplication, with\n\
+the current function's target options active.  It can inspect the instruction\n\
+form and these options, but must not modify RTL or emit assembly.\n\
+\n\
+A shared table follows only one of the jumps through it.  Return false if\n\
+@var{insn} finds its table, or the base of the table entries, from its own\n\
+address or from a label that its output defines, unless\n\
+@code{TARGET_ASM_JUMP_TABLE_BASE} emits that base once per table.  Also\n\
+return false if a copy elsewhere in the function might not reach the table\n\
+under the current target configuration, including the code model and\n\
+section layout, or if a target pass expects a table to follow every jump\n\
+through it.  This hook only permits creating shared tables.  It is not\n\
+called to control their later output or verification.\n\
+\n\
+The default implementation returns true.  Define the hook as\n\
+@code{hook_bool_rtx_insn_false} to disable shared jump tables.  Other\n\
+duplication restrictions, including @code{TARGET_CANNOT_COPY_INSN_P}, still\n\
+apply.",
+ bool, (rtx_insn *insn),
+ hook_bool_rtx_insn_true)
+
 /* Return true if the target supports conditional execution.  */
 DEFHOOK
 (have_conditional_execution,
@@ -2832,6 +2884,18 @@ DEFHOOK
  NULL)
 
 DEFHOOK
+(ccmp_first_preference,
+ "Return how strongly the comparison of @var{op0} and @var{op1} with tree\n\
+code @var{code} and mode @var{mode} should start a conditional-compare\n\
+sequence.  Return @code{CCMP_FIRST_REQUIRED} if the comparison cannot be\n\
+conditional, @code{CCMP_FIRST_PREFERRED} if starting with it is profitable,\n\
+@code{CCMP_FIRST_NONE} if its position does not matter, or\n\
+@code{CCMP_FIRST_UNSUPPORTED} if it cannot be part of the sequence.",
+ ccmp_first_kind,
+ (machine_mode mode, tree_code code, const_tree op0, const_tree op1),
+ default_ccmp_first_preference)
+
+DEFHOOK
 (gen_ccmp_next,
  "This function prepares to emit a conditional comparison within a sequence\n\
  of conditional comparisons.  It returns an appropriate comparison with\n\
@@ -2843,6 +2907,9 @@ DEFHOOK
  or @code{gen_ccmp_next}.  It may return @code{NULL} if the combination of\n\
  @var{prev} and this comparison is not supported, otherwise the result must\n\
  be appropriate for passing to @code{gen_ccmp_next} or @code{cbranch_optab}.\n\
+ The comparison is not performed when @var{prev} is false, so this function\n\
+ has to return @code{NULL} for a comparison that raises an exception which\n\
+ has to be preserved.\n\
  @var{code} is the @code{rtx_code} of the compare for @var{op0} and @var{op1}.\n\
  @var{bit_code} is @code{AND} or @code{IOR}, which is the op on the compares.",
  rtx, (rtx_insn **prep_seq, rtx_insn **gen_seq, rtx prev, rtx_code cmp_code, tree op0, tree op1, rtx_code bit_code),
@@ -3448,7 +3515,10 @@ HOOK_VECTOR (TARGET_ADDR_SPACE_HOOKS, addr_space)
 DEFHOOK
 (pointer_mode,
  "Define this to return the machine mode to use for pointers to\n\
-@var{address_space} if the target supports named address spaces.\n\
+@var{address_space} if the target supports named address spaces.\n\n\
+Targets that support vectors of pointers should return only the scalar base\n\
+mode here, but permit the vector modes in\n\
+@code{TARGET_ADDR_SPACE_VALID_POINTER_MODE}.\n\n\
 The default version of this hook returns @code{ptr_mode}.",
  scalar_int_mode, (addr_space_t address_space),
  default_addr_space_pointer_mode)
@@ -3457,7 +3527,11 @@ The default version of this hook returns @code{ptr_mode}.",
 DEFHOOK
 (address_mode,
  "Define this to return the machine mode to use for addresses in\n\
-@var{address_space} if the target supports named address spaces.\n\
+@var{address_space} if the target supports named address spaces.\n\n\
+Targets that support vectors of addresses should return only the scalar base\n\
+mode here, but permit the vector modes in\n\
+@code{TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P} and\n\
+@code{TARGET_ADDR_SPACE_LEGITIMIZE_ADDRESS}.\n\n\
 The default version of this hook returns @code{Pmode}.",
  scalar_int_mode, (addr_space_t address_space),
  default_addr_space_address_mode)
@@ -3467,13 +3541,16 @@ The default version of this hook returns @code{Pmode}.",
 DEFHOOK
 (valid_pointer_mode,
  "Define this to return nonzero if the port can handle pointers\n\
-with machine mode @var{mode} to address space @var{as}.  This target\n\
-hook is the same as the @code{TARGET_VALID_POINTER_MODE} target hook,\n\
-except that it includes explicit named address space support.  The default\n\
-version of this hook returns true for the modes returned by either the\n\
-@code{TARGET_ADDR_SPACE_POINTER_MODE} or @code{TARGET_ADDR_SPACE_ADDRESS_MODE}\n\
-target hooks for the given address space.",
- bool, (scalar_int_mode mode, addr_space_t as),
+with machine mode @var{mode} to address space @var{as}.  This hook can\n\
+also be used to allow pointers to use vector modes (e.g. to permit\n\
+@samp{(mem:V4SI (reg:V4DI))}).  This target hook is the same as the\n\
+@code{TARGET_VALID_POINTER_MODE} target hook, except that it includes\n\
+explicit named address space support, and does not mandate\n\
+@code{scalar_int_mode}.  The default version of this hook returns true for\n\
+the modes returned by either the @code{TARGET_ADDR_SPACE_POINTER_MODE}\n\
+or @code{TARGET_ADDR_SPACE_ADDRESS_MODE} target hooks for the given address\n\
+space.",
+ bool, (machine_mode mode, addr_space_t as),
  default_addr_space_valid_pointer_mode)
 
 /* True if an address is a valid memory address to a given named address
@@ -4216,6 +4293,16 @@ the @code{POLY_VALUE_MIN}, @code{POLY_VALUE_MAX} and\n\
 implementation returns the lowest possible value of @var{val}.",
  HOST_WIDE_INT, (poly_int64 val, poly_value_estimate_kind kind),
  default_estimated_poly_value)
+
+DEFHOOK
+(poly_int_indeterminate_bound,
+ "Return a @code{poly_uint64} whose coefficients give conservative\n\
+inclusive upper bounds for the corresponding @code{poly_int}\n\
+indeterminates.  The constant coefficient is ignored and should be zero.\n\
+This hook is used for correctness rather than for costing, so the returned\n\
+bounds must be safe for all architecturally-valid runtime values.",
+ poly_uint64, (void),
+ NULL)
 
 /* Permit speculative instructions in delay slots during delayed-branch
    scheduling.  */
@@ -6165,6 +6252,38 @@ reload from using some alternatives, like @code{TARGET_PREFERRED_RELOAD_CLASS}."
  default_preferred_output_reload_class)
 
 DEFHOOK
+(base_reg_class,
+ "A target hook that returns the register class to which a valid base\n\
+register for memory addressing must belong.  @var{mode} and @var{as} are\n\
+the mode and address space of the value being addressed, @var{outer_code}\n\
+and @var{index_code} are the codes of the address expression and of the\n\
+index expression respectively (or @code{SCRATCH} where an index is not\n\
+applicable).\n\
+\n\
+If the address being asked about is the address of a particular\n\
+@code{MEM}, @var{mem} is that @code{MEM} rtx; otherwise it is null.  When\n\
+non-null, targets should determine the required class by examining\n\
+@var{mem} directly (for example, to see whether the address side of the\n\
+@code{MEM} is itself held in a general or a vector register) rather than\n\
+by making assumptions from @var{mode} and @var{as} alone, since more than\n\
+one @code{MEM} of the same mode and address space can appear within a\n\
+single @var{insn} with different base-register requirements.\n\
+\n\
+If the specific instruction being processed is known, @var{insn} is that\n\
+instruction; otherwise it is null.  This is provided for targets that\n\
+need context wider than a single @code{MEM}, such as avoiding particular\n\
+addressing-register encodings on specific instructions.\n\
+\n\
+The default implementation ignores @var{mem} and @var{insn} and calls the\n\
+legacy macros @code{BASE_REG_CLASS}, @code{MODE_BASE_REG_CLASS},\n\
+@code{MODE_BASE_REG_REG_CLASS} and @code{MODE_CODE_BASE_REG_CLASS} instead,\n\
+based on @var{mode}, @var{as}, @var{outer_code} and @var{index_code} alone.",
+ reg_class_t,
+ (machine_mode mode, addr_space_t as, enum rtx_code outer_code,
+  enum rtx_code index_code, rtx mem, rtx_insn *insn),
+ default_base_reg_class)
+
+DEFHOOK
 (select_early_remat_modes,
  "On some targets, certain modes cannot be held in registers around a\n\
 standard ABI call and are relatively expensive to spill to the stack.\n\
@@ -6239,9 +6358,24 @@ DEFHOOK
 substitute safely pseudos with equivalent memory values during\n\
 register allocation.\n\
 The default version of this target hook returns @code{false}.\n\
-On most machines, this default should be used.  For generally\n\
-machines with non orthogonal register usage for addressing, such\n\
-as SH, this hook can be used to avoid excessive spilling.",
+On most machines, this default should be used.  For machines with\n\
+non-orthogonal register usage for addressing, such as SH,\n\
+this hook can be used to avoid excessive spilling.",
+ bool, (rtx subst),
+ hook_bool_rtx_false)
+
+/* This target hook allows the backend to avoid unsafe substitution
+   during register allocation.  */
+DEFHOOK
+(cannot_substitute_const_equiv_p,
+ "A target hook which returns @code{true} if @var{subst} can't\n\
+substitute safely pseudos with equivalent constant values during\n\
+register allocation.\n\
+The default version of this target hook returns @code{false}.\n\
+On most machines, this default should be used.  For machines with\n\
+special constant load instructions that have additional constraints\n\
+or being dependent on mode-switching, such as SH, this hook can be\n\
+used to avoid unsafe substitution.",
  bool, (rtx subst),
  hook_bool_rtx_false)
 
@@ -7679,4 +7813,3 @@ The default value is NULL.",
 
 /* Close the 'struct gcc_target' definition.  */
 HOOK_VECTOR_END (C90_EMPTY_HACK)
-

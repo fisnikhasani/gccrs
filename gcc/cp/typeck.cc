@@ -241,7 +241,7 @@ commonparms (tree p1, tree p2)
 static tree
 original_type (tree t)
 {
-  int quals = cp_type_quals (t);
+  auto quals = cp_type_quals (t);
   while (t != error_mark_node
 	 && TYPE_NAME (t) != NULL_TREE)
     {
@@ -719,9 +719,9 @@ composite_pointer_type_r (const op_location_t &location,
 	return error_mark_node;
       result_type = void_type_node;
     }
-  const int q1 = cp_type_quals (pointee1);
-  const int q2 = cp_type_quals (pointee2);
-  const int quals = q1 | q2;
+  const auto q1 = cp_type_quals (pointee1);
+  const auto q2 = cp_type_quals (pointee2);
+  const auto quals = q1 | q2;
   result_type = cp_build_qualified_type (result_type,
 					 (quals | (*add_const
 						   ? TYPE_QUAL_CONST
@@ -987,7 +987,7 @@ merge_types (tree t1, tree t2)
       /* For two pointers, do this recursively on the target type.  */
       {
 	tree target = merge_types (TREE_TYPE (t1), TREE_TYPE (t2));
-	int quals = cp_type_quals (t1);
+	auto quals = cp_type_quals (t1);
 
 	if (code1 == POINTER_TYPE)
 	  {
@@ -1005,9 +1005,8 @@ merge_types (tree t1, tree t2)
 
     case OFFSET_TYPE:
       {
-	int quals;
 	tree pointee;
-	quals = cp_type_quals (t1);
+	auto quals = cp_type_quals (t1);
 	pointee = merge_types (TYPE_PTRMEM_POINTED_TO_TYPE (t1),
 			       TYPE_PTRMEM_POINTED_TO_TYPE (t2));
 	t1 = build_ptrmem_type (TYPE_PTRMEM_CLASS_TYPE (t1),
@@ -3047,7 +3046,7 @@ build_class_member_access_expr (cp_expr object, tree member,
     {
       /* A non-static data member.  */
       bool null_object_p;
-      int type_quals;
+      cv_qualifier type_quals;
       tree member_type;
 
       if (INDIRECT_REF_P (object))
@@ -3251,7 +3250,9 @@ lookup_destructor (tree object, tree scope, tree dtor_name,
     }
   expr = lookup_member (dtor_type, complete_dtor_identifier,
 			/*protect=*/1, /*want_type=*/false,
-			tf_warning_or_error);
+			complain);
+  if (expr == error_mark_node)
+    return error_mark_node;
   if (!expr)
     {
       if (complain & tf_error)
@@ -6387,7 +6388,7 @@ cp_build_binary_op (const op_location_t &location,
 	}
       /* [expr.eq]: "If both operands are of type std::meta::info,
 	 comparison is defined as follows..."  */
-      else if (code0 == META_TYPE && code1 == META_TYPE)
+      else if (REFLECTION_TYPE_P (type0) && REFLECTION_TYPE_P (type1))
 	result_type = type0;
       else
 	{
@@ -7175,6 +7176,107 @@ build_x_bswapg_bitreverseg (location_t loc, internal_fn ifn,
     {
       exp = build_min_non_dep_call_vec (exp, NULL, args);
       CALL_EXPR_IFN (exp) = ifn;
+    }
+  return exp;
+}
+
+/* Build __builtin_clmulg (ARG1, ARG2) or
+   __builtin_clmulg (ARG1, ARG2, ARG3).  */
+tree
+build_x_clmulg (location_t loc, vec<tree, va_gc> *args,
+		tsubst_flags_t complain)
+{
+  const char *name = "__builtin_clmulg";
+  if (args->length () < 2 || args->length () > 3)
+    {
+      if (complain & tf_error)
+	error_at (loc, "wrong number of arguments to %qs", name);
+      return error_mark_node;
+    }
+  tree arg1 = (*args)[0];
+  tree arg2 = (*args)[1];
+  tree arg3 = args->length () == 3 ? (*args)[2] : NULL_TREE;
+  if (error_operand_p (arg1)
+      || error_operand_p (arg2)
+      || error_operand_p (arg3))
+    return error_mark_node;
+  if (type_dependent_expression_p (arg1)
+      || type_dependent_expression_p (arg2)
+      || type_dependent_expression_p (arg3))
+    {
+      tree exp = build_min_nt_call_vec (NULL, args);
+      CALL_EXPR_IFN (exp) = IFN_CLMUL;
+      return exp;
+    }
+  tree type = TYPE_MAIN_VARIANT (TREE_TYPE (arg1));
+  if (!INTEGRAL_TYPE_P (type))
+    {
+      if (complain & tf_error)
+	error_at (loc, "%qs operand not an integral type", name);
+      return error_mark_node;
+    }
+  if (TREE_CODE (type) == ENUMERAL_TYPE)
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument %u in call to function "
+		       "%qs has enumerated type", 1, name);
+      return error_mark_node;
+    }
+  if (TREE_CODE (type) == BOOLEAN_TYPE)
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument %u in call to function "
+		       "%qs has boolean type", 1, name);
+      return error_mark_node;
+    }
+  if (!TYPE_UNSIGNED (type))
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument 1 in call to function "
+		       "%qs has signed type", name);
+      return error_mark_node;
+    }
+  if (!same_type_p (type, TYPE_MAIN_VARIANT (TREE_TYPE (arg2))))
+    {
+      if (complain & tf_error)
+	error_at (loc, "arguments 1 and 2 to function %qs "
+		       "have different types %qT and %qT",
+		  name, type, TYPE_MAIN_VARIANT (TREE_TYPE (arg2)));
+      return error_mark_node;
+    }
+  if (arg3)
+    {
+      if (!POINTER_TYPE_P (TREE_TYPE (arg3)))
+	{
+	  if (complain & tf_error)
+	    error_at (loc, "argument 3 to function %qs does not have "
+			   "pointer type", name);
+	  return error_mark_node;
+	}
+      tree htype = TREE_TYPE (TREE_TYPE (arg3));
+      if (!same_type_p (type, TYPE_MAIN_VARIANT (htype)))
+	{
+	  if (complain & tf_error)
+	    error_at (loc, "arguments 1 and 3 to function %qs "
+			   "have incompatible types %qT and %qT",
+		      name, type, TREE_TYPE (arg3));
+	  return error_mark_node;
+	}
+      if (TYPE_READONLY (htype))
+	{
+	  if (complain & tf_error)
+	    error_at (loc, "argument 3 to function %qs "
+			   "has pointer to %qs type %qT",
+		      name, "const", TREE_TYPE (arg3));
+	  return error_mark_node;
+	}
+    }
+  tree exp = build_call_expr_internal_loc (loc, IFN_CLMUL, type,
+					   arg3 ? 3 : 2, arg1, arg2, arg3);
+  if (processing_template_decl)
+    {
+      exp = build_min_non_dep_call_vec (exp, NULL, args);
+      CALL_EXPR_IFN (exp) = IFN_CLMUL;
     }
   return exp;
 }
@@ -11581,6 +11683,11 @@ check_return_expr (tree retval, bool *no_warning, bool *dangling)
 
   if (processing_template_decl)
     {
+      /* If in expansion statement body, we don't know if the body
+	 will be instantiated at all.  */
+      if (in_expansion_stmt)
+	goto dependent;
+
       current_function_returns_value = 1;
 
       if (check_for_bare_parameter_packs (retval))
@@ -11894,12 +12001,6 @@ check_return_expr (tree retval, bool *no_warning, bool *dangling)
 	*dangling = true;
     }
 
-  if (check_out_of_consteval_use (retval))
-    {
-      current_function_return_value = error_mark_node;
-      return error_mark_node;
-    }
-
   /* A naive attempt to reduce the number of -Wdangling-reference false
      positives: if we know that this function can return a variable with
      static storage duration rather than one of its parameters, suppress
@@ -12123,10 +12224,11 @@ comp_ptr_ttypes_const (tree to, tree from, compare_bounds_t cb)
 /* Returns the type qualifiers for this type, including the qualifiers on the
    elements for an array type.  */
 
-int
+cv_qualifier
 cp_type_quals (const_tree type)
 {
-  int quals;
+  cv_qualifier quals;
+  addr_space_t as;
   /* This CONST_CAST is okay because strip_array_types returns its
      argument unmodified and we assign it to a const_tree.  */
   type = strip_array_types (const_cast<tree> (type));
@@ -12134,7 +12236,10 @@ cp_type_quals (const_tree type)
       /* Quals on a FUNCTION_TYPE are memfn quals.  */
       || TREE_CODE (type) == FUNCTION_TYPE)
     return TYPE_UNQUALIFIED;
-  quals = TYPE_QUALS (type);
+
+  std::tie (quals, as) = TYPE_QUALS (type).split ();
+  /* No address space support yet.  */
+  gcc_assert (ADDR_SPACE_GENERIC_P (as));
   /* METHOD and REFERENCE_TYPEs should never have quals.  */
   gcc_assert ((TREE_CODE (type) != METHOD_TYPE
 	       && !TYPE_REF_P (type))
@@ -12161,11 +12266,18 @@ type_memfn_rqual (const_tree type)
 /* Returns the function-cv-quals for TYPE, which must be a FUNCTION_TYPE or
    METHOD_TYPE.  */
 
-int
+cv_qualifier
 type_memfn_quals (const_tree type)
 {
   if (TREE_CODE (type) == FUNCTION_TYPE)
-    return TYPE_QUALS (type);
+    {
+      cv_qualifier quals;
+      addr_space_t as;
+      std::tie (quals, as) = TYPE_QUALS (type).split ();
+      /* No address space support yet.  */
+      gcc_assert (ADDR_SPACE_GENERIC_P (as));
+      return quals;
+    }
   else if (TREE_CODE (type) == METHOD_TYPE)
     return cp_type_quals (class_of_this_parm (type));
   else
@@ -12224,7 +12336,7 @@ cp_has_mutable_p (const_tree type)
    initializer is non-constant.  */
 
 void
-cp_apply_type_quals_to_decl (int type_quals, tree decl)
+cp_apply_type_quals_to_decl (cv_qualifier type_quals, tree decl)
 {
   tree type = TREE_TYPE (decl);
 
@@ -12257,8 +12369,8 @@ cp_apply_type_quals_to_decl (int type_quals, tree decl)
 static void
 casts_away_constness_r (tree *t1, tree *t2, tsubst_flags_t complain)
 {
-  int quals1;
-  int quals2;
+  cv_qualifier quals1;
+  cv_qualifier quals2;
 
   /* [expr.const.cast]
 

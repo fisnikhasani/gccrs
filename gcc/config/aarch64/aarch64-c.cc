@@ -225,7 +225,12 @@ aarch64_update_cpp_builtins (cpp_reader *pfile)
 			&& (AARCH64_HAVE_ISA (SVE2) || TARGET_SME2),
 			"__ARM_FEATURE_SVE_B16B16", pfile);
   aarch64_def_or_undef (AARCH64_HAVE_ISA (SVE2), "__ARM_FEATURE_SVE2", pfile);
-  aarch64_def_or_undef (TARGET_SVE2_AES, "__ARM_FEATURE_SVE2_AES", pfile);
+  aarch64_def_or_undef (AARCH64_HAVE_ISA (SVE2) && AARCH64_HAVE_ISA (SVE_AES),
+			"__ARM_FEATURE_SVE2_AES", pfile);
+  aarch64_def_or_undef (AARCH64_HAVE_ISA (SVE_AES2), "__ARM_FEATURE_SVE_AES2",
+			pfile);
+  aarch64_def_or_undef (AARCH64_HAVE_ISA (SSVE_AES), "__ARM_FEATURE_SSVE_AES",
+			pfile);
   aarch64_def_or_undef (AARCH64_HAVE_ISA (SVE_BITPERM)
 			&& AARCH64_HAVE_ISA (SVE2),
 			"__ARM_FEATURE_SVE2_BITPERM", pfile);
@@ -298,6 +303,7 @@ aarch64_update_cpp_builtins (cpp_reader *pfile)
 			"__ARM_FEATURE_LS64", pfile);
   aarch64_def_or_undef (TARGET_RCPC, "__ARM_FEATURE_RCPC", pfile);
   aarch64_def_or_undef (TARGET_D128, "__ARM_FEATURE_SYSREG128", pfile);
+  aarch64_def_or_undef (TARGET_CSSC, "__ARM_FEATURE_CSSC", pfile);
 
   aarch64_def_or_undef (TARGET_SME, "__ARM_FEATURE_SME", pfile);
   aarch64_def_or_undef (TARGET_SME_I16I64, "__ARM_FEATURE_SME_I16I64", pfile);
@@ -311,14 +317,19 @@ aarch64_update_cpp_builtins (cpp_reader *pfile)
 			"__ARM_FEATURE_SME_F16F16", pfile);
   aarch64_def_or_undef (TARGET_SME_F64F64, "__ARM_FEATURE_SME_F64F64", pfile);
   aarch64_def_or_undef (TARGET_SME2, "__ARM_FEATURE_SME2", pfile);
+  aarch64_def_or_undef (AARCH64_HAVE_ISA (SME_MOP4), "__ARM_FEATURE_SME_MOP4",
+			pfile);
   aarch64_def_or_undef (AARCH64_HAVE_ISA (SME2p1),
 			"__ARM_FEATURE_SME2p1", pfile);
   aarch64_def_or_undef (TARGET_SME2p2, "__ARM_FEATURE_SME2p2", pfile);
   aarch64_def_or_undef (TARGET_FAMINMAX, "__ARM_FEATURE_FAMINMAX", pfile);
   aarch64_def_or_undef (TARGET_PCDPHINT, "__ARM_FEATURE_PCDPHINT", pfile);
+  aarch64_def_or_undef (AARCH64_HAVE_ISA (SME_TMOP),
+			"__ARM_FEATURE_SME_TMOP", pfile);
   aarch64_def_or_undef (AARCH64_HAVE_ISA (SSVE_FEXPA),
 			"__ARM_FEATURE_SSVE_FEXPA", pfile);
   builtin_define ("__ARM_PREFETCH_RANGE");
+  aarch64_def_or_undef (TARGET_F16F32DOT, "__ARM_FEATURE_F16F32DOT", pfile);
 
   // Function multi-versioning defines
   aarch64_def_or_undef (targetm.has_ifunc_p (),
@@ -336,6 +347,9 @@ aarch64_update_cpp_builtins (cpp_reader *pfile)
 
   aarch64_def_or_undef (TARGET_F8F16MM, "__ARM_FEATURE_F8F16MM", pfile);
   aarch64_def_or_undef (TARGET_F8F32MM, "__ARM_FEATURE_F8F32MM", pfile);
+  aarch64_def_or_undef (TARGET_F16MM, "__ARM_FEATURE_F16MM", pfile);
+  aarch64_def_or_undef (TARGET_F16F32MM, "__ARM_FEATURE_F16F32MM", pfile);
+  aarch64_def_or_undef (TARGET_SVE_B16MM, "__ARM_FEATURE_SVE_B16MM", pfile);
   aarch64_def_or_undef (TARGET_SVE_F16F32MM, "__ARM_FEATURE_SVE_F16F32MM",
 			pfile);
 }

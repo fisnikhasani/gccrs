@@ -19,11 +19,8 @@ AC_MSG_RESULT($version_specific_libs)
 
 AC_USE_SYSTEM_EXTENSIONS
 
-# Do not delete or change the following two lines.  For why, see
-# http://gcc.gnu.org/ml/libstdc++/2003-07/msg00451.html
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 target_alias=${target_alias-$host_alias}
-AC_SUBST(target_alias)
 GCC_LIBSTDCXX_RAW_CXX_FLAGS
 
 AM_INIT_AUTOMAKE(foreign no-dist)
@@ -74,8 +71,7 @@ AC_PROG_CXX
 AM_PROG_AS
 AC_PROG_RANLIB
 
-AC_LIBTOOL_DLOPEN
-LT_INIT
+LT_INIT([dlopen])
 
 AC_PROG_AWK
 case "$AWK" in
@@ -87,6 +83,7 @@ AC_SUBST(enable_static)
 
 AM_CONDITIONAL([ENABLE_DARWIN_AT_RPATH], [test x$enable_darwin_at_rpath = xyes])
 
+dnl cache variable in configure.tgt
 AC_CHECK_SIZEOF([void *])
 
 if test "${multilib}" = "yes"; then
@@ -266,7 +263,7 @@ AC_SUBST(BACKTRACE_SUPPORTED)
 
 GCC_HEADER_STDINT(gstdint.h)
 
-AC_CHECK_HEADERS(sys/mman.h alloca.h)
+AC_CHECK_HEADERS(sys/mman.h)
 if test "$ac_cv_header_sys_mman_h" = "no"; then
   have_mmap=no
 else
@@ -368,7 +365,7 @@ AM_CONDITIONAL(LIBBACKTRACE_SUPPORTED,
 
 AH_BOTTOM([#include "libbacktrace/backtrace-rename.h"])
 AC_CONFIG_FILES([Makefile libsanitizer.spec libbacktrace/backtrace-supported.h])
-AC_CONFIG_HEADER(config.h)
+AC_CONFIG_HEADERS([config.h])
 
 AC_CONFIG_FILES(m4_foreach_w([DIR], [interception sanitizer_common libbacktrace lsan asan ubsan], [DIR/Makefile ]),
   [cat > vpsed$$ << \_EOF

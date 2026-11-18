@@ -19,6 +19,7 @@
 #ifndef RUST_COMPILE_CONTEXT
 #define RUST_COMPILE_CONTEXT
 
+#include "optional.h"
 #include "rust-system.h"
 #include "rust-compile-drop-candidate.h"
 #include "rust-hir-map.h"
@@ -86,6 +87,28 @@ public:
     return type;
   }
 
+  bool lookup_compiled_adt (const TyTy::ADTType &adt, tree *type) const
+  {
+    auto it = compiled_adt_types.find (compiled_adt_key (adt));
+    if (it == compiled_adt_types.end ())
+      return false;
+
+    *type = it->second;
+    return true;
+  }
+
+  void insert_compiled_adt (const TyTy::ADTType &adt, tree type)
+  {
+    auto key = compiled_adt_key (adt);
+    rust_assert (compiled_adt_types.find (key) == compiled_adt_types.end ());
+    compiled_adt_types.insert ({key, type});
+  }
+
+  void erase_compiled_adt (const TyTy::ADTType &adt)
+  {
+    rust_assert (compiled_adt_types.erase (compiled_adt_key (adt)) == 1);
+  }
+
   tree insert_main_variant (tree type)
   {
     hashval_t h = type_hasher (type);
@@ -141,6 +164,21 @@ public:
       return false;
 
     *decl = it->second;
+    return true;
+  }
+
+  void insert_drop_flag (HirId id, ::Bvariable *flag)
+  {
+    drop_flags[{peek_fn ().fndecl, id}] = flag;
+  }
+
+  bool lookup_drop_flag (HirId id, ::Bvariable **flag)
+  {
+    auto it = drop_flags.find ({peek_fn ().fndecl, id});
+    if (it == drop_flags.end ())
+      return false;
+
+    *flag = it->second;
     return true;
   }
 
@@ -264,6 +302,32 @@ public:
     return true;
   }
 
+  void insert_break_label (HirId id, tree label)
+  {
+    compiled_break_labels[id] = label;
+  }
+
+  tl::optional<tree> lookup_break_label (HirId id)
+  {
+    auto it = compiled_break_labels.find (id);
+    if (it == compiled_break_labels.end ())
+      return tl::nullopt;
+    return it->second;
+  }
+
+  void insert_continue_label (HirId id, tree label)
+  {
+    compiled_continue_labels[id] = label;
+  }
+
+  tl::optional<tree> lookup_continue_label (HirId id)
+  {
+    auto it = compiled_continue_labels.find (id);
+    if (it == compiled_continue_labels.end ())
+      return tl::nullopt;
+    return it->second;
+  }
+
   void insert_pattern_binding (HirId id, tree binding)
   {
     implicit_pattern_bindings[id] = binding;
@@ -368,6 +432,22 @@ public:
     return pop;
   }
 
+  void push_loop_end_label (tree label) { loop_end_labels.push_back (label); }
+
+  tree peek_loop_end_label ()
+  {
+    rust_assert (!loop_end_labels.empty ());
+    return loop_end_labels.back ();
+  }
+
+  tree pop_loop_end_label ()
+  {
+    rust_assert (!loop_end_labels.empty ());
+    tree pop = loop_end_labels.back ();
+    loop_end_labels.pop_back ();
+    return pop;
+  }
+
   void push_const_context (void) { const_context++; }
   void pop_const_context (void)
   {
@@ -420,6 +500,8 @@ private:
   friend class DropBuilder;
   Context ();
 
+  static hashval_t type_hasher (tree type, hash_set<tree> &active_types);
+
   tree pop_block_impl (tree cleanup, location_t cleanup_locus)
   {
     auto block = scope_stack.back ();
@@ -454,6 +536,15 @@ private:
     return block;
   }
 
+  // we cant just use DefId because we can setup Adt<u32> vs Adt<i32> so the
+  // tyref gets us the uniqueness we need
+  static std::pair<DefId, HirId> compiled_adt_key (const TyTy::ADTType &adt)
+  {
+    HirId substitution
+      = adt.has_substitutions_defined () ? adt.get_ty_ref () : UNKNOWN_HIRID;
+    return {adt.get_id (), substitution};
+  }
+
   Resolver::TypeCheckContext *tyctx;
   Analysis::Mappings &mappings;
   Mangler mangler;
@@ -461,16 +552,21 @@ private:
   // state
   std::vector<fncontext> fn_stack;
   std::map<HirId, ::Bvariable *> compiled_var_decls;
+  std::map<std::pair<tree, HirId>, ::Bvariable *> drop_flags;
   std::map<hashval_t, tree> compiled_type_map;
+  std::map<std::pair<DefId, HirId>, tree> compiled_adt_types;
   std::map<HirId, tree> compiled_fn_map;
   std::map<HirId, tree> compiled_consts;
   std::map<HirId, tree> compiled_labels;
   std::map<std::pair<size_t, size_t>, ::Bvariable *> compiled_vtables;
+  std::map<HirId, tree> compiled_break_labels;
+  std::map<HirId, tree> compiled_continue_labels;
   std::vector<::std::vector<tree>> statements;
   std::vector<tree> scope_stack;
   std::vector<::std::vector<DropCandidate>> block_drop_candidates;
   std::vector<::Bvariable *> loop_value_stack;
   std::vector<tree> loop_begin_labels;
+  std::vector<tree> loop_end_labels;
   std::map<DefId, std::vector<std::pair<const TyTy::BaseType *, tree>>>
     mono_fns;
   std::map<DefId, std::vector<std::pair<const TyTy::ClosureType *, tree>>>

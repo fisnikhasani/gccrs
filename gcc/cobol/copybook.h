@@ -33,6 +33,8 @@
 #else
 #define _COPYBOOK_H
 
+#include <sys/types.h> // where macOS defines ino_t
+
 #if defined(CDF_Y)
 #define gcc_assert(x) assert(x)
 void gcc_unreachable(void);
@@ -197,11 +199,8 @@ class copybook_t {
     book.clear();
     this->source(loc, name);
 
-    for( auto dir : directories ) {
-      dbgmsg("copybook_t::open '%s' OF '%s' %s",
-	     book.source.name,
-	     dir? dir: ".",
-	     book.literally.source? ", literally" : "" );
+    for( const auto &dir : directories ) {
+      // cppcheck-suppress useStlAlgorithm
       if( (fd = book.open_file(dir, book.literally.source)) != -1 ) break;
     }
     return fd;

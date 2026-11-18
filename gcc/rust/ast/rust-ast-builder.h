@@ -184,7 +184,7 @@ public:
 				= {}) const;
 
   std::unique_ptr<Expr>
-  qualified_call (std::vector<std::string> &&segments,
+  qualified_call (std::vector<std::string> &&segments, bool has_opening_scope,
 		  std::vector<std::unique_ptr<Expr>> &&args) const;
 
   /* Self parameter for a function definition (`&self`) */
@@ -339,9 +339,16 @@ public:
   std::unique_ptr<GenericParam>
   new_const_param (ConstGenericParam &param) const;
 
+  enum class DefaultParamGen
+  {
+    Remove,
+    Keep,
+  };
+
   static std::unique_ptr<GenericParam> new_type_param (
     TypeParam &param,
-    std::vector<std::unique_ptr<TypeParamBound>> extra_trait_bounds = {});
+    std::vector<std::unique_ptr<TypeParamBound>> extra_trait_bounds = {},
+    DefaultParamGen default_param_generation = DefaultParamGen::Keep);
 
   static Lifetime new_lifetime (const Lifetime &lifetime);
 
@@ -370,6 +377,19 @@ public:
 	return "crate";
       case Builder::Source::Any:
 	return "core";
+      default:
+	rust_unreachable ();
+      }
+  }
+
+  bool has_opening_scope () const
+  {
+    switch (item_source)
+      {
+      case Builder::Source::InCore:
+	return false;
+      case Builder::Source::Any:
+	return true;
       default:
 	rust_unreachable ();
       }

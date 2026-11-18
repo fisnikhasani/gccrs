@@ -433,7 +433,8 @@ canonicalize_value (ccp_prop_value_t *val)
 /* Return whether the lattice transition is valid.  */
 
 static bool
-valid_lattice_transition (ccp_prop_value_t old_val, ccp_prop_value_t new_val)
+valid_lattice_transition (const ccp_prop_value_t &old_val,
+			  const ccp_prop_value_t &new_val)
 {
   /* Lattice transitions must always be monotonically increasing in
      value.  */
@@ -727,9 +728,16 @@ likely_value (gimple *stmt)
   if (gimple_has_volatile_ops (stmt))
     return VARYING;
 
-  /* .DEFERRED_INIT produces undefined.  */
+  /* .DEFERRED_INIT produces undefined except for AUTO_INIT_CXX26
+     which produces varying because it is undefined that needs to have
+     the same value in all uses.  */
   if (gimple_call_internal_p (stmt, IFN_DEFERRED_INIT))
-    return UNDEFINED;
+    {
+      if (tree_to_uhwi (gimple_call_arg (stmt, 1)) & AUTO_INIT_CXX26)
+	return VARYING;
+      else
+	return UNDEFINED;
+    }
 
   /* Arrive here for more complex cases.  */
   has_constant_operand = false;
@@ -1000,13 +1008,10 @@ ccp_finalize (bool nonzero_p)
 
   do_dbg_cnt ();
 
-  /* Derive alignment and misalignment information from partially
-     constant pointers in the lattice or nonzero bits from partially
-     constant integers.  */
+  /* Derive nonzero and alignment bits from partially constant integers.  */
   FOR_EACH_SSA_NAME (i, name, cfun)
     {
       ccp_prop_value_t *val;
-      unsigned int tem, align;
 
       if (!POINTER_TYPE_P (TREE_TYPE (name))
 	  && (!INTEGRAL_TYPE_P (TREE_TYPE (name))
@@ -1021,25 +1026,11 @@ ccp_finalize (bool nonzero_p)
 	  || val->mask == 0)
 	continue;
 
-      if (POINTER_TYPE_P (TREE_TYPE (name)))
-	{
-	  /* Trailing mask bits specify the alignment, trailing value
-	     bits the misalignment.  */
-	  tem = val->mask.to_uhwi ();
-	  align = least_bit_hwi (tem);
-	  if (align > 1)
-	    set_ptr_info_alignment (get_ptr_info (name), align,
-				    (TREE_INT_CST_LOW (val->value)
-				     & (align - 1)));
-	}
-      else
-	{
-	  unsigned int precision = TYPE_PRECISION (TREE_TYPE (val->value));
-	  wide_int value = wi::to_wide (val->value);
-	  wide_int mask = wide_int::from (val->mask, precision, UNSIGNED);
-	  value = value & ~mask;
-	  set_bitmask (name, value, mask);
-	}
+      unsigned int precision = TYPE_PRECISION (TREE_TYPE (val->value));
+      wide_int value = wi::to_wide (val->value);
+      wide_int mask = wide_int::from (val->mask, precision, UNSIGNED);
+      value = value & ~mask;
+      set_bitmask (name, value, mask);
     }
 
   /* Perform substitutions based on the known constant values.  */
@@ -1626,25 +1617,24 @@ bit_value_binop (enum tree_code code, signop sgn, int width,
 	 is zero.  */
       if (r2mask == 0)
 	{
-	  widest_int shift = r2val;
-	  if (shift == 0)
+	  if (r2val == 0)
 	    {
 	      *mask = r1mask;
 	      *val = r1val;
 	    }
 	  else
 	    {
-	      if (wi::neg_p (shift, r2type_sgn))
+	      if (wi::neg_p (r2val, r2type_sgn))
 		break;
 	      if (code == RSHIFT_EXPR)
 		{
-		  *mask = wi::rshift (wi::ext (r1mask, width, sgn), shift, sgn);
-		  *val = wi::rshift (wi::ext (r1val, width, sgn), shift, sgn);
+		  *mask = wi::rshift (wi::ext (r1mask, width, sgn), r2val, sgn);
+		  *val = wi::rshift (wi::ext (r1val, width, sgn), r2val, sgn);
 		}
 	      else
 		{
-		  *mask = wi::ext (r1mask << shift, width, sgn);
-		  *val = wi::ext (r1val << shift, width, sgn);
+		  *mask = wi::ext (r1mask << r2val, width, sgn);
+		  *val = wi::ext (r1val << r2val, width, sgn);
 		}
 	    }
 	}
@@ -2710,11 +2700,11 @@ fold_builtin_alloca_with_align (gimple *stmt)
      as it might need to handle more than one instance being
      live at the same time.  Instead of trying to detect this case
      (using the first UID would be OK) just give up for now.  */
-  struct ptr_info_def *pi = SSA_NAME_PTR_INFO (lhs);
+  const pt_solution *pt = ssa_name_pt_solution (lhs);
   unsigned uid = 0;
-  if (pi != NULL
-      && !pi->pt.anything
-      && !pt_solution_singleton_or_null_p (&pi->pt, &uid))
+  if (pt != NULL
+      && !pt->anything
+      && !pt_solution_singleton_or_null_p (pt, &uid))
     return NULL_TREE;
 
   /* Declare array.  */
@@ -3042,6 +3032,10 @@ static unsigned int
 do_ssa_ccp (bool nonzero_p)
 {
   unsigned int todo = 0;
+
+  /* We want to minimize the number of latches to reduce iteration.  */
+  loop_optimizer_init (LOOPS_HAVE_SIMPLE_LATCHES);
+
   calculate_dominance_info (CDI_DOMINATORS);
 
   ccp_initialize ();
@@ -3056,6 +3050,9 @@ do_ssa_ccp (bool nonzero_p)
     }
 
   free_dominance_info (CDI_DOMINATORS);
+
+  loop_optimizer_finalize ();
+
   return todo;
 }
 

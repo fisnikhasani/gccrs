@@ -509,6 +509,12 @@ class region_model
 
   tree get_fndecl_for_call (const gcall &call,
 			    region_model_context *ctxt);
+  tree get_fndecl_for_virtual_call (const_tree fn_ptr,
+				    region_model_context *ctxt);
+
+  tree get_vtable_from_obj (tree obj, tree obj_type, region_model_manager *mgr,
+			    region_model_context *ctxt,
+			    unsigned HOST_WIDE_INT *out = nullptr) const;
 
   void get_regions_for_current_frame (auto_vec<const decl_region *> *out) const;
   static void append_regions_cb (const region *base_reg,
@@ -1255,6 +1261,7 @@ class rejected_constraint
 public:
   virtual ~rejected_constraint () {}
   virtual void dump_to_pp (pretty_printer *pp) const = 0;
+  virtual std::unique_ptr<json::object> to_json () const = 0;
 
   const region_model &get_model () const { return m_model; }
 
@@ -1262,6 +1269,9 @@ protected:
   rejected_constraint (const region_model &model)
   : m_model (model)
   {}
+
+  std::unique_ptr<json::object>
+  make_base_json (const char *kind) const;
 
   region_model m_model;
 };
@@ -1276,6 +1286,7 @@ public:
   {}
 
   void dump_to_pp (pretty_printer *pp) const final override;
+  std::unique_ptr<json::object> to_json () const final override;
 
   const svalue *m_lhs;
   enum tree_code m_op;
@@ -1290,6 +1301,7 @@ public:
   {}
 
   void dump_to_pp (pretty_printer *pp) const final override;
+  std::unique_ptr<json::object> to_json () const final override;
 };
 
 class rejected_ranges_constraint : public rejected_constraint
@@ -1302,6 +1314,7 @@ public:
   {}
 
   void dump_to_pp (pretty_printer *pp) const final override;
+  std::unique_ptr<json::object> to_json () const final override;
 
 private:
   tree m_expr;

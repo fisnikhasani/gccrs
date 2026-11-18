@@ -3400,7 +3400,7 @@ get_unit_operand_masks (rtx_insn *insn, unsigned int *pmask1,
    it only if we managed to improve the balance.  */
 static void
 try_rename_operands (rtx_insn *head, rtx_insn *tail, unit_req_table reqs,
-		     rtx insn,
+		     rtx_insn *insn,
 		     insn_rr_info *info, unsigned int op_mask, int orig_side)
 {
   enum reg_class super_class = orig_side == 0 ? B_REGS : A_REGS;
@@ -3695,7 +3695,7 @@ record_jump (int cycle, rtx cond)
 /* Set the clock cycle of INSN to CYCLE.  Also clears the insn's entry in
    new_conditions.  */
 static void
-insn_set_clock (rtx insn, int cycle)
+insn_set_clock (rtx_insn *insn, int cycle)
 {
   unsigned uid = INSN_UID (insn);
 
@@ -3717,7 +3717,7 @@ insn_uid_get_clock (int uid)
 
 /* Return the clock cycle we set for INSN.  */
 static int
-insn_get_clock (rtx insn)
+insn_get_clock (rtx_insn *insn)
 {
   return insn_uid_get_clock (INSN_UID (insn));
 }
@@ -3726,7 +3726,7 @@ insn_get_clock (rtx insn)
    the opposite of the condition in which it branches.  Otherwise,
    return NULL_RTX.  */
 static rtx
-condjump_opposite_condition (rtx insn)
+condjump_opposite_condition (rtx_insn *insn)
 {
   rtx pat = PATTERN (insn);
   int icode = INSN_CODE (insn);
@@ -4786,7 +4786,7 @@ find_next_cycle_insn (rtx_insn *insn, int clock)
    around PAT.  Return PAT either unchanged or modified in this
    way.  */
 static rtx
-duplicate_cond (rtx pat, rtx cond_insn)
+duplicate_cond (rtx pat, rtx_insn *cond_insn)
 {
   rtx cond_pat = PATTERN (cond_insn);
   if (GET_CODE (cond_pat) == COND_EXEC)
@@ -4822,23 +4822,15 @@ find_last_same_clock (rtx_insn *insn)
 static void
 reorg_split_calls (rtx_code_label **call_labels)
 {
-  unsigned int reservation_mask = 0;
   rtx_insn *insn = get_insns ();
   gcc_assert (NOTE_P (insn));
   insn = next_real_insn (insn);
   while (insn)
     {
-      int uid;
       rtx_insn *next = next_real_insn (insn);
 
       if (DEBUG_INSN_P (insn))
 	goto done;
-
-      if (GET_MODE (insn) == TImode)
-	reservation_mask = 0;
-      uid = INSN_UID (insn);
-      if (c6x_flag_schedule_insns2 && recog_memoized (insn) >= 0)
-	reservation_mask |= 1 << INSN_INFO_ENTRY (uid).reservation;
 
       if (returning_call_p (insn))
 	{
@@ -4946,13 +4938,14 @@ reorg_split_calls (rtx_code_label **call_labels)
 	      if (TARGET_INSNS_64)
 		{
 		  rtx x1 = gen_addkpc (reg, labelref, const0_rtx);
-		  x1 = emit_insn_after (duplicate_cond (x1, insn), after1);
-		  insn_set_clock (x1, this_clock + 1);
-		  INSN_INFO_ENTRY (INSN_UID (x1)).reservation = RESERVATION_S2;
+		  rtx_insn *i1
+		    = emit_insn_after (duplicate_cond (x1, insn), after1);
+		  insn_set_clock (i1, this_clock + 1);
+		  INSN_INFO_ENTRY (INSN_UID (i1)).reservation = RESERVATION_S2;
 		  if (after1 == last_same_clock)
-		    PUT_MODE (x1, TImode);
+		    PUT_MODE (i1, TImode);
 		  else
-		    INSN_INFO_ENTRY (INSN_UID (x1)).unit_mask
+		    INSN_INFO_ENTRY (INSN_UID (i1)).unit_mask
 		      = INSN_INFO_ENTRY (INSN_UID (after1)).unit_mask;
 		}
 	      else
@@ -4963,22 +4956,24 @@ reorg_split_calls (rtx_code_label **call_labels)
 		  if (after2 == NULL_RTX)
 		    after2 = after1;
 		  x2 = gen_movsi_lo_sum (reg, reg, labelref);
-		  x2 = emit_insn_after (duplicate_cond (x2, insn), after2);
+		  rtx_insn *i2
+		    = emit_insn_after (duplicate_cond (x2, insn), after2);
 		  x1 = gen_movsi_high (reg, labelref);
-		  x1 = emit_insn_after (duplicate_cond (x1, insn), after1);
-		  insn_set_clock (x1, this_clock + 1);
-		  insn_set_clock (x2, this_clock + 2);
-		  INSN_INFO_ENTRY (INSN_UID (x1)).reservation = RESERVATION_S2;
-		  INSN_INFO_ENTRY (INSN_UID (x2)).reservation = RESERVATION_S2;
+		  rtx_insn *i1
+		    = emit_insn_after (duplicate_cond (x1, insn), after1);
+		  insn_set_clock (i1, this_clock + 1);
+		  insn_set_clock (i2, this_clock + 2);
+		  INSN_INFO_ENTRY (INSN_UID (i1)).reservation = RESERVATION_S2;
+		  INSN_INFO_ENTRY (INSN_UID (i2)).reservation = RESERVATION_S2;
 		  if (after1 == last_same_clock)
-		    PUT_MODE (x1, TImode);
+		    PUT_MODE (i1, TImode);
 		  else
-		    INSN_INFO_ENTRY (INSN_UID (x1)).unit_mask
+		    INSN_INFO_ENTRY (INSN_UID (i1)).unit_mask
 		      = INSN_INFO_ENTRY (INSN_UID (after1)).unit_mask;
 		  if (after1 == after2)
-		    PUT_MODE (x2, TImode);
+		    PUT_MODE (i2, TImode);
 		  else
-		    INSN_INFO_ENTRY (INSN_UID (x2)).unit_mask
+		    INSN_INFO_ENTRY (INSN_UID (i2)).unit_mask
 		      = INSN_INFO_ENTRY (INSN_UID (after2)).unit_mask;
 		}
 	    }
@@ -4997,7 +4992,7 @@ static void
 reorg_emit_nops (rtx_code_label **call_labels)
 {
   bool first;
-  rtx last_call;
+  rtx_insn *last_call;
   rtx_insn *prev;
   int prev_clock, earliest_bb_end;
   int prev_implicit_nops;
@@ -5052,7 +5047,7 @@ reorg_emit_nops (rtx_code_label **call_labels)
 		  cycles -= prev_implicit_nops;
 		  if (cycles > 1)
 		    {
-		      rtx nop = emit_nop_after (cycles - 1, prev);
+		      rtx_insn *nop = emit_nop_after (cycles - 1, prev);
 		      insn_set_clock (nop, prev_clock + prev_implicit_nops + 1);
 		    }
 		}
@@ -5062,7 +5057,7 @@ reorg_emit_nops (rtx_code_label **call_labels)
 		  && insn_get_clock (last_call) + 6 <= this_clock)
 		{
 		  emit_label_before (call_labels[INSN_UID (last_call)], insn);
-		  last_call = NULL_RTX;
+		  last_call = nullptr;
 		}
 	      prev_implicit_nops = 0;
 	    }
@@ -5114,7 +5109,7 @@ reorg_emit_nops (rtx_code_label **call_labels)
 
 	  if (last_call)
 	    emit_label_after (call_labels[INSN_UID (last_call)], prev);
-	  last_call = NULL_RTX;
+	  last_call = nullptr;
 	}
       insn = next;
     }
@@ -5492,7 +5487,7 @@ hwloop_optimize (hwloop_info loop)
   int n_execute_packets;
   edge entry_edge;
   unsigned ix;
-  int max_uid_before, delayed_splits;
+  int max_uid_before;
   int i, sp_ii, min_ii, max_ii, max_parallel, n_insns, n_real_insns, stages;
   rtx_insn **orig_vec;
   rtx_insn **copies;
@@ -5538,14 +5533,13 @@ hwloop_optimize (hwloop_info loop)
      safe and beneficial to split them.  If any multi-cycle operations
      remain after splitting (because we don't handle them yet), we
      cannot pipeline the loop.  */
-  delayed_splits = 0;
   FOR_BB_INSNS (bb, insn)
     {
       if (NONDEBUG_INSN_P (insn))
 	{
 	  recog_memoized (insn);
 	  if (split_delayed_nonbranch (insn))
-	    delayed_splits++;
+	    ;
 	  else if (INSN_CODE (insn) >= 0
 		   && get_attr_cycles (insn) > 1)
 	    goto undo_splits;
@@ -5680,7 +5674,7 @@ hwloop_optimize (hwloop_info loop)
 
   for (i = 0; i < n_real_insns; i++)
     {
-      rtx insn = insn_copies[0][i];
+      rtx_insn *insn = insn_copies[0][i];
       int uid = INSN_UID (insn);
       int stage = insn_uid_get_clock (uid) / sp_ii;
 
@@ -6679,6 +6673,15 @@ c6x_modes_tieable_p (machine_mode mode1, machine_mode mode2)
 	      && GET_MODE_SIZE (mode2) <= UNITS_PER_WORD));
 }
 
+/* Implement TARGET_CAN_SHARE_JUMP_TABLE_P.  With PIC, the dispatch finds the
+   table with addkpc, which only reaches a table close to the jump.  */
+
+static bool
+c6x_can_share_jump_table_p (rtx_insn *)
+{
+  return !flag_pic;
+}
+
 /* Implement REGNO_REG_CLASS.  */
 
 enum reg_class
@@ -6829,6 +6832,9 @@ c6x_regno_reg_class (int reg)
 
 #undef TARGET_MACHINE_DEPENDENT_REORG
 #define TARGET_MACHINE_DEPENDENT_REORG c6x_reorg
+
+#undef TARGET_CAN_SHARE_JUMP_TABLE_P
+#define TARGET_CAN_SHARE_JUMP_TABLE_P c6x_can_share_jump_table_p
 
 #undef TARGET_ASM_FILE_START
 #define TARGET_ASM_FILE_START c6x_file_start

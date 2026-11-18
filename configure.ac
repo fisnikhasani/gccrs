@@ -244,6 +244,17 @@ if test x$with_gnu_as = xno ; then
   noconfigdirs="$noconfigdirs gas"
 fi
 
+# Catch an invalid use of --with-long-double-64 early.
+AC_ARG_WITH(long-double-64,
+[],
+[
+if test x$with_long_double_64 = xyes ; then
+  AC_MSG_ERROR([found --with-long-double-64 but use --without-long-double-128 instead])
+else
+  AC_MSG_ERROR([found --without-long-double-64 but use --with-long-double-128 instead])
+fi
+])
+
 use_included_zlib=
 AC_ARG_WITH(system-zlib,
 [AS_HELP_STRING([--with-system-zlib], [use installed libz])])
@@ -2556,10 +2567,11 @@ if test -d ${srcdir}/gcc; then
         esac
 
         # Disable jit if -enable-host-shared not specified
-        # but not if building for Mingw. All code in Windows
+        # but not if building for MinGW or Cygwin. All code in Windows
         # is position independent code (PIC).
         case $target in
           *mingw*) ;;
+          *cygwin*) ;;
           *)
           case ${add_this_lang}:${language}:${host_shared} in
             yes:jit:no)
@@ -3826,21 +3838,6 @@ case "$target:$have_compiler:$host:$target:$enable_multilib" in
     ;;
 esac
 
-# For s390, -m31 is deprecated.  Emit a warning if --enable-multilib and
-# --enable-obsolete are explicitly specified.  If --enable-multilib is
-# specified implicitly or --enable-obsolete is missing, error out.
-case "$target:$enable_multilib:$enable_obsolete" in
-  s390*:yes:yes)
-    AC_MSG_WARN([Support for -m31 is deprecated and will be removed.])
-    ;;
-  s390*::*)
-    AC_MSG_ERROR([Support for -m31 is deprecated and will be removed. Explicitly specify --disable-multilib or --enable-multilib --enable-obsolete to build it anyway.])
-    ;;
-  s390*:yes:*)
-    AC_MSG_ERROR([Support for -m31 is deprecated and will be removed. Specify --enable-obsolete to build it anyway.])
-    ;;
-esac
-
 # Default to --enable-multilib.
 if test x${enable_multilib} = x ; then
   target_configargs="--enable-multilib ${target_configargs}"
@@ -3948,9 +3945,7 @@ esac
 
 case "$target" in
   x86_64-*mingw* | *-w64-mingw*)
-  # MinGW-w64 does not use newlib, nor does it use winsup. It may,
-  # however, use a symlink named 'mingw' in ${prefix} .
-    FLAGS_FOR_TARGET=$FLAGS_FOR_TARGET' -L${prefix}/${target}/lib -L${prefix}/mingw/lib -isystem ${prefix}/${target}/include -isystem ${prefix}/mingw/include'
+  # MinGW-w64 does not use newlib, nor does it use winsup. No special flags needed.
     ;;
   *-mingw*)
   # MinGW can't be handled as Cygwin above since it does not use newlib.

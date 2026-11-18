@@ -921,7 +921,7 @@ altivec_build_resolved_builtin (tree *args, int n, tree fntype, tree ret_type,
 
       args[0] = c_fold_build2_loc (UNKNOWN_LOCATION, BIT_XOR_EXPR,
 				   TREE_TYPE (args[0]), args[0],
-				   build_int_cst (NULL_TREE, 2));
+				   build_int_cst (integer_type_node, 2));
     }
 
   for (int j = 0; j < n; j++)
@@ -1646,7 +1646,7 @@ resolve_vec_step (resolution *res, vec<tree, va_gc> *arglist, unsigned nargs)
     }
 
   *res = resolved;
-  return build_int_cst (NULL_TREE, TYPE_VECTOR_SUBPARTS (arg0_type));
+  return build_int_cst (integer_type_node, TYPE_VECTOR_SUBPARTS (arg0_type));
 }
 
 /* Look for a matching instance in a chain of instances.  INSTANCE points to
@@ -1734,41 +1734,55 @@ altivec_resolve_overloaded_builtin (location_t loc, tree fndecl,
 	    error_at (loc, "%qE requires 6 arguments", fndecl);
 	  return error_mark_node;
 	}
+      unsigned HOST_WIDE_INT size = 0;
+      for (int i=0; i<3; i++) {
+	/* Get the first argument to determine the actual type.  */
+	tree arg0 = (*arglist)[i];
+	tree type0 = TREE_TYPE (arg0);
 
-      /* Get the first argument to determine the actual type.  */
-      tree arg0 = (*arglist)[0];
-      tree type0 = TREE_TYPE (arg0);
+	/* Must be a pointer.  */
+	if (!POINTER_TYPE_P (type0))
+	  {
+	    if (complain)
+	      error_at (loc, "argument %d to %qE must be a pointer",
+			i + 1, fndecl);
+	    return error_mark_node;
+	  }
 
-      /* Must be a pointer.  */
-      if (!POINTER_TYPE_P (type0))
-	{
+	/* Get the pointee type.  */
+	tree pointee_type = TREE_TYPE (type0);
+
+	/* Must be a complete type.  */
+	if (!COMPLETE_TYPE_P (pointee_type))
+	  {
+	    if (complain)
+	      error_at (loc, "argument %d to %qE must point to a complete"
+			" type", i + 1, fndecl);
+	    return error_mark_node;
+	  }
+	if (FUNCTION_POINTER_TYPE_P (type0))
+	  {
+	    if (complain)
+	      error_at (loc, "argument %d to %qE must not be a pointer to a"
+			" function", i + 1, fndecl);
+	    return error_mark_node;
+	  }
+
+	/* Get size in bytes.  */
+	tree size_tree = TYPE_SIZE_UNIT (pointee_type);
+	if (!tree_fits_uhwi_p (size_tree))
+	  {
+		if (complain)
+		error_at (loc, "type size must be constant");
+		return error_mark_node;
+	  }
+	if (i > 0 && size != tree_to_uhwi (size_tree)) {
 	  if (complain)
-	    error_at (loc, "first argument to %qE must be a pointer", fndecl);
+	    error_at(loc, "size mismatch in argument %d", i + 1);
 	  return error_mark_node;
 	}
-
-      /* Get the pointee type.  */
-      tree pointee_type = TREE_TYPE (type0);
-
-      /* Must be a complete type.  */
-      if (!COMPLETE_TYPE_P (pointee_type))
-	{
-	  if (complain)
-	    error_at (loc, "first argument to %qE must point to a complete"
-		      " type", fndecl);
-	  return error_mark_node;
-	}
-
-      /* Get size in bytes.  */
-      tree size_tree = TYPE_SIZE_UNIT (pointee_type);
-      if (!tree_fits_uhwi_p (size_tree))
-	{
-	  if (complain)
-	    error_at (loc, "type size must be constant");
-	  return error_mark_node;
-	}
-
-      unsigned HOST_WIDE_INT size = tree_to_uhwi (size_tree);
+	size = tree_to_uhwi (size_tree);
+      }
 
       /* Determine which size-specific builtin to use.  */
       rs6000_gen_builtins target_fcode;
@@ -1778,23 +1792,30 @@ altivec_resolve_overloaded_builtin (location_t loc, tree fndecl,
 	{
 	case 1:
 	  target_fcode = RS6000_BIF_PPC_ATOMIC_CAS_QI;
-	  int_type = unsigned_char_type_node;
+	  int_type = signed_char_type_node;
 	  break;
 	case 2:
 	  target_fcode = RS6000_BIF_PPC_ATOMIC_CAS_HI;
-	  int_type = short_unsigned_type_node;
+	  int_type = short_integer_type_node;
 	  break;
 	case 4:
 	  target_fcode = RS6000_BIF_PPC_ATOMIC_CAS_SI;
-	  int_type = unsigned_intSI_type_node;
+	  int_type = intSI_type_node;
 	  break;
 	case 8:
 	  target_fcode = RS6000_BIF_PPC_ATOMIC_CAS_DI;
-	  int_type = long_long_unsigned_type_node;
+	  int_type = long_long_integer_type_node;
 	  break;
 	case 16:
+	  if (!TARGET_QUAD_MEMORY_ATOMIC)
+	    {
+	      if (complain)
+		error_at (loc, "%qE requires the %qs option for 16-byte operands",
+			  fndecl, "-mquad-memory-atomic");
+	      return error_mark_node;
+	    }
 	  target_fcode = RS6000_BIF_PPC_ATOMIC_CAS_TI;
-	  int_type = unsigned_intTI_type_node;
+	  int_type = intTI_type_node;
 	  break;
 	default:
 	  if (complain)
@@ -1927,14 +1948,14 @@ altivec_resolve_overloaded_builtin (location_t loc, tree fndecl,
 	 matching further down.  */
       if (POINTER_TYPE_P (decl_type)
 	  && POINTER_TYPE_P (type)
-	  && TYPE_QUALS (TREE_TYPE (type)) != 0)
+	  && TYPE_QUALS (TREE_TYPE (type)).nonempty_p ())
 	{
 	  if (TYPE_READONLY (TREE_TYPE (type))
 	      && !TYPE_READONLY (TREE_TYPE (decl_type)))
 	    warning (0, "passing argument %d of %qE discards %qs "
 		     "qualifier from pointer target type", n + 1, fndecl,
 		     "const");
-	  type = build_qualified_type (TREE_TYPE (type), 0);
+	  type = build_qualified_type (TREE_TYPE (type), TYPE_UNQUALIFIED);
 	  type = build_pointer_type (type);
 	  arg = c_fold_convert (type, arg);
 	}
@@ -1945,7 +1966,7 @@ altivec_resolve_overloaded_builtin (location_t loc, tree fndecl,
 	  && POINTER_TYPE_P (type)
 	  && TYPE_READONLY (TREE_TYPE (type)))
 	{
-	  type = build_qualified_type (TREE_TYPE (type), 0);
+	  type = build_qualified_type (TREE_TYPE (type), TYPE_UNQUALIFIED);
 	  type = build_pointer_type (type);
 	  arg = c_fold_convert (type, arg);
 	}

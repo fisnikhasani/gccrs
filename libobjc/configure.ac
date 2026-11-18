@@ -164,9 +164,7 @@ AC_PROG_INSTALL
 AM_MAINTAINER_MODE
 
 # Enable Win32 DLL on MS Windows - FIXME
-AC_LIBTOOL_WIN32_DLL
-
-LT_INIT
+LT_INIT([win32-dll])
 
 AM_PROG_CC_C_O
 
@@ -208,8 +206,6 @@ You must have a usable C system for the target already installed, at least
 including headers and, preferably, the library, before you can configure
 the Objective C runtime system.  If necessary, install gcc now with
 `LANGUAGES=c', then the target library, then build with `LANGUAGES=objc'.])])
-
-AC_HEADER_STDC
 
 AC_CHECK_HEADERS(sched.h)
 

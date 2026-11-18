@@ -402,16 +402,28 @@ enum class ResolutionMode
   FromExtern, // extern prelude
 };
 
-class ResolutionPath
+struct ResolutionPathSegment
+{
+  std::string name;
+  NodeId node_id;
+  location_t locus;
+
+  bool is_super_path_seg () const { return name.compare ("super") == 0; }
+  bool is_crate_path_seg () const { return name.compare ("crate") == 0; }
+  bool is_lower_self_seg () const { return name.compare ("self") == 0; }
+  bool is_big_self_seg () const { return name.compare ("Self") == 0; }
+};
+
+class ResolutionPath : public RawPath<ResolutionPathSegment>
 {
 public:
   template <typename T>
-  ResolutionPath (const std::vector<T> &segments_in, NodeId node_id)
-    : node_id (node_id)
+  ResolutionPath (const RawPath<T> &path, NodeId node_id)
+    : RawPath ({}, path.has_opening_scope_resolution ()), node_id (node_id)
   {
     segments.clear ();
-    segments.reserve (segments_in.size ());
-    for (auto &outer_seg : segments_in)
+    segments.reserve (path.get_segments ().size ());
+    for (auto &outer_seg : path.get_segments ())
       {
 	if (auto lang_item = unwrap_segment_get_lang_item (outer_seg))
 	  {
@@ -423,7 +435,7 @@ public:
 
 	auto &seg = unwrap_type_segment (outer_seg);
 
-	Segment new_seg;
+	ResolutionPathSegment new_seg;
 	new_seg.name = seg.as_string ();
 	new_seg.node_id = unwrap_segment_node_id (outer_seg);
 	new_seg.locus = seg.get_locus ();
@@ -431,42 +443,44 @@ public:
       }
   }
 
-  ResolutionPath () : node_id (UNKNOWN_NODEID) {}
-
-  struct Segment
-  {
-    std::string name;
-    NodeId node_id;
-    location_t locus;
-
-    bool is_super_path_seg () const { return name.compare ("super") == 0; }
-    bool is_crate_path_seg () const { return name.compare ("crate") == 0; }
-    bool is_lower_self_seg () const { return name.compare ("self") == 0; }
-    bool is_big_self_seg () const { return name.compare ("Self") == 0; }
-  };
+  ResolutionPath () : RawPath ({}, false), node_id (UNKNOWN_NODEID) {}
 
   tl::optional<std::pair<LangItem::Kind, NodeId>> get_lang_prefix () const
   {
     return lang_prefix;
   }
 
-  const std::vector<Segment> &get_segments () const { return segments; }
+  const std::vector<ResolutionPathSegment> &get_segments () const
+  {
+    return segments;
+  }
+
+  bool has_opening_scope_resolution () const
+  {
+    return opening_scope_resolution;
+  }
 
   NodeId get_node_id () const { return node_id; }
 
   std::string as_string () const
   {
     std::string ret;
+    auto it = segments.cbegin ();
     if (lang_prefix)
-      ret = "#[lang]::";
-    for (auto &seg : segments)
-      ret += "::" + seg.name;
+      ret = "#[lang]";
+    else
+      {
+	ret += it->name;
+	it++;
+      }
+
+    for (; it != segments.cend (); it++)
+      ret += "::" + it->name;
     return ret;
   }
 
 private:
   tl::optional<std::pair<LangItem::Kind, NodeId>> lang_prefix;
-  std::vector<Segment> segments;
   NodeId node_id;
 };
 
@@ -598,7 +612,11 @@ public:
     // TODO: Should we be using the forever stack root as the crate scope?
     // TODO: Is this how we should be getting the crate node id?
     auto &mappings = Analysis::Mappings::get ();
-    root.id = *mappings.crate_num_to_nodeid (mappings.get_current_crate ());
+    auto &crate_mappings = mappings.crate;
+    root.id = *crate_mappings.crate_num_to_nodeid (
+      crate_mappings.get_current_crate ());
+    extern_prelude.id = mappings.get_next_node_id ();
+    lang_prelude.id = mappings.get_next_node_id ();
   }
 
   /**
@@ -635,6 +653,8 @@ public:
 
   tl::expected<NodeId, DuplicateNameError> insert_variant (Identifier name,
 							   NodeId id);
+
+  void insert_crate_in_prelude (Identifier crate_name, NodeId crate_id);
 
   /**
    * Insert a new shadowable definition in the innermost `Rib` in this stack
@@ -760,12 +780,12 @@ public:
   /* Helper types and functions for `resolve_path` */
 
   using SegIterator =
-    typename std::vector<ResolutionPath::Segment>::const_iterator;
+    typename std::vector<ResolutionPathSegment>::const_iterator;
 
   Node &find_closest_module (Node &starting_point);
 
   tl::optional<SegIterator>
-  find_starting_point (const std::vector<ResolutionPath::Segment> &segments,
+  find_starting_point (const RawPath<ResolutionPathSegment> &path,
 		       std::reference_wrapper<Node> &starting_point,
 		       std::function<void (Usage, Definition, Namespace)>
 			 insert_segment_resolution,
@@ -796,18 +816,30 @@ public:
   tl::optional<const Node &> dfs_node (const Node &starting_point,
 				       NodeId to_find) const;
 
+  std::unordered_map<NodeId, Node &> dfs_cache;
+  tl::optional<Node &> check_cache (NodeId to_find);
+  void cache (NodeId found, Node &result);
+
   bool forward_declared (NodeId definition, NodeId usage)
   {
     if (peek ().kind != Rib::Kind::ForwardTypeParamBan)
       return false;
 
-    const auto &definition_rib = dfs_rib (cursor (), definition);
-
-    if (!definition_rib)
+    // Each type param has a ban rib keyed by its NodeId, and those ribs are
+    // siblings ordered by NodeId, i.e. by declaration order. A default may
+    // only use params declared before its own.
+    auto &current = cursor ();
+    if (definition == current.id)
+      return true;
+    if (!current.parent)
       return false;
 
-    return (definition_rib
-	    && definition_rib.value ().kind == Rib::Kind::ForwardTypeParamBan);
+    for (auto &child : current.parent.value ().children)
+      if (child.second.id == definition)
+	return definition > current.id
+	       && child.second.rib (N).kind == Rib::Kind::ForwardTypeParamBan;
+
+    return false;
   }
 
   void map_usage (Usage usage, Definition definition)

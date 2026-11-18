@@ -37,7 +37,8 @@ namespace Rust {
 namespace Resolver2_0 {
 
 Late::Late (NameResolutionContext &ctx)
-  : DefaultResolver (ctx), funny_error (false), block_big_self (false)
+  : DefaultResolver (ctx), funny_error (false), block_big_self (false),
+    in_bodyless_params (false)
 {}
 
 void
@@ -227,14 +228,32 @@ Late::visit (AST::AltPattern &pattern)
 }
 
 void
+Late::visit (AST::FunctionParam &param)
+{
+  visit_outer_attrs (param);
+  // we can't handle bindings for bodyless functions
+  // since, ex, `fn foo (a: i32, a: f64);` is valid
+  // (parameter names are ignored)
+  if (param.has_name () && !in_bodyless_params)
+    visit (param.get_pattern ());
+
+  visit (param.get_type ());
+}
+
+void
 Late::visit_function_params (AST::Function &function)
 {
+  bool was_in_bodyless_params = in_bodyless_params;
+  in_bodyless_params = !function.has_body ();
+
   ctx.bindings.enter (BindingSource::Param);
 
   for (auto &param : function.get_function_params ())
     visit (param);
 
   ctx.bindings.exit ();
+
+  in_bodyless_params = was_in_bodyless_params;
 }
 
 void
@@ -367,17 +386,6 @@ Late::visit (AST::IdentifierExpr &expr)
       if (auto type = ctx.types.get_lang_prelude (expr.get_ident ()))
 	{
 	  resolved = type;
-	  ns = Namespace::Types;
-	}
-      else if (!resolved && ctx.prelude)
-	{
-	  resolved
-	    = ctx.values.get_from_prelude (*ctx.prelude, expr.get_ident ());
-	  ns = Namespace::Values;
-
-	  if (!resolved)
-	    resolved
-	      = ctx.types.get_from_prelude (*ctx.prelude, expr.get_ident ());
 	  ns = Namespace::Types;
 	}
 
@@ -529,8 +537,14 @@ resolve_type_path_like (NameResolutionContext &ctx, bool block_big_self,
       return;
     }
 
-  if (ctx.types.forward_declared (resolved->definition.get_node_id (),
-				  type.get_node_id ()))
+  // a trait's implicit Self is always in scope, even in its generic defaults
+  bool is_self
+    = !unwrap_segment_get_lang_item (type.get_segments ().front ()).has_value ()
+      && unwrap_type_segment (type.get_segments ().front ()).is_big_self_seg ();
+
+  if (!is_self
+      && ctx.types.forward_declared (resolved->definition.get_node_id (),
+				     type.get_node_id ()))
     {
       rust_error_at (type.get_locus (), ErrorCode::E0128,
 		     "type parameters with a default cannot use forward "
@@ -614,7 +628,7 @@ Late::visit (AST::Visibility &vis)
 	}
     }
 
-  auto res = ctx.resolve_path (path.get_segments (), mode, Namespace::Types);
+  auto res = ctx.resolve_path (path, mode, Namespace::Types);
 
   if (!res.has_value ())
     {

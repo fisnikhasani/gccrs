@@ -58,6 +58,7 @@ public:
   static constexpr auto &PROC_MACRO_ATTRIBUTE = "proc_macro_attribute";
   static constexpr auto &CRATE_NAME = "crate_name";
   static constexpr auto &CRATE_TYPE = "crate_type";
+  static constexpr auto &POINTEE = "pointee";
 
   static constexpr auto &TARGET_FEATURE = "target_feature";
   static constexpr auto &FEATURE = "feature";
@@ -105,11 +106,18 @@ public:
   static constexpr auto &NON_EXHAUSTIVE = "non_exhaustive";
 
   static constexpr auto &RUSTFMT = "rustfmt";
+  static constexpr auto &CLIPPY = "clippy";
+  static constexpr auto &DIAGNOSTIC = "diagnostic";
+  static constexpr auto &MIRI = "miri";
+  static constexpr auto &RUST_ANALYZER = "rust_analyzer";
 
   static constexpr auto &TEST = "test";
 
   static constexpr auto &RUSTC_ARGS_REQUIRED_CONST
     = "rustc_args_required_const";
+
+  static constexpr auto &RUSTC_LEGACY_CONST_GENERICS
+    = "rustc_legacy_const_generics";
 
   static constexpr auto &NEEDS_ALLOCATOR = "needs_allocator";
 
@@ -118,6 +126,9 @@ public:
 
   static constexpr auto &RUSTC_CONVERSION_SUGGESTION
     = "rustc_conversion_suggestion";
+
+  static constexpr auto &CFI_ENCODING = "cfi_encoding";
+  static constexpr auto &USED = "used";
 };
 } // namespace Values
 } // namespace Rust

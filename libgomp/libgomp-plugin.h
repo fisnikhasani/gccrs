@@ -45,11 +45,18 @@
 extern "C" {
 #endif
 
-/* Capabilities of offloading devices.  */
+/* Capabilities of offloading devices.
+   GOMP_OFFLOAD_CAP_APU_SHARED_MEM is for devices where self mapping, i.e.
+   accessing the host memory directly, is expected to be faster than copying
+   the data.  That's the case for integrated GPUs (APUs) that use the same
+   memory controller for the host and device.  */
 #define GOMP_OFFLOAD_CAP_SHARED_MEM	(1 << 0)
 #define GOMP_OFFLOAD_CAP_NATIVE_EXEC	(1 << 1)
 #define GOMP_OFFLOAD_CAP_OPENMP_400	(1 << 2)
 #define GOMP_OFFLOAD_CAP_OPENACC_200	(1 << 3)
+#define GOMP_OFFLOAD_CAP_APU_SHARED_MEM (1 << 4)
+#define GOMP_OFFLOAD_CAP_UNIFIED_ADDR	(1 << 5)
+#define GOMP_OFFLOAD_CAP_REV_OFFLOAD	(1 << 6)
 
 /* Type of offload target device.  Keep in sync with include/gomp-constants.h.  */
 enum offload_target_type
@@ -162,10 +169,12 @@ extern const char *GOMP_OFFLOAD_get_uid (int);
 extern int GOMP_OFFLOAD_get_numa_node (int);
 extern int GOMP_OFFLOAD_supported_teams_dim (int, int);
 extern int GOMP_OFFLOAD_supported_threads_dim (int, int);
+extern size_t GOMP_OFFLOAD_get_gprivate_limit (int, omp_access_t);
 
 extern unsigned int GOMP_OFFLOAD_get_caps (void);
+extern unsigned int GOMP_OFFLOAD_get_dev_caps (int);
 extern int GOMP_OFFLOAD_get_type (void);
-extern int GOMP_OFFLOAD_get_num_devices (unsigned int);
+extern int GOMP_OFFLOAD_get_num_devices (void);
 extern bool GOMP_OFFLOAD_init_device (int);
 extern bool GOMP_OFFLOAD_fini_device (int);
 extern unsigned GOMP_OFFLOAD_version (void);

@@ -66,6 +66,7 @@
 #define __glibcxx_want_type_trait_variable_templates
 #define __glibcxx_want_unwrap_ref
 #define __glibcxx_want_void_t
+#define __glibcxx_want_within_lifetime
 #include <bits/version.h>
 
 extern "C++"
@@ -2849,6 +2850,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     {
       using _Argval = __remove_cvref_t<_Arg>;
       using _MemPtr = _Res _Class::*;
+      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+      // 3655. The INVOKE operation and union types
       using type = typename __conditional_t<__or_<is_same<_Argval, _Class>,
         is_base_of<_Class, _Argval>>::value,
         __result_of_memobj_ref<_MemPtr, _Arg>,
@@ -4397,6 +4400,17 @@ template<typename _Ret, typename _Fn, typename... _Args>
 #endif
     };
 #endif // C++11
+
+#if __cpp_lib_within_lifetime >= 202603L // C++ >= 26
+  template<typename _Up = void, typename _Tp>
+    consteval bool
+    is_within_lifetime(const _Tp* __p) noexcept
+    {
+      return (__builtin_is_within_lifetime (__p)
+	      && __builtin_constant_p(static_cast<const volatile _Up*>(__p)
+				      && true));
+    }
+#endif
 
   /// @} group metaprogramming
 

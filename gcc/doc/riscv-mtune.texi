@@ -30,7 +30,13 @@ particular CPU name.  Permissible values for this option are:
 
 @samp{sifive-p600-series},
 
+@samp{sifive-p550},
+
+@samp{sifive-p870-d},
+
 @samp{tt-ascalon-x},
+
+@samp{tt-ascalon-xg},
 
 @samp{thead-c906},
 
@@ -60,11 +66,15 @@ particular CPU name.  Permissible values for this option are:
 
 @samp{arc-v-rhx-100-series},
 
+@samp{arc-v-rpx-100-series},
+
 @samp{generic-ooo},
 
 @samp{size},
 
 @samp{mips-p8700},
+
+@samp{mips-i8500},
 
 @samp{andes-25-series},
 

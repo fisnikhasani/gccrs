@@ -309,7 +309,7 @@ ConstChecker::check_function_call (HirId fn_id, location_t locus)
   if (!const_context.is_in_context ())
     return;
 
-  auto maybe_fn = mappings.lookup_hir_item (fn_id);
+  auto maybe_fn = mappings.hir.items.lookup (fn_id);
   if (maybe_fn
       && maybe_fn.value ()->get_item_kind () != Item::ItemKind::Function)
     return;
@@ -460,13 +460,6 @@ ConstChecker::visit (RangeFullExpr &)
 {}
 
 void
-ConstChecker::visit (RangeFromToInclExpr &expr)
-{
-  expr.get_from_expr ().accept_vis (*this);
-  expr.get_to_expr ().accept_vis (*this);
-}
-
-void
 ConstChecker::visit (RangeToInclExpr &)
 {
   // FIXME: Visit to_expr
@@ -532,7 +525,11 @@ ConstChecker::visit (MatchExpr &expr)
   expr.get_scrutinee_expr ().accept_vis (*this);
 
   for (auto &match_arm : expr.get_match_cases ())
-    match_arm.get_expr ().accept_vis (*this);
+    {
+      if (match_arm.get_arm ().has_match_arm_guard ())
+	match_arm.get_arm ().get_guard_expr ().accept_vis (*this);
+      match_arm.get_expr ().accept_vis (*this);
+    }
 }
 
 void

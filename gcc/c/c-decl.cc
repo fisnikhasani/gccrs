@@ -2320,13 +2320,15 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
 	}
       else
 	{
-	  int new_quals = TYPE_QUALS (newtype);
-	  int old_quals = TYPE_QUALS (oldtype);
+	  auto new_quals = TYPE_QUALS (newtype);
+	  auto old_quals = TYPE_QUALS (oldtype);
 
 	  if (new_quals != old_quals)
 	    {
-	      addr_space_t new_addr = DECODE_QUAL_ADDR_SPACE (new_quals);
-	      addr_space_t old_addr = DECODE_QUAL_ADDR_SPACE (old_quals);
+	      addr_space_t new_addr, old_addr;
+	      cv_qualifier new_cv, old_cv;
+	      std::tie (new_cv, new_addr) = new_quals.split ();
+	      std::tie (old_cv, old_addr) = old_quals.split ();
 	      if (new_addr != old_addr)
 		{
 		  if (ADDR_SPACE_GENERIC_P (new_addr))
@@ -2345,8 +2347,7 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
 			   newdecl);
 		}
 
-	      if (CLEAR_QUAL_ADDR_SPACE (new_quals)
-		  != CLEAR_QUAL_ADDR_SPACE (old_quals))
+	      if (new_cv != old_cv)
 		error ("conflicting type qualifiers for %q+D", newdecl);
 	    }
 	  else
@@ -5440,14 +5441,13 @@ shadow_tag_warned (const struct c_declspecs *declspecs, int warned)
    bits.  SPECS represents declaration specifiers that the grammar
    only permits to contain type qualifiers and attributes.  */
 
-int
+qualifier_set
 quals_from_declspecs (const struct c_declspecs *specs)
 {
-  int quals = ((specs->const_p ? TYPE_QUAL_CONST : 0)
-	       | (specs->volatile_p ? TYPE_QUAL_VOLATILE : 0)
-	       | (specs->restrict_p ? TYPE_QUAL_RESTRICT : 0)
-	       | (specs->atomic_p ? TYPE_QUAL_ATOMIC : 0)
-	       | (ENCODE_QUAL_ADDR_SPACE (specs->address_space)));
+  auto cv_quals = cv_qualifier ((specs->const_p ? TYPE_QUAL_CONST : 0)
+				| (specs->volatile_p ? TYPE_QUAL_VOLATILE : 0)
+				| (specs->restrict_p ? TYPE_QUAL_RESTRICT : 0)
+				| (specs->atomic_p ? TYPE_QUAL_ATOMIC : 0));
   gcc_assert (!specs->type
 	      && !specs->decl_attr
 	      && specs->typespec_word == cts_none
@@ -5465,7 +5465,7 @@ quals_from_declspecs (const struct c_declspecs *specs)
 	      && !specs->inline_p
 	      && !specs->noreturn_p
 	      && !specs->thread_p);
-  return quals;
+  return {cv_quals, specs->address_space};
 }
 
 /* Construct an array declarator.  LOC is the location of the
@@ -5497,7 +5497,7 @@ build_array_declarator (location_t loc,
   else
     {
       declarator->u.array.attrs = NULL_TREE;
-      declarator->u.array.quals = 0;
+      declarator->u.array.quals = qualifier_set {};
     }
   declarator->u.array.static_p = static_p;
   declarator->u.array.vla_unspec_p = vla_unspec_p;
@@ -5537,15 +5537,15 @@ one_element_array_type_p (const_tree type)
 }
 
 /* Determine whether TYPE is a zero-length array type "[0]".  */
-static bool
+bool
 zero_length_array_type_p (const_tree type)
 {
-  if (TREE_CODE (type) == ARRAY_TYPE)
-    if (tree type_size = TYPE_SIZE_UNIT (type))
-      if ((integer_zerop (type_size))
-	   && TYPE_DOMAIN (type) != NULL_TREE
-	   && TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE)
-	return true;
+  if (TREE_CODE (type) == ARRAY_TYPE
+      && COMPLETE_TYPE_P (type)
+      && TYPE_DOMAIN (type) != NULL_TREE
+      && (TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE
+	  || integer_all_onesp (TYPE_MAX_VALUE (TYPE_DOMAIN (type)))))
+    return true;
   return false;
 }
 
@@ -5564,7 +5564,7 @@ add_flexible_array_elts_to_size (tree decl, tree init)
 
   elt = CONSTRUCTOR_ELTS (init)->last ().value;
   type = TREE_TYPE (elt);
-  if (c_flexible_array_member_type_p (type))
+  if (flexible_array_member_type_p (type))
     {
       complete_array_type (&type, elt, false);
       /* For a structure, add the size of the initializer to the DECL's
@@ -5984,7 +5984,7 @@ diagnose_uninitialized_cst_member (tree decl, tree type)
 	continue;
       field_type = strip_array_types (TREE_TYPE (field));
 
-      if (TYPE_QUALS (field_type) & TYPE_QUAL_CONST)
+      if (TYPE_QUALS (field_type).has (TYPE_QUAL_CONST))
       	{
 	  auto_diagnostic_group d;
 	  if (warning_at (DECL_SOURCE_LOCATION (decl), OPT_Wc___compat,
@@ -6880,14 +6880,14 @@ grokdeclarator (const struct c_declarator *declarator,
   int restrictp;
   int volatilep;
   int atomicp;
-  int type_quals = TYPE_UNQUALIFIED;
+  qualifier_set type_quals {};
   tree name = NULL_TREE;
   bool funcdef_flag = false;
   bool funcdef_syntax = false;
   bool size_varies = false;
   bool size_error = false;
   tree decl_attr = declspecs->decl_attr;
-  int array_ptr_quals = TYPE_UNQUALIFIED;
+  qualifier_set array_ptr_quals {};
   tree array_ptr_attrs = NULL_TREE;
   bool array_parm_static = false;
   bool array_parm_vla_unspec_p = false;
@@ -7099,11 +7099,11 @@ grokdeclarator (const struct c_declarator *declarator,
       orig_qual_type = type;
       type = c_build_qualified_type (type, TYPE_UNQUALIFIED);
     }
-  type_quals = ((constp ? TYPE_QUAL_CONST : 0)
-		| (restrictp ? TYPE_QUAL_RESTRICT : 0)
-		| (volatilep ? TYPE_QUAL_VOLATILE : 0)
-		| (atomicp ? TYPE_QUAL_ATOMIC : 0)
-		| ENCODE_QUAL_ADDR_SPACE (address_space));
+  type_quals = {(constp ? TYPE_QUAL_CONST : TYPE_UNQUALIFIED)
+		| (restrictp ? TYPE_QUAL_RESTRICT : TYPE_UNQUALIFIED)
+		| (volatilep ? TYPE_QUAL_VOLATILE : TYPE_UNQUALIFIED)
+		| (atomicp ? TYPE_QUAL_ATOMIC : TYPE_UNQUALIFIED),
+		address_space};
   if (type_quals != TYPE_QUALS (element_type))
     orig_qual_type = NULL_TREE;
 
@@ -7314,6 +7314,8 @@ grokdeclarator (const struct c_declarator *declarator,
 	    array_parm_vla_unspec_p = declarator->u.array.vla_unspec_p;
 
 	    declarator = declarator->declarator;
+
+	    bool flexible_array_member = false;
 
 	    /* Check for some types that there cannot be arrays of.  */
 
@@ -7527,7 +7529,6 @@ grokdeclarator (const struct c_declarator *declarator,
 	      }
 	    else if (decl_context == FIELD)
 	      {
-		bool flexible_array_member = false;
 		if (array_parm_vla_unspec_p)
 		  /* Field names can in fact have function prototype
 		     scope so [*] is disallowed here through making
@@ -7581,14 +7582,22 @@ grokdeclarator (const struct c_declarator *declarator,
 	       modify the shared type, so we gcc_assert (itype)
 	       below.  */
 	      {
-		addr_space_t as = DECODE_QUAL_ADDR_SPACE (type_quals);
+		addr_space_t as = type_quals.addr_space ();
 		if (!ADDR_SPACE_GENERIC_P (as) && as != TYPE_ADDR_SPACE (type))
 		  type = c_build_qualified_type (type,
-						 ENCODE_QUAL_ADDR_SPACE (as));
+						 {TYPE_UNQUALIFIED, as});
 		if (array_parm_vla_unspec_p)
 		  type = c_build_array_type_unspecified (type);
+		/* The GCC extension for zero-length arrays differs from
+		   ISO flexible array members in that sizeof yields
+		   zero.  */
+		else if (size && integer_zerop (size))
+		  type = c_build_array_type_zero_size (type);
 		else
 		  type = c_build_array_type (type, itype);
+
+		if (!valid_array_size_p (loc, type, name))
+		  type = error_mark_node;
 	      }
 
 	    if (array_parm_vla_unspec_p)
@@ -7607,23 +7616,10 @@ grokdeclarator (const struct c_declarator *declarator,
 		size_varies = true;
 	      }
 
-	    if (type != error_mark_node)
-	      {
-		/* The GCC extension for zero-length arrays differs from
-		   ISO flexible array members in that sizeof yields
-		   zero.  */
-		if (size && integer_zerop (size))
-		  {
-		    gcc_assert (itype);
-		    type = build_distinct_type_copy (TYPE_MAIN_VARIANT (type));
-		    TYPE_SIZE (type) = bitsize_zero_node;
-		    TYPE_SIZE_UNIT (type) = size_zero_node;
-		    SET_TYPE_STRUCTURAL_EQUALITY (type);
-		  }
 
-		if (!valid_array_size_p (loc, type, name))
-		  type = error_mark_node;
-	      }
+	    gcc_assert (type == error_mark_node
+			|| flexible_array_member
+			   == flexible_array_member_type_p (type));
 
 	    if (decl_context != PARM
 		&& (array_ptr_quals != TYPE_UNQUALIFIED
@@ -7716,11 +7712,11 @@ grokdeclarator (const struct c_declarator *declarator,
 		   actually removed from the return type when
 		   determining the function type.  For C23, _Atomic is
 		   removed as well.  */
-		int quals_used = type_quals;
+		auto quals_used = type_quals;
 		if (flag_isoc23)
-		  quals_used = 0;
+		  quals_used = qualifier_set {};
 		else if (flag_isoc11)
-		  quals_used &= TYPE_QUAL_ATOMIC;
+		  quals_used = quals_used.intersect (TYPE_QUAL_ATOMIC);
 		if (quals_used && VOID_TYPE_P (type) && really_funcdef)
 		  pedwarn (specs_loc, 0,
 			   "function definition has qualified void "
@@ -7734,7 +7730,7 @@ grokdeclarator (const struct c_declarator *declarator,
 		   DR#423 resolution is not entirely clear about
 		   this.  */
 		if (flag_isoc11
-		    && (type_quals & TYPE_QUAL_RESTRICT)
+		    && (type_quals.has (TYPE_QUAL_RESTRICT))
 		    && (!POINTER_TYPE_P (type)
 			|| !C_TYPE_OBJECT_OR_INCOMPLETE_P (TREE_TYPE (type))))
 		  error_at (loc, "invalid use of %<restrict%>");
@@ -7762,12 +7758,12 @@ grokdeclarator (const struct c_declarator *declarator,
 	  {
 	    /* Merge any constancy or volatility into the target type
 	       for the pointer.  */
-	    if ((type_quals & TYPE_QUAL_ATOMIC)
+	    if (type_quals.has (TYPE_QUAL_ATOMIC)
 		&& TREE_CODE (type) == FUNCTION_TYPE)
 	      {
 		error_at (loc,
 			  "%<_Atomic%>-qualified function type");
-		type_quals &= ~TYPE_QUAL_ATOMIC;
+		type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	      }
 	    else if (pedantic && TREE_CODE (type) == FUNCTION_TYPE
 		     && type_quals)
@@ -7817,7 +7813,7 @@ grokdeclarator (const struct c_declarator *declarator,
 
   /* Warn about address space used for things other than static memory or
      pointers.  */
-  address_space = DECODE_QUAL_ADDR_SPACE (type_quals);
+  address_space = type_quals.addr_space ();
   if (!ADDR_SPACE_GENERIC_P (address_space))
     {
       if (decl_context == NORMAL)
@@ -7875,13 +7871,13 @@ grokdeclarator (const struct c_declarator *declarator,
       /* C11 makes it implementation-defined (6.7.2.1#5) whether
 	 atomic types are permitted for bit-fields; we have no code to
 	 make bit-field accesses atomic, so disallow them.  */
-      if (type_quals & TYPE_QUAL_ATOMIC)
+      if (type_quals.has (TYPE_QUAL_ATOMIC))
 	{
 	  if (name)
 	    error_at (loc, "bit-field %qE has atomic type", name);
 	  else
 	    error_at (loc, "bit-field has atomic type");
-	  type_quals &= ~TYPE_QUAL_ATOMIC;
+	  type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	}
     }
 
@@ -7930,12 +7926,12 @@ grokdeclarator (const struct c_declarator *declarator,
   if (storage_class == csc_typedef)
     {
       tree decl;
-      if ((type_quals & TYPE_QUAL_ATOMIC)
+      if ((type_quals.has (TYPE_QUAL_ATOMIC))
 	  && TREE_CODE (type) == FUNCTION_TYPE)
 	{
 	  error_at (loc,
 		    "%<_Atomic%>-qualified function type");
-	  type_quals &= ~TYPE_QUAL_ATOMIC;
+	  type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	}
       else if (pedantic && TREE_CODE (type) == FUNCTION_TYPE
 	       && type_quals)
@@ -7984,12 +7980,12 @@ grokdeclarator (const struct c_declarator *declarator,
 	 and fields.  */
       gcc_assert (storage_class == csc_none && !threadp
 		  && !declspecs->inline_p && !declspecs->noreturn_p);
-      if ((type_quals & TYPE_QUAL_ATOMIC)
+      if (type_quals.has (TYPE_QUAL_ATOMIC)
 	  && TREE_CODE (type) == FUNCTION_TYPE)
 	{
 	  error_at (loc,
 		    "%<_Atomic%>-qualified function type");
-	  type_quals &= ~TYPE_QUAL_ATOMIC;
+	  type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	}
       else if (pedantic && TREE_CODE (type) == FUNCTION_TYPE
 	       && type_quals)
@@ -8083,11 +8079,11 @@ grokdeclarator (const struct c_declarator *declarator,
 	  }
 	else if (TREE_CODE (type) == FUNCTION_TYPE)
 	  {
-	    if (type_quals & TYPE_QUAL_ATOMIC)
+	    if (type_quals.has (TYPE_QUAL_ATOMIC))
 	      {
 		error_at (loc,
 			  "%<_Atomic%>-qualified function type");
-		type_quals &= ~TYPE_QUAL_ATOMIC;
+		type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	      }
 	    else if (type_quals)
 	      pedwarn (loc, OPT_Wpedantic,
@@ -8204,11 +8200,11 @@ grokdeclarator (const struct c_declarator *declarator,
 			   FUNCTION_DECL, declarator->u.id.id, type);
 	decl = build_decl_attribute_variant (decl, decl_attr);
 
-	if (type_quals & TYPE_QUAL_ATOMIC)
+	if (type_quals.has (TYPE_QUAL_ATOMIC))
 	  {
 	    error_at (loc,
 		      "%<_Atomic%>-qualified function type");
-	    type_quals &= ~TYPE_QUAL_ATOMIC;
+	    type_quals = type_quals.without (TYPE_QUAL_ATOMIC);
 	  }
 	else if (pedantic && type_quals && !DECL_IN_SYSTEM_HEADER (decl))
 	  pedwarn (loc, OPT_Wpedantic,
@@ -8307,8 +8303,8 @@ grokdeclarator (const struct c_declarator *declarator,
 	    if (c_type_variably_modified_p (type))
 	      error_at (loc, "%<constexpr%> object has variably modified "
 			"type");
-	    if (type_quals
-		& (TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
+	    if (type_quals.has
+		(TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
 	      error_at (loc, "invalid qualifiers for %<constexpr%> object");
 	    else
 	      {
@@ -9413,7 +9409,7 @@ is_flexible_array_member_p (bool is_last_field,
 
   bool is_zero_length_array = zero_length_array_type_p (TREE_TYPE (x));
   bool is_one_element_array = one_element_array_type_p (TREE_TYPE (x));
-  bool is_flexible_array = c_flexible_array_member_type_p (TREE_TYPE (x));
+  bool is_flexible_array = flexible_array_member_type_p (TREE_TYPE (x));
 
   unsigned int strict_flex_array_level = c_strict_flex_array_level_of (x);
 
@@ -9539,7 +9535,7 @@ verify_counted_by_attribute (tree outmost_struct_type,
   for (tree field = TYPE_FIELDS (cur_struct_type); field;
        field = TREE_CHAIN (field))
     {
-      if (c_flexible_array_member_type_p (TREE_TYPE (field))
+      if (flexible_array_member_type_p (TREE_TYPE (field))
 	   || TREE_CODE (TREE_TYPE (field)) == POINTER_TYPE)
 	{
 	  tree attr_counted_by = lookup_attribute ("counted_by",
@@ -9716,7 +9712,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
       /* Any field that is volatile, restrict-qualified or atomic
 	 means the type cannot be used for a constexpr object.  */
       if (TYPE_QUALS (t1)
-	  & (TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
+	  .has (TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
 	C_TYPE_FIELDS_NON_CONSTEXPR (t) = 1;
       else if (RECORD_OR_UNION_TYPE_P (t1) && C_TYPE_FIELDS_NON_CONSTEXPR (t1))
 	    C_TYPE_FIELDS_NON_CONSTEXPR (t) = 1;
@@ -9742,7 +9738,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	DECL_PACKED (x) = 1;
 
       /* Detect flexible array member in an invalid context.  */
-      if (c_flexible_array_member_type_p (TREE_TYPE (x)))
+      if (flexible_array_member_type_p (TREE_TYPE (x)))
 	{
 	  if (TREE_CODE (t) == UNION_TYPE)
 	    pedwarn (DECL_SOURCE_LOCATION (x), OPT_Wpedantic,
@@ -9789,7 +9785,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	 the result for multiple last_fields.  */
       if (TREE_CODE (TREE_TYPE (x)) == ARRAY_TYPE)
 	TYPE_INCLUDES_FLEXARRAY (t)
-	  |= is_last_field && c_flexible_array_member_type_p (TREE_TYPE (x));
+	  |= is_last_field && flexible_array_member_type_p (TREE_TYPE (x));
       /* Recursively set TYPE_INCLUDES_FLEXARRAY for the context of x, t
 	 when x is an union or record and is the last field.  */
       else if (RECORD_OR_UNION_TYPE_P (TREE_TYPE (x)))
@@ -10639,12 +10635,15 @@ build_enumerator (location_t decl_loc, location_t loc,
     }
   else
     {
+      tree tmp = value;
+
       /* In a redeclaration the type can already be the enumeral type.  */
       if (TREE_CODE (TREE_TYPE (value)) == ENUMERAL_TYPE)
-	value = convert (ENUM_UNDERLYING_TYPE (TREE_TYPE (value)), value);
+	tmp = convert (ENUM_UNDERLYING_TYPE (TREE_TYPE (tmp)), tmp);
+
       the_enum->enum_next_value
 	= build_binary_op (EXPR_LOC_OR_LOC (value, input_location),
-			   PLUS_EXPR, value, integer_one_node, false);
+			   PLUS_EXPR, tmp, integer_one_node, false);
     }
   the_enum->enum_overflow = tree_int_cst_lt (the_enum->enum_next_value, value);
   if (the_enum->enum_overflow
@@ -11938,6 +11937,9 @@ names_builtin_p (const char *name)
   switch (C_RID_CODE (id))
     {
     case RID_BUILTIN_ASSOC_BARRIER:
+    case RID_BUILTIN_BITREVERSEG:
+    case RID_BUILTIN_BSWAPG:
+    case RID_BUILTIN_CLMULG:
     case RID_BUILTIN_CONVERTVECTOR:
     case RID_BUILTIN_HAS_ATTRIBUTE:
     case RID_BUILTIN_SHUFFLE:
@@ -12051,7 +12053,7 @@ make_pointer_declarator (struct c_declspecs *type_quals_attrs,
 			 struct c_declarator *target)
 {
   tree attrs;
-  int quals = 0;
+  qualifier_set quals {};
   struct c_declarator *itarget = target;
   struct c_declarator *ret = XOBNEW (&parser_obstack, struct c_declarator);
   if (type_quals_attrs)

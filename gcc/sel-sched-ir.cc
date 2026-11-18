@@ -53,9 +53,6 @@ vec<sel_region_bb_info_def> sel_region_bb_info;
 /* A pool for allocating all lists.  */
 object_allocator<_list_node> sched_lists_pool ("sel-sched-lists");
 
-/* This contains information about successors for compute_av_set.  */
-struct succs_info current_succs;
-
 /* Data structure to describe interaction with the generic scheduler utils.  */
 static struct common_sched_info_def sel_common_sched_info;
 
@@ -1483,7 +1480,7 @@ find_in_history_vect_1 (vec<expr_history_def> vect,
    the position found or -1, if no such value is in vector.
    Search also for UIDs of insn's originators, if ORIGINATORS_P is true.  */
 int
-find_in_history_vect (vec<expr_history_def> vect, rtx insn,
+find_in_history_vect (vec<expr_history_def> vect, rtx_insn *insn,
                       vinsn_t new_vinsn, bool originators_p)
 {
   int ind;
@@ -1983,7 +1980,7 @@ speculate_expr (expr_t expr, ds_t ds)
     case 1:
       {
 	rtx_insn *spec_insn_rtx =
-	  create_insn_rtx_from_pattern (spec_pat, NULL_RTX);
+	  create_insn_rtx_from_pattern (spec_pat, nullptr);
 	vinsn_t spec_vinsn = create_vinsn_from_insn_rtx (spec_insn_rtx, false);
 
 	change_vinsn_in_expr (expr, spec_vinsn);
@@ -3314,7 +3311,7 @@ has_dependence_note_dep (insn_t pro, ds_t ds ATTRIBUTE_UNUSED)
 
 /* Mark the insn as having a hard dependence that prevents speculation.  */
 void
-sel_mark_hard_insn (rtx insn)
+sel_mark_hard_insn (rtx_insn *insn)
 {
   int i;
 
@@ -3395,6 +3392,10 @@ has_dependence_p (expr_t expr, insn_t pred, ds_t **has_dep_pp)
     return false;
 
   dc = &INSN_DEPS_CONTEXT (pred);
+
+  /* Selective scheduling keeps the eager barrier form, so the reg_last entries
+     the callbacks below read are always materialised.  */
+  gcc_checking_assert (!dc->pending_barriers);
 
   /* We init this field lazily.  */
   if (dc->reg_last == NULL)
@@ -3596,7 +3597,7 @@ insn_sid (insn_t insn)
    at the data structures of the selective scheduler, not by examining
    the pattern.  */
 bool
-sel_insn_is_speculation_check (rtx insn)
+sel_insn_is_speculation_check (rtx_insn *insn)
 {
   return s_i_d.exists () && !! INSN_SPEC_CHECKED_DS (insn);
 }
@@ -3604,7 +3605,7 @@ sel_insn_is_speculation_check (rtx insn)
 /* Extracts machine mode MODE and destination location DST_LOC
    for given INSN.  */
 void
-get_dest_and_mode (rtx insn, rtx *dst_loc, machine_mode *mode)
+get_dest_and_mode (rtx_insn *insn, rtx *dst_loc, machine_mode *mode)
 {
   rtx pat = PATTERN (insn);
 
@@ -4462,27 +4463,6 @@ exchange_data_sets (basic_block to, basic_block from)
   /* Exchange av sets of TO and FROM.  */
   std::swap (BB_AV_SET (from), BB_AV_SET (to));
   std::swap (BB_AV_LEVEL (from), BB_AV_LEVEL (to));
-}
-
-/* Copy data sets of FROM to TO.  */
-void
-copy_data_sets (basic_block to, basic_block from)
-{
-  gcc_assert (!BB_LV_SET_VALID_P (to) && !BB_AV_SET_VALID_P (to));
-  gcc_assert (BB_AV_SET (to) == NULL);
-
-  BB_AV_LEVEL (to) = BB_AV_LEVEL (from);
-  BB_LV_SET_VALID_P (to) = BB_LV_SET_VALID_P (from);
-
-  if (BB_AV_SET_VALID_P (from))
-    {
-      BB_AV_SET (to) = av_set_copy (BB_AV_SET (from));
-    }
-  if (BB_LV_SET_VALID_P (from))
-    {
-      gcc_assert (BB_LV_SET (to) != NULL);
-      COPY_REG_SET (BB_LV_SET (to), BB_LV_SET (from));
-    }
 }
 
 /* Return an av set for INSN, if any.  */
@@ -5735,7 +5715,7 @@ sel_unregister_cfg_hooks (void)
 /* Emit an insn rtx based on PATTERN.  If a jump insn is wanted,
    LABEL is where this jump should be directed.  */
 rtx_insn *
-create_insn_rtx_from_pattern (rtx pattern, rtx label)
+create_insn_rtx_from_pattern (rtx pattern, rtx_insn *label)
 {
   rtx_insn *insn_rtx;
 
@@ -5778,7 +5758,7 @@ create_vinsn_from_insn_rtx (rtx_insn *insn_rtx, bool force_unique_p)
 
 /* Create a copy of INSN_RTX.  */
 rtx_insn *
-create_copy_of_insn_rtx (rtx insn_rtx)
+create_copy_of_insn_rtx (rtx_insn *insn_rtx)
 {
   rtx_insn *res;
   rtx link;
@@ -5790,7 +5770,7 @@ create_copy_of_insn_rtx (rtx insn_rtx)
   gcc_assert (NONJUMP_INSN_P (insn_rtx));
 
   res = create_insn_rtx_from_pattern (copy_rtx (PATTERN (insn_rtx)),
-                                      NULL_RTX);
+				      nullptr);
 
   /* Locate the end of existing REG_NOTES in NEW_RTX.  */
   rtx *ptail = &REG_NOTES (res);

@@ -191,7 +191,7 @@ class bitmap_view;
 typedef unsigned char addr_space_t;
 
 /* The value of addr_space_t that represents the generic address space.  */
-#define ADDR_SPACE_GENERIC 0
+#define ADDR_SPACE_GENERIC ((addr_space_t) 0)
 #define ADDR_SPACE_GENERIC_P(AS) ((AS) == ADDR_SPACE_GENERIC)
 
 /* The major intermediate representations of GCC.  */
@@ -295,6 +295,14 @@ enum optimization_type {
 
   /* Prioritize size over speed.  */
   OPTIMIZE_FOR_SIZE
+};
+
+/* How strongly a comparison should start a conditional-compare sequence.  */
+enum ccmp_first_kind {
+  CCMP_FIRST_UNSUPPORTED,
+  CCMP_FIRST_NONE,
+  CCMP_FIRST_PREFERRED,
+  CCMP_FIRST_REQUIRED
 };
 
 /* Enumerates a padding direction.  */

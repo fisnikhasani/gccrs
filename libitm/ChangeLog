@@ -1,3 +1,45 @@
+2026-11-10  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* configure: Regenerate.
+	* configure.ac: Use AC_CANONICAL_TARGET instead of
+	AC_CANONICAL_SYSTEM.
+
+2026-11-04  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* configure.ac: Replace AC_CONFIG_HEADER with AC_CONFIG_HEADERS.
+
+2026-10-26  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	* acinclude.m4 (LIBITM_CHECK_LINKER_FEATURES): Update AC_PROG_LD to LT_PATH_LD.
+	* configure: Regenerate.
+
+2026-10-17  Sam James  <sam@gentoo.org>
+
+	PR bootstrap/112422
+	* config.h.in: Regenerate.
+	* configure: Regenerate.
+	* configure.ac: Drop AC_C_BIGENDIAN and associated hack.
+
+2026-10-16  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* configure: Regenerate.
+
+2026-10-09  Sam James  <sam@gentoo.org>
+
+	PR bootstrap/112422
+	* config.h.in: Regenerate.
+	* configure: Regenerate.
+	* configure.ac: Don't search for malloc.h, semaphore.h, sys/time.h,
+	or unistd.h.
+	(AC_HEADER_TIME): Delete.
+
+2026-07-09  Stefan Schulze Frielinghaus  <stefansf@gcc.gnu.org>
+
+	* config/s390/sjlj.S: Remove -m31 part.
+
 2026-06-29  Pietro Monteiro  <pietro@sociotechnical.xyz>
 
 	PR bootstrap/103459

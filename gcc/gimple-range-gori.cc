@@ -295,6 +295,21 @@ range_def_chain::get_def_chain (tree name)
   return m_def_chain[v].bm;
 }
 
+// Clear def chain info for NAME.
+
+void
+range_def_chain::clear (tree name)
+{
+  unsigned v = SSA_NAME_VERSION (name);
+  if (v >= m_def_chain.length ())
+    return;
+
+  m_def_chain[v].ssa1 = 0;
+  m_def_chain[v].ssa2 = 0;
+  m_def_chain[v].bm = NULL;
+  m_def_chain[v].m_import = NULL;
+}
+
 // Dump what we know for basic block BB to file F.
 
 void
@@ -1090,11 +1105,16 @@ gori_compute::refine_using_relation (tree op1, vrange &op1_range,
 				 op1_def_p ? op1_range : op2_range,
 				 other_op, relation_trio::lhs_op1 (k)))
 	return false;
+      // Note: K arrives as an op1/op2 relation, and because of
+      // the definition chain requirement here, it is also an LHS relation on the
+      // defining statement, which is how it is passed to the range operators below.
       if (op1_def_p)
 	{
 	  change |= op2_range.intersect (new_result);
-	  // Recalculate op2.
-	  if (op_handler.fold_range (new_result, type, op2_range, other_op))
+	  // Recalculate the LHS passing the lhs-op1 relation so that
+	  // operator_plus::fold_range can tighten the no-overflow range.
+	  if (op_handler.fold_range (new_result, type, op2_range, other_op,
+				     relation_trio::lhs_op1 (k)))
 	    {
 	      change |= op1_range.intersect (new_result);
 	    }
@@ -1102,8 +1122,9 @@ gori_compute::refine_using_relation (tree op1, vrange &op1_range,
       else
 	{
 	  change |= op1_range.intersect (new_result);
-	  // Recalculate op1.
-	  if (op_handler.fold_range (new_result, type, op1_range, other_op))
+	  // Recalculate the LHS passing the lhs-op1 relation.
+	  if (op_handler.fold_range (new_result, type, op1_range, other_op,
+				     relation_trio::lhs_op1 (k)))
 	    {
 	      change |= op2_range.intersect (new_result);
 	    }
@@ -1122,11 +1143,15 @@ gori_compute::refine_using_relation (tree op1, vrange &op1_range,
 				 op1_def_p ? op1_range : op2_range,
 				 other_op, relation_trio::lhs_op2 (k)))
 	return false;
+      // Note: K arrives as an op1/op2 relation, and because of
+      // the definition chain requirement here, it is also an LHS relation on the
+      // defining statement, which is how it is passed to the range operators below.
       if (op1_def_p)
 	{
 	  change |= op2_range.intersect (new_result);
-	  // Recalculate op1.
-	  if (op_handler.fold_range (new_result, type, other_op, op2_range))
+	  // Recalculate the LHS passing the lhs-op2 relation.
+	  if (op_handler.fold_range (new_result, type, other_op, op2_range,
+				     relation_trio::lhs_op2 (k)))
 	    {
 	      change |= op1_range.intersect (new_result);
 	    }
@@ -1134,8 +1159,9 @@ gori_compute::refine_using_relation (tree op1, vrange &op1_range,
       else
 	{
 	  change |= op1_range.intersect (new_result);
-	  // Recalculate op2.
-	  if (op_handler.fold_range (new_result, type, other_op, op1_range))
+	  // Recalculate the LHS passing the lhs-op2 relation.
+	  if (op_handler.fold_range (new_result, type, other_op, op1_range,
+				     relation_trio::lhs_op2 (k)))
 	    {
 	      change |= op2_range.intersect (new_result);
 	    }
@@ -1681,7 +1707,7 @@ gori_on_edge (ssa_cache &r, edge e, range_query *q)
 
 bool
 gori_name_helper (vrange &r, tree name, vrange &lhs, gimple *stmt,
-		  range_query *q)
+		  range_query *q, int depth = 0)
 {
   struct gori_stmt_info si(lhs, stmt, q);
   if (!si)
@@ -1691,6 +1717,11 @@ gori_name_helper (vrange &r, tree name, vrange &lhs, gimple *stmt,
     return si.calc_op1 (r, lhs, si.op2_range);
   if (si.ssa2 == name)
     return si.calc_op2 (r, lhs, si.op1_range);
+
+  // Limit the exponential growth via the logical depth limit.
+  if (si.ssa1 && si.ssa2)
+    if (++depth >= param_ranger_logical_depth)
+      return false;
 
   value_range tmp;
   // Now evaluate operand ranges, and set them in the edge cache.
@@ -1703,7 +1734,7 @@ gori_name_helper (vrange &r, tree name, vrange &lhs, gimple *stmt,
       gimple *src = SSA_NAME_DEF_STMT (si.ssa1);
       // If definition is in the same basic block, evaluate it.
       if (src && gimple_bb (src) == gimple_bb (stmt))
-	if (gori_name_helper (r, name, si.op1_range, src, q))
+	if (gori_name_helper (r, name, si.op1_range, src, q, depth))
 	  return true;
     }
 
@@ -1714,7 +1745,7 @@ gori_name_helper (vrange &r, tree name, vrange &lhs, gimple *stmt,
 	si.op2_range.intersect (tmp);
       gimple *src = SSA_NAME_DEF_STMT (si.ssa2);
       if (src && gimple_bb (src) == gimple_bb (stmt))
-	if (gori_name_helper (r, name, si.op2_range, src, q))
+	if (gori_name_helper (r, name, si.op2_range, src, q, depth))
 	  return true;
     }
   return false;

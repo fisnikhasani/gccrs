@@ -118,11 +118,11 @@ have real and imaginary parts of type @code{short int}; this is not
 likely to be useful, but it shows that the set of complex types is
 complete.
 
-To write a constant with a complex data type, use the suffix @samp{i},
-@samp{I}, @samp{j} or @samp{J} (any one; they are equivalent).  For
+To write a constant with a complex data type, use any of the suffixes
+@samp{i}, @samp{I}, @samp{j}, or @samp{J} (which are equivalent).  For
 example, @code{2.5fi} has type @code{_Complex float} and @code{3i} has type
-@code{_Complex int}.  Such a constant always has a pure imaginary
-value, but you can form any complex value you like by adding one to a
+@code{_Complex int}.  Such a constant always has a purely imaginary
+value, and you can form any complex value you like by adding it to a
 real constant.  This is part of ISO C2Y and for older C revisions
 a GNU extension.  If you have an ISO C99 conforming C library
 (such as the GNU C Library), and want to construct complex
@@ -134,7 +134,7 @@ For C++ if @code{-fext-numeric-literals} option is enabled, it is also
 a GNU extension, otherwise it is handled like any other C++ user-defined
 literal.  The ISO C++14 library also defines the @samp{i} suffix, so C++14
 code that includes the @samp{<complex>} header cannot use @samp{i} for the
-GNU extension.  The @samp{I}, @samp{j} or @samp{J} suffixes still have
+GNU extension.  The @samp{I}, @samp{j}, and @samp{J} suffixes still have
 the GNU meaning.
 
 GCC handles both implicit and explicit casts between the
@@ -1824,6 +1824,12 @@ and suffixed by two underscores; for example, the alternate name of
 @code{weak} is @code{__weak__}.  These alternate names are useful in
 library header files in case they are included into files that have
 redefined the base name of the attribute as a preprocessor macro.
+Similarly for every supported standard or scoped attribute, for example, the
+variant spellings of @code{[[gnu::weak]]} are @code{[[__gnu__::__weak__]]},
+@code{[[gnu::__weak__]]} or @code{[[__gnu__::weak]]}.  The only exception
+is that alternate spelling of the @code{clang} scoped attribute namespace
+is @code{_Clang} rather than @code{__clang__} for compatibility with that
+compiler.
 
 GCC also accepts the keyword @code{__attribute} as a synonym for
 @code{__attribute__}.
@@ -2348,6 +2354,49 @@ Note that the BTF format currently only has a representation for type
 tags associated with pointer types.  Type tags on non-pointer types
 may be silently skipped when generating BTF.
 
+@atindex @code{callback_only}
+@cindex functions with callbacks
+@item callback_only
+The @code{callback_only} attribute specifies that the annotated
+function may call the specified callback function.  The first parameter
+identifies the index of the callback function, the rest of the arguments
+specify the indices of the arguments of the indirect call.  All indices
+start from 1.  If the function takes the implicit @code{this} pointer,
+it is referred to by the index 1, with the rest of the arguments
+starting at index 2.  The index 0 marks an argument not present in the
+arguments of the annotated function, an argument which is modified
+before calling the callback function.  The annotated function must
+pass the specified arguments in the specified order to the callback
+function, which must be callable with the number, order and type of
+the arguments.  The specified pointer to the callback may not escape the
+translation unit of the annotated function and it may not be captured.
+The annotated function is required to pass the arguments through, it
+may not change or dereference them.  The arguments also may not escape.
+The attribute may be used multiple times per function, though only one
+@code{callback_only} attribute may be used per function parameter.
+Neither the dispatching function nor the callback function may be
+variadic.  Both functions must have a prototype.
+
+The attribute exposes the potentially hidden callsite in the annotated
+function, enabling interprocedural optimizations which may not be
+possible without the attribute.  It is most useful for annotating
+functions from dynamically linked libraries, as their bodies are not
+available during compilation.
+
+This attribute is similar to the clang @code{callback} attribute
+but it is not compatible with it.  The clang implementation allows
+identifiers as arguments, marks an unknown argument with -1 and the
+@code{this} pointer with the index 0.
+
+An example usage:
+
+@smallexample
+[[gnu::callback_only(1, 3, 2)]]
+void foo(void (*bar)(int*, double*), double* y, int* x);
+@end smallexample
+
+means that there is a call @code{bar (x, y)} inside @code{foo}.
+
 @atindex @code{cleanup}
 @cindex cleanup functions
 @item cleanup (@var{cleanup_function})
@@ -2769,6 +2818,19 @@ positional initialization will result in future breakage.
 
 GCC emits warnings based on this attribute by default; use
 @option{-Wno-designated-init} to suppress them.
+
+@cindex @code{suppress_coverage}
+@item suppress_coverage
+This attribute applies to functions.
+
+The @code{suppress_coverage} attribute results in GCC not considering the
+function or its lines, arcs, conditions, or paths towards the total
+count.  This attribute does nothing unless coverage is enabled,
+e.g. with @option{--coverage} or @option{-fpath-coverage}.  This is useful
+to suppress coverage for functions that are uninteresting or impractical to
+cover.  If coverage is suppressed with this attribute then GCC will not
+instrument for MC/DC @option{-fcondition-coverage} or prime path
+coverage @option{-fpath-coverage}.
 
 @atindex @code{error}
 @atindex @code{warning}
@@ -3397,7 +3459,7 @@ int pclose (FILE*);
   FILE* fopen (const char*, const char*);
 [[gnu::malloc, gnu::malloc (fclose, 1)]]
   FILE* fmemopen(void *, size_t, const char *);
-[[gnu::malloc, gnu::malloc (fclose, 1)]]
+[[gnu::malloc, gnu::malloc (pclose, 1)]]
   FILE* popen (const char*, const char*);
 [[gnu::malloc, gnu::malloc (fclose, 1)]]
   FILE* tmpfile (void);
@@ -4347,7 +4409,7 @@ attribute, used to specify function pointers to effectless and idempotent
 functions according to the C23 definition.
 
 Unlike the standard C23 attribute it can be also specified in attributes
-which appertain to function declarations and applies to the their function
+which appertain to function declarations and applies to their function
 type even in that case.
 
 Reproducible functions without pointer or reference arguments or which do
@@ -5203,7 +5265,7 @@ attribute, used to specify function pointers to effectless, idempotent,
 stateless and independent functions according to the C23 definition.
 
 Unlike the standard C23 attribute it can be also specified in attributes
-which appertain to function declarations and applies to the their function
+which appertain to function declarations and applies to their function
 type even in that case.
 
 Unsequenced functions without pointer or reference arguments are similar
@@ -8893,10 +8955,11 @@ interrupt.
 @item preserve_none
 This attribute applies to functions.
 
-It is similar to @code{no_callee_saved_registers}, except
-on x86-64, r12, r13, r14, r15, rdi and rsi registers are used for
-integer parameter passing and this calling convention is subject to
-change.
+It is similar to @code{no_callee_saved_registers}, except on x86-64
+with the SysV ABI, r12, r13, r14, r15, rdi and rsi registers are used
+for integer parameter passing and this calling convention is subject to
+change.  For the Microsoft ABI, this attribute is treated the same as
+@code{no_callee_saved_registers}.
 
 @atindex @code{no_caller_saved_registers}, x86
 @item no_caller_saved_registers
@@ -9487,11 +9550,6 @@ Enable/Disable the generation of the AVX10.2 instructions.
 @itemx no-amx-avx512
 Enable/disable the generation of the AMX-AVX512 instructions.
 
-@atindex @code{target("amx-tf32")}, x86
-@item amx-tf32
-@itemx no-amx-tf32
-Enable/disable the generation of the AMX-TF32 instructions.
-
 @atindex @code{target("amx-fp8")}, x86
 @item amx-fp8
 @itemx no-amx-fp8
@@ -9506,6 +9564,21 @@ Enable/disable the generation of the MOVRS instructions.
 @item amx-movrs
 @itemx no-amx-movrs
 Enable/disable the generation of the AMX-MOVRS instructions.
+
+@atindex @code{target("avx10v2aux")}, x86
+@item avx10v2aux
+@itemx no-avx10v2aux
+Enable/disable the generation of the AVX10V2AUX instructions.
+
+@atindex @code{target("acev1")}, x86
+@item acev1
+@itemx no-acev1
+Enable/disable the generation of the ACEV1 instructions.
+
+@atindex @code{target("avx10v1aux")}, x86
+@item avx10v1aux
+@itemx no-avx10v1aux
+Enable/disable the generation of the AVX10V1AUX instructions.
 
 @atindex @code{target("cld")}, x86
 @item cld
@@ -9827,7 +9900,7 @@ does not distinguish between types with different attributes.  Support
 for attributes in C++ may be restricted in future to attributes on
 declarations only, but not on nested declarators.
 
-@xref{Attributes}, for details of the semantics of attributes.
+@xref{Attributes}, for details of the semantics of attributes
 applying to functions.
 
 An @dfn{attribute specifier} is of the form
@@ -10092,6 +10165,7 @@ option is specified.  @xref{OpenMP}, and @ref{OpenACC}.
 * Structure-Layout Pragmas::
 * Weak Pragmas::
 * Diagnostic Pragmas::
+* Coverage Pragmas::
 * Visibility Pragmas::
 * Push/Pop Macro Pragmas::
 * Function Specific Option Pragmas::
@@ -10553,6 +10627,91 @@ This is just like @samp{pragma GCC error} except that a warning
 message is issued instead of an error message.  Unless
 @option{-Werror} is in effect, in which case this pragma will generate
 an error as well.
+
+@end table
+
+@node Coverage Pragmas
+@subsection Coverage Pragmas
+
+@table @code
+@cindex pragma, suppress_coverage
+@item #pragma GCC suppress_coverage begin
+@itemx #pragma GCC suppress_coverage end
+The lines of code between the @code{begin} and @code{end} will not be
+considered towards any coverage.  This is independent of the code
+structure, and @code{end} may appear in a different scope than the
+corresponding @code{begin}.
+
+This pragma is useful to suppress coverage for code that is unreachable yet
+counts towards coverage and pollutes the report, which is a common
+problem with defensive code or when asserting invariants and properties.
+This attribute does nothing unless coverage is enabled, e.g. with
+@option{--coverage} or @option{-fpath-coverage}.
+
+A @code{end} without a @code{begin}.  A @code{begin} without a
+matching @code{end} will suppress the rest of the file.  Suppressions
+can be nested and @code{end} will apply to the last unclosed
+@code{begin}.
+
+@smallexample
+  #pragma GCC suppress_coverage begin
+  if (cond)
+    @{
+      /* Coverage is disabled for all statements in this block.  */
+      foo ();
+    @}
+  else
+    @{
+  #pragma GCC suppress_coverage end
+      /* Coverage is restored.  */
+      bar ();
+    @}
+
+  /* Counts towards coverage.  */
+  int a = 42;
+
+#pragma GCC suppress_coverage begin
+  @{
+    /* Does not count towards coverage.  */
+    bar (&a);
+    ...
+  @}
+@end smallexample
+
+Asserts introduce a branch, and the goal of asserting invariants is that
+the assert should not trigger, which would leave the assertion-failure
+branch uncovered.  These branches should not be taken (or cannot, in
+some cases), and would make full coverage impossible, yet clearly
+contribute to correctness.  By suppressing coverage for asserts we can
+fix this problem.
+
+@smallexample
+#define REQUIRE(pred, msg) do @{ \
+  _Pragma ("GCC suppress_coverage begin") \
+     assert (((void)msg, pred)); \
+  _Pragma ("GCC suppress_coverage end") \
+  @} while (0)
+
+double div (double x, double y)
+@{
+  /* gcov reports that this function has no branches.  */
+  REQUIRE (y != 0, "division by zero");
+  return x / y;
+@}
+@end smallexample
+
+@samp{pragma GCC suppress_coverage} can suppress expressions like the
+condition in @code{if} statements:
+
+@smallexample
+#pragma GCC suppress_coverage begin
+if (x < y) // Does not count towards coverage.
+#pragma GCC suppress_coverage end
+  @{
+    /* Counts towards coverage.  */
+    foo ();
+  @}
+@end smallexample
 
 @end table
 
@@ -11905,6 +12064,12 @@ Generic Operand modifiers} lists the modifiers that are available
 on all targets.  Other modifiers are hardware dependent.
 For example, the list of supported modifiers for x86 is found at
 @ref{x86Operandmodifiers,x86 Operand modifiers}.
+
+Targets can also provide multi-character modifiers, written as
+@samp{%[@var{modifier}:2]}.  If the operand has a symbolic name, write
+@samp{%[@var{modifier}:@var{asmSymbolicName}]}.
+@samp{%[@var{name}]} without a modifier separator continues to mean the
+operand named @var{name}.
 
 If the C code that follows the @code{asm} makes no use of any of the output 
 operands, use @code{volatile} for the @code{asm} statement to prevent the 
@@ -13480,7 +13645,7 @@ size of the @code{asm} --- or parts of it --- in units of 16-bit words:
 @item nl
 The number of lines in the code template, which is half the default size.
 It suits code templates that only use 1-word instructions with
-no superfuous physical @samp{\n} or logical @samp{$} line breaks.
+no superfluous physical @samp{\n} or logical @samp{$} line breaks.
 
 @item [0-9]+
 The decimal representation of a non-negative integer.
@@ -17942,6 +18107,29 @@ recognized in such contexts.
 
 @enddefbuiltin
 
+@defbuiltin{@var{type} __builtin_clmulg (@var{type} @var{a}, @var{type} @var{b})}
+@defbuiltinx{@var{type} __builtin_clmulg (@var{type} @var{a}, @var{type} @var{b}, @var{type} *@var{c})}
+
+This type-generic built-in function returns carry-less product of the
+first two arguments.  @var{type} may be any unsigned integral type.
+The function returns the lower half of the full result, which has
+twice the precision of @var{type}.  If three arguments are specified,
+the higher half of the full result is stored into the object the argument
+points to.
+
+@smallexample
+  unsigned int a = 0x10111111U, b = 0x22002222U;
+  unsigned int c = __builtin_clmulg (a, b);
+  unsigned int d, e = __builtin_clmulg (a, b, &d);
+@end smallexample
+
+If @code{int} is 32-bit, both @var{c} and @var{e} will be set to the least significant
+32 bits of the full 64-bit carry-less product result @code{0x222022020000202ULL},
+i.e. @code{0x20000202U}, while @var{d} will be set to the most significant 32 bits
+of the full result, i.e. @code{0x2220220U}.
+
+@enddefbuiltin
+
 @defbuiltin{@var{type} __builtin_speculation_safe_value (@var{type} @var{val}, @var{type} @var{failval})}
 
 This built-in function can be used to help mitigate against unsafe
@@ -18453,7 +18641,7 @@ of the function, control never reaches the end of the function
 body.  The @code{__builtin_unreachable} is in fact unreachable and
 communicates this fact to the compiler.
 
-Another use for @code{__builtin_unreachable} is following a call a
+Another use for @code{__builtin_unreachable} is following a call to a
 function that never returns but that is not declared
 @code{__attribute__((noreturn))}, as in this example:
 
@@ -18713,6 +18901,7 @@ instructions, but allow the compiler to schedule those calls.
 * PowerPC Hardware Transactional Memory Built-in Functions::
 * PowerPC Atomic Memory Operation Functions::
 * PowerPC Matrix-Multiply Assist Built-in Functions::
+* PowerPC Dense Math Facility Built-in Functions::
 * PRU Built-in Functions::
 * RISC-V Built-in Functions::
 * RISC-V Vector Intrinsics::
@@ -19342,7 +19531,7 @@ void __builtin_arm_set_fpscr (unsigned int);
 GCC implements the ARMv8-M Security Extensions as described in the ARMv8-M
 Security Extensions: Requirements on Development Tools Engineering
 Specification, which can be found at
-@uref{https://developer.arm.com/documentation/ecm0359818/latest/}.
+@uref{https://support.arm.com/documentation/ecm0359818/latest/}.
 
 As part of the Security Extensions GCC implements two new function attributes:
 @code{cmse_nonsecure_entry} and @code{cmse_nonsecure_call}.
@@ -26990,6 +27179,8 @@ vector unsigned char);
 The following additional built-in functions are available for the
 PowerPC family of processors, starting with Future ISA.
 
+@subsubheading PowerPC Advanced Encryption Standard (AES) Acceleration Built-in Functions
+
 Future ISA of the PowerPC may add new instructions for accelerating AES
 algorithm. GCC provides support for these new instructions through the
 following built-in functions. The third argument to
@@ -27031,6 +27222,38 @@ vec_t __builtin_galois_field_mult (vec_t, vec_t, int);
 vec_t __builtin_galois_field_mult_gcm (vec_t, vec_t);
 
 vec_t __builtin_galois_field_mult_xts (vec_t, vec_t);
+@end smallexample
+
+@subsubheading PowerPC Secure Hash Algorithm (SHA) Acceleration Built-in Functions
+
+Future ISA of the PowerPC may add new instructions for accelerating SHA
+hash function. GCC provides support for these new instructions through the
+following built-in functions.
+
+@smallexample
+void __builtin_dmsha2hash (__dmr1024*, __dmr1024*, uint1);
+
+void __builtin_dmsha256hash (__dmr1024*, __dmr1024*);
+
+void __builtin_dmsha512hash (__dmr1024*, __dmr1024*);
+
+void __builtin_dmxxshapad (__dmr1024*, vec_t, uint2, uint1, uint2);
+
+void __builtin_dmxxsha3512pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxsha3384pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxsha3256pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxsha3224pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxshake256pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxshake128pad (__dmr1024*, vec_t, uint1);
+
+void __builtin_dmxxsha384512pad (__dmr1024*, vec_t);
+
+void __builtin_dmxxsha224256pad (__dmr1024*, vec_t);
 @end smallexample
 
 @subsubheading PowerPC Vector Integer Multiply High Built-in Functions
@@ -27465,6 +27688,69 @@ __vector_pair __builtin_vsx_lxvp (size_t, __vector_pair *);
 void __builtin_vsx_stxvp (__vector_pair, size_t, __vector_pair *);
 @end smallexample
 
+Future ISA of PowerPC may add new Matrix-Multiply Assist Plus (MMA+)
+instructions.  GCC provides support for these instructions through the
+following built-in functions which are enabled with the @code{-mmma} option.
+The vec_t type below is defined to be a normal vector unsigned char type.
+The uint2, uint4 and uint8 parameters are 2-bit, 4-bit and 8-bit unsigned
+integer constants respectively.  The compiler will verify that they are
+constants and that their values are within range.  The __dmr1024 type is a
+1024-bit integer type.
+
+The built-in functions supported are:
+
+@smallexample
+void __builtin_mma_dmxvi8gerx4 (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvi8gerx4pp (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvi8gerx4spp (__dmr1024 *, __vector_pair, vec_t);
+
+void __builtin_mma_pmdmxvi8gerx4 (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint4);
+void __builtin_mma_pmdmxvi8gerx4pp (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint4);
+void __builtin_mma_pmdmxvi8gerx4spp (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint4);
+
+void __builtin_mma_dmxvbf16gerx2 (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvbf16gerx2pp (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvbf16gerx2pn (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvbf16gerx2np (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvbf16gerx2nn (__dmr1024 *, __vector_pair, vec_t);
+
+void __builtin_mma_pmdmxvbf16gerx2 (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvbf16gerx2pp (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvbf16gerx2pn (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvbf16gerx2np (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvbf16gerx2nn (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+
+void __builtin_mma_dmxvf16gerx2 (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvf16gerx2pp (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvf16gerx2pn (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvf16gerx2np (__dmr1024 *, __vector_pair, vec_t);
+void __builtin_mma_dmxvf16gerx2nn (__dmr1024 *, __vector_pair, vec_t);
+
+void __builtin_mma_pmdmxvf16gerx2 (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvf16gerx2pp (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvf16gerx2pn (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvf16gerx2np (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+void __builtin_mma_pmdmxvf16gerx2nn (__dmr1024 *, __vector_pair, vec_t, uint8, uint4, uint2);
+@end smallexample
+
+@node PowerPC Dense Math Facility Built-in Functions
+@subsection PowerPC Dense Math Facility Built-in Functions
+
+A future PowerPC processor may provide Dense Math Facility (DMF)
+instructions.  GCC provides support for these instructions through the
+following built-in functions which are enabled with the @code{-mdense-math}
+option.  The vec_t type below is defined to be a normal vector unsigned char
+type.  The __dmr1024 type is a 1024 bit integer type.
+
+The built-in functions supported are:
+
+@smallexample
+void __builtin_dmsetdmrz (__dmr1024 *);
+void __builtin_dmmr (__dmr1024 *, __dmr1024 *);
+void __builtin_dmxor (__dmr1024 *, __dmr1024 *);
+void __builtin_build_dmr (__dmr1024 *, vec_t, vec_t, vec_t, vec_t, vec_t, vec_t, vec_t, vec_t);
+@end smallexample
+
 @node PRU Built-in Functions
 @subsection PRU Built-in Functions
 
@@ -27527,17 +27813,17 @@ temporarily paused or slowed down.
 GCC supports vector intrinsics as specified in the ratified version 1.0 of the
 RISC-V vector intrinsic specification, which is available from the repository's
 release page:
-@uref{https://github.com/riscv-non-isa/rvv-intrinsic-doc/releases/tag/v1.0-ratified}.
+@uref{https://github.com/riscv-non-isa/riscv-rvv-intrinsic-doc/releases/tag/v1.0-ratified}.
 All of these functions are declared in the include file @file{riscv_vector.h}.
 
 @node CORE-V Built-in Functions
 @subsection CORE-V Built-in Functions
 For more information on all CORE-V built-ins, please see
-@uref{https://github.com/openhwgroup/core-v-sw/blob/master/specifications/corev-builtin-spec.md}
+@uref{https://github.com/openhwfoundation/core-v-sw/blob/master/specifications/corev-builtin-spec.md}
 
 These built-in functions are available for the CORE-V MAC machine
 architecture. For more information on CORE-V built-ins, please see
-@uref{https://github.com/openhwgroup/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-multiply-accumulate-builtins-xcvmac}.
+@uref{https://github.com/openhwfoundation/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-multiply-accumulate-builtins-xcvmac}.
 
 @deftypefn {Built-in Function} {int32_t} __builtin_riscv_cv_mac_mac (int32_t, int32_t, int32_t)
 Generated assembler @code{cv.mac}
@@ -27613,7 +27899,7 @@ Generates the @code{cv.machhsRN} machine instruction.
 
 These built-in functions are available for the CORE-V ALU machine
 architecture. For more information on CORE-V built-ins, please see
-@uref{https://github.com/openhwgroup/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-miscellaneous-alu-builtins-xcvalu}
+@uref{https://github.com/openhwfoundation/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-miscellaneous-alu-builtins-xcvalu}
 
 @deftypefn {Built-in Function} {int} __builtin_riscv_cv_alu_slet (int32_t, int32_t)
 Generated assembler @code{cv.slet}
@@ -27707,7 +27993,7 @@ Generated assembler @code{cv.subuRNr} if  the it is a register.
 
 These built-in functions are available for the CORE-V Event Load machine
 architecture. For more information on CORE-V ELW builtins, please see
-@uref{https://github.com/openhwgroup/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-event-load-word-builtins-xcvelw}
+@uref{https://github.com/openhwfoundation/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-event-load-word-builtins-xcvelw}
 
 @deftypefn {Built-in Function} {uint32_t} __builtin_riscv_cv_elw_elw (uint32_t *)
 Generated assembler @code{cv.elw}
@@ -27715,7 +28001,7 @@ Generated assembler @code{cv.elw}
 
 These built-in functions are available for the CORE-V SIMD machine
 architecture. For more information on CORE-V SIMD built-ins, please see
-@uref{https://github.com/openhwgroup/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-pulp-816-bit-simd-builtins-xcvsimd}
+@uref{https://github.com/openhwfoundation/core-v-sw/blob/master/specifications/corev-builtin-spec.md#listing-of-pulp-816-bit-simd-builtins-xcvsimd}
 
 @deftypefn {Built-in Function} {uint32_t} __builtin_riscv_cv_simd_add_h (uint32_t, uint32_t, uint4_t)
 Generated assembler @code{cv.add.h}
@@ -31664,6 +31950,41 @@ classes that are non-trivial for the purposes of calls
 arrays of any of the above
 @end itemize
 @end itemize
+
+@cindex @code{no_specializations} template attribute
+@item no_specializations
+
+The @code{no_specializations} attribute can be applied to a C++
+class template, variable template or function template, though not
+their specializations.  It instructs the compiler to error if
+such a template is explicitly specialized.  The primary use case
+for this attribute is the standard library where the standard
+specifies it is undefined behavior to specialize some template.
+The error can be disabled with @option{-Wno-invalid-specialization}
+or @code{#pragma GCC ignored "-Winvalid-specialization"}.
+
+The attribute can be specified either as @code{__attribute__
+((no_specializations))} or @code{[[clang::no_specializations]]} for compatibility
+with the original implementation in Clang.  To avoid portability
+complications, @code{[[gnu::no_specializations]]} is ignored with a warning.
+
+The attribute has a single optional argument, a string literal, which is
+included in the diagnostics and can provide reason why some template should
+not be specialized.
+
+@smallexample
+template <typename T>
+struct __attribute__ ((__no_specializations__)) A @{@};
+template <typename T, typename U>
+[[clang::no_specializations]] int b = 1;
+template <typename T>
+[[_Clang::__no_specializations__ ("foo cannot be specialized")]] int
+foo () @{ return 42; @}
+template <> struct A <int> @{@}; // Error
+template <typename T> int b <T, T> = 2; // Error
+template <> int foo <int> () @{ return 43; @} // Error
+@};
+@end smallexample
 
 @end table
 

@@ -80,17 +80,17 @@ void parser_accept_command_line(const cbl_refer_t &tgt,
                                 cbl_label_t *not_error );
 void parser_accept_command_line_count( const cbl_refer_t &tgt );
 
-void parser_accept_date_yymmdd( cbl_field_t *tgt );
-void parser_accept_date_yyyymmdd( cbl_field_t *tgt );
-void parser_accept_date_yyddd( cbl_field_t *tgt );
-void parser_accept_date_yyyyddd( cbl_field_t *tgt );
-void parser_accept_date_dow( cbl_field_t *tgt );
-void parser_accept_date_hhmmssff( cbl_field_t *tgt );
+void parser_accept_date_yymmdd( const cbl_refer_t& tgt );
+void parser_accept_date_yyyymmdd( const cbl_refer_t& tgt );
+void parser_accept_date_yyddd( const cbl_refer_t& tgt );
+void parser_accept_date_yyyyddd( const cbl_refer_t& tgt );
+void parser_accept_date_dow( const cbl_refer_t& tgt );
+void parser_accept_date_hhmmssff( const cbl_refer_t& tgt );
 
 void
-parser_alphabet( const cbl_alphabet_t& alphabet );
+parser_alphabet( const cbl_alphabet_t *alphabet );
 void
-parser_alphabet_use( cbl_alphabet_t& alphabet );
+parser_alphabet_use( const cbl_alphabet_t *alphabet );
 
 void
 parser_allocate( cbl_refer_t size_or_based, cbl_refer_t returning, bool initialized );
@@ -114,7 +114,8 @@ parser_add( size_t nC, cbl_num_result_t *C,
             size_t nA, cbl_refer_t *A,
             cbl_arith_format_t format,
             cbl_label_t *error,
-            cbl_label_t *not_error,            void *compute_error = NULL);  // This has to be cast to a tree pointer to int
+            cbl_label_t *not_error,
+            void *compute_error = NULL);  // This has to be cast to a tree pointer to int
 
 void parser_arith_error( cbl_label_t *name );
 void parser_arith_error_end( cbl_label_t *name );
@@ -166,13 +167,6 @@ parser_divide( const cbl_refer_t& quotient,
                const cbl_refer_t& dividend,
                enum cbl_round_t = truncation_e,
                const cbl_refer_t& remainder = cbl_refer_t());
-
-// void
-// parser_exponentiation(  cbl_refer_t cref,
-//                         cbl_refer_t aref,
-//                         cbl_refer_t bref,
-//                         cbl_round_t rounded = truncation_e );
-
 void
 parser_relop( struct cbl_field_t *tgt,
               struct cbl_refer_t a, enum relop_t, struct cbl_refer_t b );
@@ -187,7 +181,9 @@ parser_logop( struct cbl_field_t *tgt,
 
 void
 parser_setop( struct cbl_field_t *tgt,
-              struct cbl_field_t *a,  enum setop_t, struct cbl_field_t *b );
+              struct cbl_refer_t &candidate,
+              enum setop_t,
+              struct cbl_field_t *b );
 
 void
 parser_bitop( struct cbl_field_t *tgt,
@@ -203,6 +199,18 @@ void
 parser_classify( struct cbl_field_t *tgt,
            const struct cbl_refer_t &srca,
                  enum                classify_t type );
+
+void
+parser_compute( cbl_refer_t *tgt,
+                const std::deque<rpn_t>& operations,
+                cbl_label_t *lbl );
+
+void
+parser_compute( std::vector<cbl_num_result_t>& results,
+                const std::deque<rpn_t>& operations,
+                cbl_label_t *on_error,
+                cbl_label_t *not_error,
+                cbl_label_t *compute_error);
 
 void
 parser_op( struct cbl_refer_t cref,
@@ -460,8 +468,8 @@ parser_file_sort(   cbl_file_t *file,
                     cbl_perform_tgt_t *out_proc );
 void
 parser_file_merge(  cbl_file_t *file,
-                    cbl_alphabet_t *alphabet,
-                    const std::vector<cbl_key_t>& keys,
+              const cbl_alphabet_t *alphabet,
+              const std::vector<cbl_key_t>& keys,
                     size_t ninput,
                     cbl_file_t **inputs,
                     size_t noutput,
@@ -476,8 +484,8 @@ parser_exception_file( cbl_field_t *tgt, cbl_file_t* file = NULL );
 
 void
 parser_intrinsic_convert(cbl_field_t *tgt,
-                         const cbl_refer_t& input,                           
-                         convert_type_t src_fmt, 
+                         const cbl_refer_t& input,
+                         convert_type_t src_fmt,
                          unsigned int   dst_fmt );
 
 void
@@ -582,7 +590,6 @@ void parser_clear_exception();
 void parser_push_exception();
 void parser_pop_exception();
 
-void parser_call_targets_dump();
 size_t parser_call_target_update( size_t caller,
                                   const char extant[],
                                   const char mangled_tgt[] );
@@ -629,7 +636,7 @@ tree parser_compile_dcls( const std::vector<uint64_t>& dcls );
 void parser_trim( cbl_field_t *tgt, const cbl_refer_t& input,
                   size_t how, const std::vector<cbl_refer_t>& args );
 
-void 
+void
 move_helper(tree        size_error,  // INT
             cbl_refer_t destref,
             cbl_refer_t sourceref,

@@ -156,7 +156,7 @@ BaseType::BaseType (HirId ref, HirId ty_ref, TypeKind kind, RustIdent ident,
 BaseType::BaseType (HirId ref, HirId ty_ref, TypeKind kind, RustIdent ident,
 		    std::vector<TypeBoundPredicate> specified_bounds,
 		    std::set<HirId> refs)
-  : TypeBoundsMappings (specified_bounds), kind (kind), ref (ref),
+  : TypeBoundsMappings (std::move (specified_bounds)), kind (kind), ref (ref),
     ty_ref (ty_ref), orig_ref (ref), combined (refs), ident (ident),
     mappings (Analysis::Mappings::get ())
 {}
@@ -288,10 +288,101 @@ BaseType::get_locus () const
   return ident.locus;
 }
 
+bool
+BaseType::unsize_to (const BaseType *target) const
+{
+  if (this->get_kind () == TyTy::TypeKind::DYNAMIC
+      && target->get_kind () == TyTy::TypeKind::DYNAMIC)
+    {
+      const auto *source_dyn = this->as<const TyTy::DynamicObjectType> ();
+      const auto *target_dyn = target->as<const TyTy::DynamicObjectType> ();
+
+      const auto &source_bounds = source_dyn->get_specified_bounds ();
+      const auto &target_bounds = target_dyn->get_specified_bounds ();
+
+      if (source_bounds.empty () || target_bounds.empty ())
+	return false;
+
+      if (source_bounds.at (0).get_id () != target_bounds.at (0).get_id ())
+	return false;
+
+      for (const auto &t_bound : target_dyn->get_specified_bounds ())
+	{
+	  bool found = false;
+	  for (const auto &s_bound : source_dyn->get_specified_bounds ())
+	    {
+	      if (s_bound.get_id () == t_bound.get_id ())
+		{
+		  found = true;
+		  break;
+		}
+	    }
+	  if (!found)
+	    return false;
+	}
+      return true;
+    }
+
+  // `T` -> `Trait`
+  else if (target->get_kind () == TyTy::TypeKind::DYNAMIC)
+    return true;
+
+  // Ambiguous handling is below `T` -> `Trait`, because inference
+  // variables can still implement `Unsize<Trait>` and nested
+  // obligations will have the final say (likely deferred).
+  else if (this->destructure ()->is<InferType> ()
+	   || target->destructure ()->is<InferType> ())
+    return true;
+
+  // `[T; n]` -> `[T]`
+  else if (this->get_kind () == TyTy::TypeKind::ARRAY
+	   && target->get_kind () == TyTy::TypeKind::SLICE)
+    return true;
+
+  // `Struct<T>` -> `Struct<U>`
+  else if (this->get_kind () == TyTy::TypeKind::ADT
+	   && target->get_kind () == TyTy::TypeKind::ADT)
+    {
+      const auto *source_adt = this->as<const TyTy::ADTType> ();
+      const auto *target_adt = target->as<const TyTy::ADTType> ();
+      return (source_adt->is_struct_struct () || source_adt->is_tuple_struct ())
+	     && source_adt->get_id () == target_adt->get_id ();
+    }
+
+  // `(.., T)` -> `(.., U)`
+  else if (this->get_kind () == TyTy::TypeKind::TUPLE
+	   && target->get_kind () == TyTy::TypeKind::TUPLE)
+    {
+      const auto *source_tuple = this->as<const TyTy::TupleType> ();
+      const auto *target_tuple = target->as<const TyTy::TupleType> ();
+      return source_tuple->get_subst_argument_mappings ().size ()
+	     == target_tuple->get_subst_argument_mappings ().size ();
+    }
+  return false;
+}
+
 // FIXME this is missing locus
 bool
 BaseType::satisfies_bound (const TypeBoundPredicate &predicate, bool emit_error)
 {
+  // see:
+  // https://github.com/rust-lang/rust/blob/e1884a8e3c3e813aada8254edfa120e85bf5ffca/compiler/rustc_trait_selection/src/traits/select/candidate_assembly.rs#L673
+  if (auto unsize_id = mappings.lookup_lang_item (Rust::LangItem::Kind::UNSIZE))
+    {
+      if (predicate.get_id () == unsize_id)
+	{
+	  const auto &args = predicate.get_substitution_arguments ();
+	  rust_assert (args.size () == 2 && "Unsize<U>");
+
+	  // When this target is defined as `U`, it does not give us the
+	  // realized argument type. Instead, it returns `PARAM`.
+	  TyTy::BaseType *target
+	    = args.get_mappings ().at (1).get_param_ty ()->resolve ();
+
+	  return this->unsize_to (target);
+	}
+    }
+
   const Resolver::TraitReference *query = predicate.get ();
   for (const auto &bound : specified_bounds)
     {
@@ -304,7 +395,9 @@ BaseType::satisfies_bound (const TypeBoundPredicate &predicate, bool emit_error)
     return true;
 
   bool satisfied = false;
-  auto probed = Resolver::TypeBoundsProbe::Probe (this);
+  auto tref = predicate.get ();
+  auto probed
+    = Resolver::TypeBoundsProbe::Probe (this, tref->get_hir_trait_ref ());
   for (const auto &b : probed)
     {
       const Resolver::TraitReference *bound = b.first;
@@ -324,10 +417,18 @@ BaseType::satisfies_bound (const TypeBoundPredicate &predicate, bool emit_error)
       if (!bound->is_equal (*query))
 	continue;
 
-      // builtin ones have no impl-block this needs fixed and use a builtin node
-      // of somekind
+      // builtin ones have no impl-block this needs fixed and use a builtin
+      // node of somekind
       if (b.second == nullptr)
-	return true;
+	{
+	  return predicate.get_polarity () == BoundPolarity::RegularBound;
+	}
+      else
+	{
+	  const auto &impl = *(b.second);
+	  if (predicate.get_polarity () != impl.get_polarity ())
+	    continue;
+	}
 
       // need to check that associated types can match as well
       const HIR::ImplBlock &impl = *(b.second);
@@ -430,6 +531,12 @@ void
 BaseType::inherit_bounds (const BaseType &other)
 {
   inherit_bounds (other.get_specified_bounds ());
+}
+
+void
+BaseType::inherit_bound (const TypeBoundPredicate &bound)
+{
+  add_bound (bound);
 }
 
 void
@@ -660,6 +767,9 @@ BaseType::monomorphized_clone () const
     }
   else if (auto adt = x->try_as<const ADTType> ())
     {
+      if (!adt->has_substitutions_defined () || !adt->needs_substitution ())
+	return const_cast<ADTType *> (adt);
+
       std::vector<VariantDef *> cloned_variants;
       for (auto &variant : adt->get_variants ())
 	cloned_variants.push_back (variant->monomorphized_clone ());
@@ -718,30 +828,45 @@ BaseType::debug () const
 const TyTy::BaseType *
 BaseType::contains_infer () const
 {
+  std::set<const TyTy::BaseType *> visited;
+  return contains_infer (visited);
+}
+
+const TyTy::BaseType *
+BaseType::contains_infer (std::set<const TyTy::BaseType *> &visited) const
+{
   const TyTy::BaseType *x = destructure ();
+  bool found = visited.find (x) != visited.end ();
+  if (found)
+    return nullptr;
+  visited.insert (x);
 
   if (auto fn = x->try_as<const FnType> ())
     {
       for (const auto &param : fn->get_params ())
 	{
-	  auto infer = param.get_type ()->contains_infer ();
+	  auto infer = param.get_type ()->contains_infer (visited);
 	  if (infer)
 	    return infer;
 	}
-      return fn->get_return_type ()->contains_infer ();
+      return fn->get_return_type ()->contains_infer (visited);
     }
   else if (auto fn = x->try_as<const FnPtr> ())
     {
       for (const auto &param : fn->get_params ())
 	{
-	  auto infer = param.get_tyty ()->contains_infer ();
+	  auto infer = param.get_tyty ()->contains_infer (visited);
 	  if (infer)
 	    return infer;
 	}
-      return fn->get_return_type ()->contains_infer ();
+      return fn->get_return_type ()->contains_infer (visited);
     }
   else if (auto adt = x->try_as<const ADTType> ())
     {
+      // non generic adt's cannot have infer vars on them
+      if (!adt->has_substitutions_defined ())
+	return nullptr;
+
       for (auto &variant : adt->get_variants ())
 	{
 	  bool is_num_variant
@@ -754,7 +879,7 @@ BaseType::contains_infer () const
 	  for (auto &field : variant->get_fields ())
 	    {
 	      const BaseType *field_type = field->get_field_type ();
-	      auto infer = (field_type->contains_infer ());
+	      auto infer = field_type->contains_infer (visited);
 	      if (infer)
 		return infer;
 	    }
@@ -763,28 +888,28 @@ BaseType::contains_infer () const
     }
   else if (auto arr = x->try_as<const ArrayType> ())
     {
-      auto type_infer = (arr->get_element_type ()->contains_infer ());
+      auto type_infer = arr->get_element_type ()->contains_infer (visited);
       if (type_infer)
 	return type_infer;
-      return arr->get_capacity ()->contains_infer ();
+      return arr->get_capacity ()->contains_infer (visited);
     }
   else if (auto slice = x->try_as<const SliceType> ())
     {
-      return slice->get_element_type ()->contains_infer ();
+      return slice->get_element_type ()->contains_infer (visited);
     }
   else if (auto ptr = x->try_as<const PointerType> ())
     {
-      return ptr->get_base ()->contains_infer ();
+      return ptr->get_base ()->contains_infer (visited);
     }
   else if (auto ref = x->try_as<const ReferenceType> ())
     {
-      return ref->get_base ()->contains_infer ();
+      return ref->get_base ()->contains_infer (visited);
     }
   else if (auto tuple = x->try_as<const TupleType> ())
     {
       for (size_t i = 0; i < tuple->num_fields (); i++)
 	{
-	  auto infer = (tuple->get_field (i)->contains_infer ());
+	  auto infer = tuple->get_field (i)->contains_infer (visited);
 	  if (infer)
 	    return infer;
 	}
@@ -792,10 +917,10 @@ BaseType::contains_infer () const
     }
   else if (auto closure = x->try_as<const ClosureType> ())
     {
-      auto infer = (closure->get_parameters ().contains_infer ());
+      auto infer = closure->get_parameters ().contains_infer (visited);
       if (infer)
 	return infer;
-      return closure->get_result_type ().contains_infer ();
+      return closure->get_result_type ().contains_infer (visited);
     }
   else if (x->is<InferType> ())
     {
@@ -815,7 +940,18 @@ BaseType::contains_infer () const
 bool
 BaseType::is_concrete () const
 {
+  std::set<const TyTy::BaseType *> visited;
+  return is_concrete (visited);
+}
+
+bool
+BaseType::is_concrete (std::set<const TyTy::BaseType *> &visited) const
+{
   const TyTy::BaseType *x = destructure ();
+  bool found = visited.find (x) != visited.end ();
+  if (found)
+    return true;
+  visited.insert (x);
 
   if (x->is<ParamType> ())
     {
@@ -832,7 +968,7 @@ BaseType::is_concrete () const
   else if (x->is<ProjectionType> ())
     {
       const auto p = x->as<const TyTy::ProjectionType> ();
-      return p->get_self ()->is_concrete ();
+      return p->get_self ()->is_concrete (visited);
     }
   // placeholder is a special case for this case when it is not resolvable
   // it means we its just an empty placeholder associated type which is
@@ -845,22 +981,25 @@ BaseType::is_concrete () const
     {
       for (const auto &param : fn->get_params ())
 	{
-	  if (!param.get_type ()->is_concrete ())
+	  if (!param.get_type ()->is_concrete (visited))
 	    return false;
 	}
-      return fn->get_return_type ()->is_concrete ();
+      return fn->get_return_type ()->is_concrete (visited);
     }
   else if (auto fn = x->try_as<const FnPtr> ())
     {
       for (const auto &param : fn->get_params ())
 	{
-	  if (!param.get_tyty ()->is_concrete ())
+	  if (!param.get_tyty ()->is_concrete (visited))
 	    return false;
 	}
-      return fn->get_return_type ()->is_concrete ();
+      return fn->get_return_type ()->is_concrete (visited);
     }
   else if (auto adt = x->try_as<const ADTType> ())
     {
+      if (!adt->has_substitutions_defined ())
+	return true;
+
       if (adt->is_unit ())
 	return !adt->needs_substitution ();
 
@@ -876,7 +1015,7 @@ BaseType::is_concrete () const
 	  for (auto &field : variant->get_fields ())
 	    {
 	      const BaseType *field_type = field->get_field_type ();
-	      if (!field_type->is_concrete ())
+	      if (!field_type->is_concrete (visited))
 		return false;
 	    }
 	}
@@ -884,35 +1023,35 @@ BaseType::is_concrete () const
     }
   else if (auto arr = x->try_as<const ArrayType> ())
     {
-      return arr->get_element_type ()->is_concrete ()
-	     && arr->get_capacity ()->is_concrete ();
+      return arr->get_element_type ()->is_concrete (visited)
+	     && arr->get_capacity ()->is_concrete (visited);
     }
   else if (auto slice = x->try_as<const SliceType> ())
     {
-      return slice->get_element_type ()->is_concrete ();
+      return slice->get_element_type ()->is_concrete (visited);
     }
   else if (auto ptr = x->try_as<const PointerType> ())
     {
-      return ptr->get_base ()->is_concrete ();
+      return ptr->get_base ()->is_concrete (visited);
     }
   else if (auto ref = x->try_as<const ReferenceType> ())
     {
-      return ref->get_base ()->is_concrete ();
+      return ref->get_base ()->is_concrete (visited);
     }
   else if (auto tuple = x->try_as<const TupleType> ())
     {
       for (size_t i = 0; i < tuple->num_fields (); i++)
 	{
-	  if (!tuple->get_field (i)->is_concrete ())
+	  if (!tuple->get_field (i)->is_concrete (visited))
 	    return false;
 	}
       return true;
     }
   else if (auto closure = x->try_as<const ClosureType> ())
     {
-      if (closure->get_parameters ().is_concrete ())
+      if (closure->get_parameters ().is_concrete (visited))
 	return false;
-      return closure->get_result_type ().is_concrete ();
+      return closure->get_result_type ().is_concrete (visited);
     }
   else if (x->is<InferType> () || x->is<BoolType> () || x->is<CharType> ()
 	   || x->is<IntType> () || x->is<UintType> () || x->is<FloatType> ()
@@ -1232,11 +1371,10 @@ InferType::clone () const
     = new InferType (mappings.get_next_hir_id (), get_infer_kind (),
 		     default_hint, get_ident ().locus, get_combined_refs ());
 
-  context->insert_type (Analysis::NodeMapping (mappings.get_current_crate (),
-					       UNKNOWN_NODEID,
-					       clone->get_ref (),
-					       UNKNOWN_LOCAL_DEFID),
-			clone);
+  context->insert_type (
+    Analysis::NodeMapping (mappings.crate.get_current_crate (), UNKNOWN_NODEID,
+			   clone->get_ref (), UNKNOWN_LOCAL_DEFID),
+    clone);
   mappings.insert_location (clone->get_ref (),
 			    mappings.lookup_location (get_ref ()));
 
@@ -1891,10 +2029,16 @@ ADTType::as_string () const
 bool
 ADTType::is_equal (const BaseType &other) const
 {
+  if (this == &other)
+    return true;
+
   if (get_kind () != other.get_kind ())
     return false;
 
   auto other2 = other.as<const ADTType> ();
+  if (get_id () != other2->get_id ())
+    return false;
+
   if (get_adt_kind () != other2->get_adt_kind ())
     return false;
 
@@ -1921,15 +2065,8 @@ ADTType::is_equal (const BaseType &other) const
 	}
     }
 
-  for (size_t i = 0; i < number_of_variants (); i++)
-    {
-      const TyTy::VariantDef *a = get_variants ().at (i);
-      const TyTy::VariantDef *b = other2->get_variants ().at (i);
-
-      if (!a->is_equal (*b))
-	return false;
-    }
-
+  // ADTs are nominal.  Their fields describe the definition, not the type's
+  // identity, and walking them here cannot terminate for recursive ADTs.
   return true;
 }
 
@@ -2024,9 +2161,18 @@ handle_substitions (SubstitutionArgumentMappings &subst_mappings,
 ADTType *
 ADTType::handle_substitions (SubstitutionArgumentMappings &subst_mappings)
 {
+  auto context = Resolver::TypeCheckContext::get ();
+  ADTType *cached = nullptr;
+  if (context->lookup_adt_substitution (get_id (), subst_mappings, &cached))
+    return cached;
+
   auto adt = clone ()->as<ADTType> ();
   adt->set_ty_ref (mappings.get_next_hir_id ());
   adt->used_arguments = subst_mappings;
+
+  // track these to handle recursive types
+  context->insert_implicit_type (adt->get_ty_ref (), adt);
+  context->insert_adt_substitution (get_id (), subst_mappings, adt);
 
   for (auto &sub : adt->get_substs ())
     {
@@ -2051,6 +2197,49 @@ ADTType::handle_substitions (SubstitutionArgumentMappings &subst_mappings)
     }
 
   return adt;
+}
+
+bool
+ADTType::contains_unsafe_cell () const
+{
+  if (auto unsafe_cell
+      = mappings.lookup_lang_item (LangItem::Kind::UNSAFE_CELL))
+    {
+      if (get_id () == *unsafe_cell)
+	return true;
+
+      for (auto &variant : get_variants ())
+	for (auto &field : variant->get_fields ())
+	  if (field->get_field_type ()->contains_unsafe_cell ())
+	    return true;
+    }
+  return false;
+}
+
+bool
+ADTType::is_unsized () const
+{
+  if (is_enum () || is_union () || number_of_variants () == 0)
+    return false;
+
+  auto &variant = get_variants ().front ();
+  if (variant->num_fields () == 0)
+    return false;
+
+  const TyTy::BaseType *last_field_type
+    = variant->get_field_at_index (variant->num_fields () - 1)
+	->get_field_type ();
+
+  return last_field_type->is_unsized ();
+}
+
+bool
+ADTType::is_box () const
+{
+  if (auto owned_box = mappings.lookup_lang_item (LangItem::Kind::OWNED_BOX))
+    if (get_id () == owned_box)
+      return true;
+  return false;
 }
 
 // TupleType
@@ -2204,6 +2393,15 @@ TupleType::handle_substitions (SubstitutionArgumentMappings &mappings)
     }
 
   return tuple;
+}
+
+bool
+TupleType::contains_unsafe_cell () const
+{
+  for (auto &field : get_fields ())
+    if (field.get_tyty ()->contains_unsafe_cell ())
+      return true;
+  return false;
 }
 
 void
@@ -2430,7 +2628,7 @@ FnPtr::as_string () const
   auto &params = get_params ();
   for (auto &p : params)
     {
-      params_str += p.get_tyty ()->as_string () + " ,";
+      params_str += p.get_tyty ()->get_name () + " ,";
     }
 
   std::string unsafety = "";
@@ -2439,7 +2637,7 @@ FnPtr::as_string () const
 
   std::string abi = get_string_from_abi (get_abi ());
   return unsafety + "abi:" + abi + " " + "fnptr (" + params_str + ") -> "
-	 + get_return_type ()->as_string ();
+	 + get_return_type ()->get_name ();
 }
 
 bool
@@ -2602,6 +2800,9 @@ ArrayType::is_equal (const BaseType &other) const
 bool
 ArrayType::is_zero_sized () const
 {
+  if (element_type.get_tyty ()->is_zero_sized ())
+    return true;
+
   auto *capacity_ty = get_capacity ();
   if (capacity_ty != nullptr
       && capacity_ty->get_kind () == TyTy::TypeKind::CONST)
@@ -2665,6 +2866,12 @@ ArrayType::handle_substitions (SubstitutionArgumentMappings &mappings)
   ref->capacity = TyVar::subst_covariant_var (cap, concrete_cap);
 
   return ref;
+}
+
+bool
+ArrayType::contains_unsafe_cell () const
+{
+  return get_element_type ()->contains_unsafe_cell ();
 }
 
 void
@@ -2732,6 +2939,12 @@ SliceType::handle_substitions (SubstitutionArgumentMappings &mappings)
   ref->element_type = TyVar::subst_covariant_var (base, concrete);
 
   return ref;
+}
+
+bool
+SliceType::contains_unsafe_cell () const
+{
+  return get_element_type ()->contains_unsafe_cell ();
 }
 
 // BoolType
@@ -3177,7 +3390,7 @@ bool
 ReferenceType::is_dyn_object () const
 {
   return is_dyn_slice_type () || is_dyn_str_type () || is_dyn_obj_type ()
-	 || is_dyn_cstr_type ();
+	 || is_dyn_adt_type () || is_dyn_cstr_type ();
 }
 
 static const TyTy::BaseType *
@@ -3236,6 +3449,24 @@ ReferenceType::is_dyn_obj_type (const TyTy::DynamicObjectType **dyn) const
     return true;
 
   *dyn = static_cast<const TyTy::DynamicObjectType *> (element);
+  return true;
+}
+
+bool
+ReferenceType::is_dyn_adt_type (const TyTy::ADTType **adt) const
+{
+  const TyTy::BaseType *element = destructure_through_projections (get_base ());
+
+  if (element->get_kind () != TyTy::TypeKind::ADT)
+    return false;
+
+  const TyTy::ADTType *adt_ty = static_cast<const TyTy::ADTType *> (element);
+
+  if (!adt_ty->is_unsized ())
+    return false;
+  if (adt != nullptr)
+    *adt = adt_ty;
+
   return true;
 }
 
@@ -3373,7 +3604,8 @@ PointerType::is_const () const
 bool
 PointerType::is_dyn_object () const
 {
-  return is_dyn_slice_type () || is_dyn_str_type () || is_dyn_obj_type ();
+  return is_dyn_slice_type () || is_dyn_str_type () || is_dyn_obj_type ()
+	 || is_dyn_adt_type ();
 }
 
 bool
@@ -3415,6 +3647,23 @@ PointerType::is_dyn_obj_type (const TyTy::DynamicObjectType **dyn) const
   return true;
 }
 
+bool
+PointerType::is_dyn_adt_type (const TyTy::ADTType **adt) const
+{
+  const TyTy::BaseType *element = destructure_through_projections (get_base ());
+  if (element->get_kind () != TyTy::TypeKind::ADT)
+    return false;
+
+  const TyTy::ADTType *adt_ty = static_cast<const TyTy::ADTType *> (element);
+
+  if (!adt_ty->is_unsized ())
+    return false;
+  if (adt != nullptr)
+    *adt = adt_ty;
+
+  return true;
+}
+
 void
 PointerType::accept_vis (TyVisitor &vis)
 {
@@ -3431,7 +3680,7 @@ std::string
 PointerType::as_string () const
 {
   return std::string ("* ") + (is_mutable () ? "mut" : "const") + " "
-	 + get_base ()->as_string ();
+	 + get_base ()->get_name ();
 }
 
 std::string
@@ -3492,24 +3741,25 @@ PointerType::handle_substitions (SubstitutionArgumentMappings &mappings)
 // PARAM Type
 
 ParamType::ParamType (std::string symbol, location_t locus, HirId ref,
+		      HirId decl_id,
 		      std::vector<TypeBoundPredicate> specified_bounds,
 		      std::set<HirId> refs)
   : BaseGeneric (ref, ref, KIND,
 		 {Resolver::CanonicalPath::new_seg (UNKNOWN_NODEID, symbol),
 		  locus},
-		 specified_bounds, refs),
-    is_trait_self (false), symbol (symbol)
+		 std::move (specified_bounds), refs),
+    decl_id (decl_id), is_trait_self (false), symbol (symbol)
 {}
 
 ParamType::ParamType (bool is_trait_self, std::string symbol, location_t locus,
-		      HirId ref, HirId ty_ref,
+		      HirId ref, HirId ty_ref, HirId decl_id,
 		      std::vector<TypeBoundPredicate> specified_bounds,
 		      std::set<HirId> refs)
   : BaseGeneric (ref, ty_ref, KIND,
 		 {Resolver::CanonicalPath::new_seg (UNKNOWN_NODEID, symbol),
 		  locus},
-		 specified_bounds, refs),
-    is_trait_self (is_trait_self), symbol (symbol)
+		 std::move (specified_bounds), refs),
+    decl_id (decl_id), is_trait_self (is_trait_self), symbol (symbol)
 {}
 
 bool
@@ -3560,8 +3810,16 @@ ParamType::get_name () const
 BaseType *
 ParamType::clone () const
 {
+  static std::vector<HirId> active;
+  bool cycle = Resolver::ScopedPush<HirId>::contains (active, get_ty_ref ());
+  if (cycle)
+    return new ParamType (is_trait_self, get_symbol (), ident.locus, get_ref (),
+			  get_ty_ref (), get_decl_id (), {},
+			  get_combined_refs ());
+
+  Resolver::ScopedPush<HirId> guard (active, get_ty_ref ());
   return new ParamType (is_trait_self, get_symbol (), ident.locus, get_ref (),
-			get_ty_ref (), get_specified_bounds (),
+			get_ty_ref (), get_decl_id (), get_specified_bounds (),
 			get_combined_refs ());
 }
 
@@ -3631,8 +3889,6 @@ ParamType::handle_substitions (SubstitutionArgumentMappings &subst_mappings)
     return this;
 
   ParamType *p = static_cast<ParamType *> (clone ());
-  subst_mappings.on_param_subst (*p, arg);
-
   const BaseType *resolved = arg.get_tyty ();
   if (resolved->get_kind () == TyTy::TypeKind::PARAM)
     {
@@ -3955,11 +4211,10 @@ ConstInferType::clone () const
     = new ConstInferType (specified_type, mappings.get_next_hir_id (),
 			  get_ty_ref (), get_combined_refs ());
 
-  context->insert_type (Analysis::NodeMapping (mappings.get_current_crate (),
-					       UNKNOWN_NODEID,
-					       clone->get_ref (),
-					       UNKNOWN_LOCAL_DEFID),
-			clone);
+  context->insert_type (
+    Analysis::NodeMapping (mappings.crate.get_current_crate (), UNKNOWN_NODEID,
+			   clone->get_ref (), UNKNOWN_LOCAL_DEFID),
+    clone);
   mappings.insert_location (clone->get_ref (),
 			    mappings.lookup_location (get_ref ()));
 

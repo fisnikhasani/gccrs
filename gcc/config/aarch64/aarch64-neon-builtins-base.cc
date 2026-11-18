@@ -43,8 +43,26 @@
 #include "aarch64-neon-builtins-base.h"
 #include "aarch64-neon-builtins-functions.h"
 #include "gimple-fold.h"
+#include "ssa.h"
 
 namespace aarch64_acle {
+/* Build an asm volatile statement that prevents VALUE from being optimized
+   away, even if it is not used.
+   Equivalent to the following C code:
+   asm volatile ("" : : "w" (VALUE));  */
+gimple *
+build_optimization_barrier (tree value)
+{
+  vec<tree, va_gc> *inputs = nullptr;
+  vec_safe_push (inputs,
+		 build_tree_list (build_tree_list (NULL_TREE,
+						   build_string (1, "w")),
+				  value));
+  auto stmt = gimple_build_asm_vec ("", inputs, nullptr, nullptr, nullptr);
+  gimple_asm_set_volatile (stmt, true);
+  return stmt;
+}
+
 /* Build a cast expression, `(TYPE)EXPR`, if necessary to make an expression
    with type TYPE.  */
 tree
@@ -150,12 +168,45 @@ build_tuple_set (gimple_folder &f, tree tuple, tree index, tree lane, tree elem)
   return build_tuple_set (f, tuple, index, vec);
 }
 
+/* Check if TYPE is a vector type having one element, like int64x1_t (i.e. V1DI
+   mode) or float64x1_t (i.e. V1DF mode).  */
+static bool
+one_element_vector_type_p (tree type)
+{
+  return VECTOR_TYPE_P (type) && known_eq (TYPE_VECTOR_SUBPARTS (type), 1U);
+}
+
 /* Base class for all function expanders.
    At least one of `expand` or `fold` must be overriden by derived classes.  */
 class gimple_function_base : public function_base
 {
+public:
   rtx expand (function_expander &) const override { gcc_unreachable (); }
   gimple *fold (gimple_folder &) const override { gcc_unreachable (); }
+
+  /* If the expression can raise an FP exception, use an optimization barrier
+     to prevent it being removed even if the resulting value is not used.
+     FIXME (Karl Meakin): This shouldn't be necessary, but not all
+     optimizations obey `-ftrapping-math` at the moment.  */
+  gimple *maybe_optimization_barrier (gimple_folder &f, tree ret) const
+  {
+    if (f.call_properties () & CP_RAISE_FP_EXCEPTIONS)
+      {
+	f.assign (f.lhs, ret);
+	return build_optimization_barrier (f.lhs);
+      }
+    else
+      return gimple_build_assign (f.lhs, ret);
+  }
+};
+
+template <insn_code insn> struct gimple_exact_insn : gimple_function_base
+{
+  gimple *fold (gimple_folder &) const override { return nullptr; }
+  rtx expand (function_expander &e) const override
+  {
+    return e.use_exact_insn (insn);
+  }
 };
 
 /* For intrinsics that map to a single GIMPLE expression with no argument
@@ -203,6 +254,93 @@ public:
       }
   }
 };
+
+enum class arith_kind
+{
+  normal,
+  dup,
+  lane
+};
+
+/* Like gimple_expr above, but converts signed inputs to unsigned first, to
+   avoid undefined behaviour on overflow.  */
+template <arith_kind kind>
+class gimple_arith_base : public gimple_function_base
+{
+  tree_code m_int_code;
+  tree_code m_float_code;
+  tree_code m_poly_code;
+
+public:
+  constexpr gimple_arith_base (tree_code code)
+    : m_int_code (code), m_float_code (code), m_poly_code (code)
+  {}
+
+  constexpr gimple_arith_base (tree_code int_code, tree_code float_code,
+			       tree_code poly_code)
+    : m_int_code (int_code), m_float_code (float_code), m_poly_code (poly_code)
+  {}
+
+  gimple *fold (gimple_folder &f) const override
+  {
+    auto nargs = gimple_call_num_args (f.call);
+    auto arg0 = nargs >= 1 ? gimple_call_arg (f.call, 0) : nullptr;
+    auto arg1 = nargs >= 2 ? gimple_call_arg (f.call, 1) : nullptr;
+
+    if (kind == arith_kind::dup)
+      arg1 = f.force_val (build_vec_dup (TREE_TYPE (arg0), arg1));
+
+    if (kind == arith_kind::lane)
+      {
+	auto lane_idx = gimple_call_arg (f.call, 2);
+	arg1 = f.force_val (build_lane_get (arg1, lane_idx));
+	if (VECTOR_TYPE_P (TREE_TYPE (arg0)))
+	  arg1 = f.force_val (build_vec_dup (TREE_TYPE (arg0), arg1));
+      }
+
+    auto build = [&] (auto code, auto type) {
+      auto ret = nargs == 1 ? fold_build1 (code, type, arg0)
+			    : fold_build2 (code, type, arg0, arg1);
+      return f.force_val (ret);
+    };
+
+    tree ret;
+    auto type_class = f.type_suffix (0).tclass;
+    switch (type_class)
+      {
+      case TYPE_signed:
+	{
+	  auto signed_type = TREE_TYPE (arg0);
+	  auto unsigned_type = unsigned_type_for (signed_type);
+	  auto to_unsigned = [&] (auto arg) {
+	    return arg ? f.force_val (build_cast (unsigned_type, arg))
+		       : nullptr;
+	  };
+	  arg0 = to_unsigned (arg0);
+	  arg1 = to_unsigned (arg1);
+	  ret = build (m_int_code, unsigned_type);
+	  ret = build_cast (signed_type, f.force_val (ret));
+	  break;
+	}
+      case TYPE_unsigned:
+	ret = build (m_int_code, TREE_TYPE (arg0));
+	break;
+      case TYPE_float:
+	ret = build (m_float_code, TREE_TYPE (arg0));
+	break;
+      case TYPE_poly:
+	ret = build (m_poly_code, TREE_TYPE (arg0));
+	break;
+      default:
+	gcc_unreachable ();
+      }
+
+    return this->maybe_optimization_barrier (f, ret);
+  }
+};
+using gimple_arith = gimple_arith_base<arith_kind::normal>;
+using gimple_arith_dup = gimple_arith_base<arith_kind::dup>;
+using gimple_arith_lane = gimple_arith_base<arith_kind::lane>;
 
 struct gimple_create : public gimple_function_base
 {
@@ -505,13 +643,45 @@ public:
 
   gimple *fold (gimple_folder &f) const override
   {
+    tree lhs_type = TREE_TYPE (f.lhs);
+    /* There are no instructions that handle V1DI or V1DF modes for these
+       operations.  They need to be specially handled by casting the vector to
+       its element type and using it to feed the scalar version of the
+       operation.  The scalar result is then cast back to a vector and returned.
+       This matches the prior implementation that arm_neon.h used for these
+       operations.  */
+    bool scalar_lhs = one_element_vector_type_p (lhs_type);
+
     vec<tree> args{};
     for (unsigned i = 0; i < gimple_call_num_args (f.call); i++)
-      args.safe_push (gimple_call_arg (f.call, i));
+      {
+	tree arg = gimple_call_arg (f.call, i);
+	/* Convert V1DI/V1DF arguments to corresponding scalar modes.  */
+	if (scalar_lhs && one_element_vector_type_p (TREE_TYPE (arg)))
+	  arg = f.force_val (build_cast (TREE_TYPE (lhs_type), arg));
+	/* .CLZ and .POPCOUNT take an unsigned argument.  */
+	else if ((m_ifn == IFN_CLZ || m_ifn == IFN_POPCOUNT)
+		 && !TYPE_UNSIGNED (TREE_TYPE (arg)))
+	  arg = f.force_val (build_cast (unsigned_type_for (TREE_TYPE (arg)),
+					 arg));
+	args.safe_push (arg);
+      }
 
     auto call = gimple_build_call_internal_vec (this->m_ifn, args);
-    gimple_call_set_lhs (call, f.lhs);
-    return call;
+    args.release ();
+
+    if (!scalar_lhs)
+      {
+	gimple_call_set_lhs (call, f.lhs);
+	return call;
+      }
+
+    /* Temporary scalar to hold the result.  */
+    tree res = create_tmp_var (TREE_TYPE (lhs_type));
+    gimple_call_set_lhs (call, res);
+    gimple_seq_add_stmt_without_update (&f.stmts, call);
+    /* Build the actual vector that the call's result gets assigned to.  */
+    return gimple_build_assign (f.lhs, build_vec_dup (lhs_type, res));
   }
 };
 
@@ -562,7 +732,7 @@ public:
       std::swap (a, b);
 
     auto arg_type = TREE_TYPE (a);
-    gcc_assert (arg_type == TREE_TYPE (b));
+    gcc_assert (types_compatible_p (arg_type, TREE_TYPE (b)));
 
     auto tuple_type = TREE_TYPE (f.lhs);
     auto tuple = create_tmp_var (tuple_type);
@@ -720,56 +890,144 @@ struct gimple_reinterpret : public gimple_function_base
   }
 };
 
+struct gimple_abs : public gimple_function_base
+{
+  gimple *fold (gimple_folder &f) const override
+  {
+    auto arg = gimple_call_arg (f.call, 0);
+    auto arg_type = TREE_TYPE (arg);
+
+    if (!FLOAT_TYPE_P (arg_type))
+      return gimple_build_assign (
+	f.lhs, build_cast (arg_type,
+			   f.force_val (fold_build1 (
+			     ABSU_EXPR, unsigned_type_for (arg_type), arg))));
+
+    auto ret = fold_build1 (ABS_EXPR, arg_type, arg);
+    return this->maybe_optimization_barrier (f, ret);
+  }
+};
+
+/* Build a tree representing the absolute difference between LHS and RHS.
+   For floating-point types, this is just `ABS (LHS - RHS)`.
+   For integer types, it is `.ABD (LHS, RHS)`.  */
+tree
+build_abs_diff (gimple_folder &f, tree lhs, tree rhs)
+{
+  auto type = TREE_TYPE (lhs);
+
+  if (FLOAT_TYPE_P (type))
+    return fold_build1 (ABS_EXPR, type,
+			f.force_val (fold_build2 (MINUS_EXPR, type, lhs, rhs)));
+
+  auto ret
+    = is_gimple_reg_type (type) ? make_ssa_name (type) : create_tmp_var (type);
+  auto call = gimple_build_call_internal (IFN_ABD, 2, lhs, rhs);
+  gimple_seq_add_stmt_without_update (&f.stmts, call);
+  gimple_call_set_lhs (call, ret);
+  return ret;
+}
+
+template<bool accumulate>
+struct gimple_abs_diff : public gimple_function_base
+{
+  gimple *fold (gimple_folder &f) const override
+  {
+    auto lhs = gimple_call_arg (f.call, accumulate ? 1 : 0);
+    auto rhs = gimple_call_arg (f.call, accumulate ? 2 : 1);
+    auto ret = build_abs_diff (f, lhs, rhs);
+    if (accumulate)
+      {
+	auto acc = gimple_call_arg (f.call, 0);
+	ret = fold_build2 (PLUS_EXPR, TREE_TYPE (acc), acc, ret);
+      }
+
+    return this->maybe_optimization_barrier (f, ret);
+  }
+};
+
+/* FP16 matrix-multiply accumulate (widening and non-widening).  */
+class vmmlaq_impl : public function_base
+{
+public:
+  rtx expand (function_expander &e) const override
+  {
+    return e.use_exact_insn (code_for_aarch64_fmmlaq (e.result_mode ()));
+  }
+};
+
 // Reinterpret
-NEON_FUNCTION (vreinterpret,  gimple_reinterpret,)
-NEON_FUNCTION (vreinterpretq, gimple_reinterpret,)
+NEON_FUNCTION (vreinterpret, vreinterpretq, gimple_reinterpret,)
 
 // Lane get/set
-NEON_FUNCTION (vget_lane,    gimple_get_lane,)
-NEON_FUNCTION (vgetq_lane,   gimple_get_lane,)
-NEON_FUNCTION (vget_low,     gimple_get_half<false>,)
-NEON_FUNCTION (vget_high,    gimple_get_half<true>,)
-NEON_FUNCTION (vset_lane,    gimple_set_lane,)
-NEON_FUNCTION (vsetq_lane,   gimple_set_lane,)
-NEON_FUNCTION (vcopy_lane,   gimple_copy_lane,)
-NEON_FUNCTION (vcopy_laneq,  gimple_copy_lane,)
-NEON_FUNCTION (vcopyq_laneq, gimple_copy_lane,)
-NEON_FUNCTION (vcopyq_lane,  gimple_copy_lane,)
-NEON_FUNCTION (vdup_lane,    gimple_dup_lane,)
-NEON_FUNCTION (vdupq_lane,   gimple_dup_lane,)
-NEON_FUNCTION (vdup_laneq,   gimple_dup_lane,)
-NEON_FUNCTION (vdupq_laneq,  gimple_dup_lane,)
-NEON_FUNCTION (vdupb_lane,   gimple_get_lane,)
-NEON_FUNCTION (vdupb_laneq,  gimple_get_lane,)
-NEON_FUNCTION (vduph_lane,   gimple_get_lane,)
-NEON_FUNCTION (vduph_laneq,  gimple_get_lane,)
-NEON_FUNCTION (vdups_lane,   gimple_get_lane,)
-NEON_FUNCTION (vdups_laneq,  gimple_get_lane,)
-NEON_FUNCTION (vdupd_lane,   gimple_get_lane,)
-NEON_FUNCTION (vdupd_laneq,  gimple_get_lane,)
+NEON_FUNCTION (vget_lane, vgetq_lane,   gimple_get_lane,)
+NEON_FUNCTION (vget_low,                gimple_get_half<false>,)
+NEON_FUNCTION (vget_high,               gimple_get_half<true>,)
+NEON_FUNCTION (vset_lane, vsetq_lane,   gimple_set_lane,)
+NEON_FUNCTION (vcopy_lane, vcopy_laneq, vcopyq_laneq, vcopyq_lane, gimple_copy_lane,)
+NEON_FUNCTION (vdup_lane,  vdupq_lane,  vdup_laneq,   vdupq_laneq, gimple_dup_lane,)
+NEON_FUNCTION (vdupb_lane, vdupb_laneq, vduph_lane,   vduph_laneq,
+	       vdups_lane, vdups_laneq, vdupd_lane,   vdupd_laneq, gimple_get_lane,)
 
 // Lanewise arithmetic
-NEON_FUNCTION (vaddd, gimple_expr, (PLUS_EXPR))
-NEON_FUNCTION (vadd,  gimple_expr, (PLUS_EXPR, PLUS_EXPR, BIT_XOR_EXPR))
-NEON_FUNCTION (vaddq, gimple_expr, (PLUS_EXPR, PLUS_EXPR, BIT_XOR_EXPR))
+NEON_FUNCTION (vadd, vaddq, vaddd, gimple_arith, (PLUS_EXPR, PLUS_EXPR, BIT_XOR_EXPR))
+NEON_FUNCTION (vsub, vsubq, vsubd, gimple_arith, (MINUS_EXPR))
+NEON_FUNCTION (vdiv, vdivq,	   gimple_arith, (RDIV_EXPR))
+NEON_FUNCTION (vneg, vnegq, vnegd, gimple_arith, (NEGATE_EXPR))
+NEON_FUNCTION (vabs, vabsq,	   vabsd, gimple_abs,)
+NEON_FUNCTION (vabd, vabdq, vabds, vabdd, gimple_abs_diff<false>,)
+NEON_FUNCTION (vaba, vabaq,		  gimple_abs_diff<true>,)
+
+NEON_FUNCTION (vmul, vmulq,		gimple_arith, (MULT_EXPR))
+NEON_FUNCTION (vmul_n, vmulq_n,		gimple_arith_dup, (MULT_EXPR))
+NEON_FUNCTION (vmul_lane, vmul_laneq,
+	       vmulq_lane, vmulq_laneq,
+	       vmulh_lane, vmulh_laneq,
+	       vmuls_lane, vmuls_laneq,
+	       vmuld_lane, vmuld_laneq, gimple_arith_lane, (MULT_EXPR))
+
+// Saturating arithmetic
+NEON_FUNCTION (vqaddb, vqaddh, vqadds, vqaddd, vqadd, vqaddq, gimple_ifn, (IFN_SAT_ADD))
+NEON_FUNCTION (vqsubb, vqsubh, vqsubs, vqsubd, vqsub, vqsubq, gimple_ifn, (IFN_SAT_SUB))
+
+// Max/min
+NEON_FUNCTION (vmax,   vmaxq,   gimple_expr, (MAX_EXPR))
+NEON_FUNCTION (vmin,   vminq,   gimple_expr, (MIN_EXPR))
+NEON_FUNCTION (vmaxnm, vmaxnmq, gimple_ifn,  (IFN_FMAX))
+NEON_FUNCTION (vminnm, vminnmq, gimple_ifn,  (IFN_FMIN))
+
+// Reductions
+NEON_FUNCTION (vaddv,   vaddvq,   gimple_ifn, (IFN_REDUC_PLUS))
+NEON_FUNCTION (vmaxv,   vmaxvq,   gimple_ifn, (IFN_REDUC_MAX))
+NEON_FUNCTION (vminv,   vminvq,   gimple_ifn, (IFN_REDUC_MIN))
+NEON_FUNCTION (vmaxnmv, vmaxnmvq, gimple_ifn, (IFN_REDUC_FMAX))
+NEON_FUNCTION (vminnmv, vminnmvq, gimple_ifn, (IFN_REDUC_FMIN))
+
+// Halving add
+NEON_FUNCTION (vhadd,  vhaddq,  gimple_ifn, (IFN_AVG_FLOOR))
+NEON_FUNCTION (vrhadd, vrhaddq, gimple_ifn, (IFN_AVG_CEIL))
+
+// Square root
+NEON_FUNCTION (vsqrt, vsqrtq, gimple_ifn, (IFN_SQRT))
+
+// Rounding
+NEON_FUNCTION (vrnd,  vrndq,          gimple_ifn, (IFN_TRUNC))
+NEON_FUNCTION (vrnda, vrndaq,         gimple_ifn, (IFN_ROUND))
+NEON_FUNCTION (vrndi, vrndiq,         gimple_ifn, (IFN_NEARBYINT))
+NEON_FUNCTION (vrndm, vrndmq,         gimple_ifn, (IFN_FLOOR))
+NEON_FUNCTION (vrndn, vrndnq, vrndns, gimple_ifn, (IFN_ROUNDEVEN))
+NEON_FUNCTION (vrndp, vrndpq,         gimple_ifn, (IFN_CEIL))
+NEON_FUNCTION (vrndx, vrndxq,         gimple_ifn, (IFN_RINT))
 
 // Bitwise operations
-NEON_FUNCTION (vand,   gimple_expr,    (BIT_AND_EXPR))
-NEON_FUNCTION (vandq,  gimple_expr,    (BIT_AND_EXPR))
-NEON_FUNCTION (vbic,   gimple_not_rhs, (BIT_AND_EXPR))
-NEON_FUNCTION (vbicq,  gimple_not_rhs, (BIT_AND_EXPR))
-NEON_FUNCTION (vbsl,   gimple_bsl,)
-NEON_FUNCTION (vbslq,  gimple_bsl,)
-NEON_FUNCTION (veor,   gimple_expr,    (BIT_XOR_EXPR))
-NEON_FUNCTION (veorq,  gimple_expr,    (BIT_XOR_EXPR))
-NEON_FUNCTION (vmvn,   gimple_expr,    (BIT_NOT_EXPR))
-NEON_FUNCTION (vmvnq,  gimple_expr,    (BIT_NOT_EXPR))
-NEON_FUNCTION (vorn,   gimple_not_rhs, (BIT_IOR_EXPR))
-NEON_FUNCTION (vornq,  gimple_not_rhs, (BIT_IOR_EXPR))
-NEON_FUNCTION (vorr,   gimple_expr,    (BIT_IOR_EXPR))
-NEON_FUNCTION (vorrq,  gimple_expr,    (BIT_IOR_EXPR))
-NEON_FUNCTION (vrbit,  gimple_ifn,     (IFN_BITREVERSE))
-NEON_FUNCTION (vrbitq, gimple_ifn,     (IFN_BITREVERSE))
+NEON_FUNCTION (vand,  vandq,  gimple_expr,    (BIT_AND_EXPR))
+NEON_FUNCTION (vbic,  vbicq,  gimple_not_rhs, (BIT_AND_EXPR))
+NEON_FUNCTION (vbsl,  vbslq,  gimple_bsl,)
+NEON_FUNCTION (veor,  veorq,  gimple_expr,    (BIT_XOR_EXPR))
+NEON_FUNCTION (vmvn,  vmvnq,  gimple_expr,    (BIT_NOT_EXPR))
+NEON_FUNCTION (vorn,  vornq,  gimple_not_rhs, (BIT_IOR_EXPR))
+NEON_FUNCTION (vorr,  vorrq,  gimple_expr,    (BIT_IOR_EXPR))
+NEON_FUNCTION (vrbit, vrbitq, gimple_ifn,     (IFN_BITREVERSE))
 
 // Bitwise operations (SHA3)
 NEON_FUNCTION (vbcaxq, gimple_bcax,)
@@ -778,47 +1036,73 @@ NEON_FUNCTION (vrax1q, gimple_rax1,)
 NEON_FUNCTION (vxarq,  gimple_xar,)
 
 // Bit counting operations
-NEON_FUNCTION (vcls,  gimple_ifn, (IFN_CLRSB))
-NEON_FUNCTION (vclsq, gimple_ifn, (IFN_CLRSB))
-NEON_FUNCTION (vclz,  gimple_ifn, (IFN_CLZ))
-NEON_FUNCTION (vclzq, gimple_ifn, (IFN_CLZ))
-NEON_FUNCTION (vcnt,  gimple_ifn, (IFN_POPCOUNT))
-NEON_FUNCTION (vcntq, gimple_ifn, (IFN_POPCOUNT))
+NEON_FUNCTION (vcls, vclsq, gimple_ifn, (IFN_CLRSB))
+NEON_FUNCTION (vclz, vclzq, gimple_ifn, (IFN_CLZ))
+NEON_FUNCTION (vcnt, vcntq, gimple_ifn, (IFN_POPCOUNT))
 
 // Permutations
 // Extract
-NEON_FUNCTION (vext,  gimple_permute, (ext_mask))
-NEON_FUNCTION (vextq, gimple_permute, (ext_mask))
+NEON_FUNCTION (vext, vextq, gimple_permute, (ext_mask))
 
 // Reverse
-NEON_FUNCTION (vrev16,  gimple_permute, (rev_mask<16>))
-NEON_FUNCTION (vrev16q, gimple_permute, (rev_mask<16>))
-NEON_FUNCTION (vrev32,  gimple_permute, (rev_mask<32>))
-NEON_FUNCTION (vrev32q, gimple_permute, (rev_mask<32>))
-NEON_FUNCTION (vrev64,  gimple_permute, (rev_mask<64>))
-NEON_FUNCTION (vrev64q, gimple_permute, (rev_mask<64>))
+NEON_FUNCTION (vrev16, vrev16q, gimple_permute, (rev_mask<16>))
+NEON_FUNCTION (vrev32, vrev32q, gimple_permute, (rev_mask<32>))
+NEON_FUNCTION (vrev64, vrev64q, gimple_permute, (rev_mask<64>))
 
 // Transpose
-NEON_FUNCTION (vtrn1,  gimple_permute,      (trn_mask<false>))
-NEON_FUNCTION (vtrn1q, gimple_permute,      (trn_mask<false>))
-NEON_FUNCTION (vtrn2,  gimple_permute,      (trn_mask<true>))
-NEON_FUNCTION (vtrn2q, gimple_permute,      (trn_mask<true>))
-NEON_FUNCTION (vtrn,   gimple_permute_pair, (trn_mask<false>, trn_mask<true>))
-NEON_FUNCTION (vtrnq,  gimple_permute_pair, (trn_mask<false>, trn_mask<true>))
+NEON_FUNCTION (vtrn1,  vtrn1q, gimple_permute,      (trn_mask<false>))
+NEON_FUNCTION (vtrn2,  vtrn2q, gimple_permute,      (trn_mask<true>))
+NEON_FUNCTION (vtrn,   vtrnq,  gimple_permute_pair, (trn_mask<false>, trn_mask<true>))
 
 // Unzip
-NEON_FUNCTION (vuzp1,  gimple_permute,      (uzp_mask<false>))
-NEON_FUNCTION (vuzp1q, gimple_permute,      (uzp_mask<false>))
-NEON_FUNCTION (vuzp2,  gimple_permute,      (uzp_mask<true>))
-NEON_FUNCTION (vuzp2q, gimple_permute,      (uzp_mask<true>))
-NEON_FUNCTION (vuzp,   gimple_permute_pair, (uzp_mask<false>, uzp_mask<true>))
-NEON_FUNCTION (vuzpq,  gimple_permute_pair, (uzp_mask<false>, uzp_mask<true>))
+NEON_FUNCTION (vuzp1, vuzp1q, gimple_permute,      (uzp_mask<false>))
+NEON_FUNCTION (vuzp2, vuzp2q, gimple_permute,      (uzp_mask<true>))
+NEON_FUNCTION (vuzp,  vuzpq,  gimple_permute_pair, (uzp_mask<false>, uzp_mask<true>))
 
 // Zip
-NEON_FUNCTION (vzip1,  gimple_permute,      (zip_mask<false>))
-NEON_FUNCTION (vzip1q, gimple_permute,      (zip_mask<false>))
-NEON_FUNCTION (vzip2,  gimple_permute,      (zip_mask<true>))
-NEON_FUNCTION (vzip2q, gimple_permute,      (zip_mask<true>))
-NEON_FUNCTION (vzip,   gimple_permute_pair, (zip_mask<false>, zip_mask<true>))
-NEON_FUNCTION (vzipq,  gimple_permute_pair, (zip_mask<false>, zip_mask<true>))
+NEON_FUNCTION (vzip1, vzip1q, gimple_permute,      (zip_mask<false>))
+NEON_FUNCTION (vzip2, vzip2q, gimple_permute,      (zip_mask<true>))
+NEON_FUNCTION (vzip,  vzipq,  gimple_permute_pair, (zip_mask<false>, zip_mask<true>))
+
+// AES
+NEON_FUNCTION (vaeseq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_aesev16qi>,)
+NEON_FUNCTION (vaesdq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_aesdv16qi>,)
+NEON_FUNCTION (vaesmcq,  gimple_exact_insn<CODE_FOR_aarch64_crypto_aesmcv16qi>,)
+NEON_FUNCTION (vaesimcq, gimple_exact_insn<CODE_FOR_aarch64_crypto_aesimcv16qi>,)
+
+// SHA1
+NEON_FUNCTION (vsha1cq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1cv4si>,)
+NEON_FUNCTION (vsha1mq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1mv4si>,)
+NEON_FUNCTION (vsha1pq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1pv4si>,)
+NEON_FUNCTION (vsha1h,    gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1hsi>,)
+NEON_FUNCTION (vsha1su0q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1su0v4si>,)
+NEON_FUNCTION (vsha1su1q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha1su1v4si>,)
+
+// SHA256
+NEON_FUNCTION (vsha256hq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_sha256hv4si>,)
+NEON_FUNCTION (vsha256h2q,  gimple_exact_insn<CODE_FOR_aarch64_crypto_sha256h2v4si>,)
+NEON_FUNCTION (vsha256su0q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha256su0v4si>,)
+NEON_FUNCTION (vsha256su1q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha256su1v4si>,)
+
+// SHA512
+NEON_FUNCTION (vsha512hq,   gimple_exact_insn<CODE_FOR_aarch64_crypto_sha512hqv2di>,)
+NEON_FUNCTION (vsha512h2q,  gimple_exact_insn<CODE_FOR_aarch64_crypto_sha512h2qv2di>,)
+NEON_FUNCTION (vsha512su0q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha512su0qv2di>,)
+NEON_FUNCTION (vsha512su1q, gimple_exact_insn<CODE_FOR_aarch64_crypto_sha512su1qv2di>,)
+
+// SM3
+NEON_FUNCTION (vsm3ss1q,    gimple_exact_insn<CODE_FOR_aarch64_sm3ss1qv4si>,)
+NEON_FUNCTION (vsm3tt1aq,   gimple_exact_insn<CODE_FOR_aarch64_sm3tt1aqv4si>,)
+NEON_FUNCTION (vsm3tt1bq,   gimple_exact_insn<CODE_FOR_aarch64_sm3tt1bqv4si>,)
+NEON_FUNCTION (vsm3tt2aq,   gimple_exact_insn<CODE_FOR_aarch64_sm3tt2aqv4si>,)
+NEON_FUNCTION (vsm3tt2bq,   gimple_exact_insn<CODE_FOR_aarch64_sm3tt2bqv4si>,)
+NEON_FUNCTION (vsm3partw1q, gimple_exact_insn<CODE_FOR_aarch64_sm3partw1qv4si>,)
+NEON_FUNCTION (vsm3partw2q, gimple_exact_insn<CODE_FOR_aarch64_sm3partw2qv4si>,)
+
+// SM4
+NEON_FUNCTION (vsm4eq,    gimple_exact_insn<CODE_FOR_aarch64_sm4eqv4si>,)
+NEON_FUNCTION (vsm4ekeyq, gimple_exact_insn<CODE_FOR_aarch64_sm4ekeyqv4si>,)
+
+// FP16 matrix-multiply accumulate
+NEON_FUNCTION (vmmlaq,  vmmlaq_impl,)
 }

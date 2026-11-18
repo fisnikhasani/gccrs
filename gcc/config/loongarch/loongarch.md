@@ -2755,14 +2755,14 @@
    (set_attr "mode" "<GPR:MODE>")])
 
 (define_insn_and_split "both_non_zero"
-  [(set (match_operand:DI 0 "register_operand" "=r")
-	(and:DI (ne:DI (match_operand:DI 1 "register_operand" "r")
+  [(set (match_operand:DI 0 "register_operand" "=&r")
+	(and:DI (ne:DI (match_operand:DI 1 "register_operand" "r0")
 		       (const_int 0))
 		(ne:DI (match_operand:DI 2 "register_operand" "r")
 		       (const_int 0))))]
   "TARGET_64BIT"
   "#"
-  "&& true"
+  "&& reload_completed"
   [(set (match_dup 0)
 	(ne:DI (match_dup 1) (const_int 0)))
    (set (match_dup 0)
@@ -2771,14 +2771,14 @@
 			 (const_int 0)))])
 
 (define_insn_and_split "both_non_zero_subreg"
-  [(set (match_operand:DI 0 "register_operand" "=r")
-	(and:DI (subreg:DI (ne:SI (match_operand:DI 1 "register_operand" "r")
+  [(set (match_operand:DI 0 "register_operand" "=&r")
+	(and:DI (subreg:DI (ne:SI (match_operand:DI 1 "register_operand" "r0")
 				  (const_int 0)) 0)
 		(subreg:DI (ne:SI (match_operand:DI 2 "register_operand" "r")
 				  (const_int 0)) 0)))]
   "TARGET_64BIT"
   "#"
-  "&& true"
+  "&& reload_completed"
   [(set (match_dup 0)
 	(ne:DI (match_dup 1) (const_int 0)))
    (set (match_dup 0)
@@ -4148,7 +4148,8 @@
 					    operands[1]));
   else
     {
-      rtx call = emit_call_insn (gen_sibcall_internal (target, operands[1]));
+      rtx_insn *call
+	= emit_call_insn (gen_sibcall_internal (target, operands[1]));
 
       if (TARGET_CMODEL_MEDIUM && !REG_P (target))
 	clobber_reg (&CALL_INSN_FUNCTION_USAGE (call),
@@ -4219,7 +4220,7 @@
 							   arg2));
       else
 	{
-	  rtx call
+	  rtx_insn *call
 	    = emit_call_insn (gen_sibcall_value_multiple_internal (arg1,
 								   target,
 								   operands[2],
@@ -4243,9 +4244,10 @@
 						  operands[2]));
       else
 	{
-	  rtx call = emit_call_insn (gen_sibcall_value_internal (operands[0],
-								 target,
-								 operands[2]));
+	  rtx_insn *call
+	    = emit_call_insn (gen_sibcall_value_internal (operands[0],
+							  target,
+							  operands[2]));
 
 	  if (TARGET_CMODEL_MEDIUM && !REG_P (target))
 	    clobber_reg (&CALL_INSN_FUNCTION_USAGE (call),
@@ -4771,7 +4773,7 @@
 (define_expand "bitreversehi2"
   [(set (match_operand:HI 0 "register_operand" "=r")
 	(bitreverse:HI (match_operand:HI 1 "register_operand" "r")))]
-  ""
+  "TARGET_64BIT || TARGET_32BIT_S"
   {
     rtx t = gen_reg_rtx (word_mode);
 

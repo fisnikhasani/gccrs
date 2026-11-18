@@ -28,12 +28,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * This file supports parsing without requiring access to the symbol
- * table definition.  Unlike the Bison input, this file brings in gcc
- * header files.
- */
-
 #include "cobol-system.h"
 #include <coretypes.h>
 #include <tree.h>
@@ -55,6 +49,7 @@
 #include "cdfval.h"
 #include "lexio.h"
 
+#include "tm.h"
 #include "../../libgcobol/ec.h"
 #include "../../libgcobol/common-defs.h"
 #include "symbols.h"
@@ -62,6 +57,7 @@
 #include "../../libgcobol/io.h"
 #include "genapi.h"
 #include "genutil.h"
+#include "../../libgcobol/cobol-endian.h"
 #include "../../libgcobol/charmaps.h"
 #include "../../libgcobol/valconv.h"
 
@@ -181,9 +177,6 @@ class cdf_directives_t
     static std::string str(cdf_values_t) {
       return "<dictionary>";
     }
-    static std::string str(source_format_t arg) {
-      return arg.description();
-    }
     static std::string str(cbl_enabled_exceptions_t) {
       return "<enabled_exceptions>";
     }
@@ -193,7 +186,6 @@ class cdf_directives_t
   cdf_stack_t<cbl_call_convention_t> call_convention;
   cdf_stack_t<current_tokens_t> cobol_words;
   cdf_stack_t<cdf_values_t> dictionary;   // DEFINE
-  cdf_stack_t<source_format_t> source_format;
   cdf_stack_t<cbl_enabled_exceptions_t> enabled_exceptions;
 
   cdf_directives_t() {
@@ -204,14 +196,12 @@ class cdf_directives_t
     call_convention.push();
     cobol_words.push();
     dictionary.push();
-    source_format.push();
     enabled_exceptions.push();
   }
   void pop() {
     call_convention.pop();
     cobol_words.pop();
     dictionary.pop();
-    source_format.pop();
     enabled_exceptions.pop();
   }
 };
@@ -239,33 +229,33 @@ cdf_dictionary() {
 // elements permitted in a program or function prototype
 static const std::set<dspc_t> prototype_elements {
   dspc_identification_div_e,
-  dspc_options_para_e, 
+  dspc_options_para_e,
   ////_arithmetic_clause_e, disallowed
-  dspc_default_rounded_clause_e, 
-  dspc_entry_convention_clause_e, 
-  dspc_float_binary_clause_e, 
-  dspc_float_decimal_clause_e, 
-  dspc_initialize_clause_e, 
-  dspc_intermediate_rounding_clause_e, 
+  dspc_default_rounded_clause_e,
+  dspc_entry_convention_clause_e,
+  dspc_float_binary_clause_e,
+  dspc_float_decimal_clause_e,
+  dspc_initialize_clause_e,
+  dspc_intermediate_rounding_clause_e,
 
   dspc_environment_div_e,
-  dspc_configuration_section_e, 
-  dspc_source_computer_paragraph_e, 
+  dspc_configuration_section_e,
+  dspc_source_computer_paragraph_e,
   ////_object_computer_paragraph_e, disallowed
-  
+
   // permitted special names clauses
-  dspc_special_names_paragraph_e, 
-  dspc_alphabet_name_clause_e, 
-  dspc_currency_sign_clause_e, 
-  dspc_decimal_point_is_comma_clause_e, 
-  dspc_locale_clause_e, 
-  dspc_symbolic_characters_clause_e, 
+  dspc_special_names_paragraph_e,
+  dspc_alphabet_name_clause_e,
+  dspc_currency_sign_clause_e,
+  dspc_decimal_point_is_comma_clause_e,
+  dspc_locale_clause_e,
+  dspc_symbolic_characters_clause_e,
 
   // no i-o section, and we assume no repository paragraph
 
   dspc_data_div_e,
   dspc_linkage_section_e,
-  
+
   dspc_procedure_div_e, // only header is allowed
   dspc_procedure_header_e,
 };
@@ -274,20 +264,10 @@ bool
 cbl_prototype_ok( const cbl_loc_t& loc, size_t iprog, dspc_t clause ) {
   bool prototyping = cbl_label_of(symbol_at(iprog))->prototype;
   if( prototyping && 0 == prototype_elements.count(clause) ) {
-    error_msg( loc, "syntax not allowed for PROTOTYPE" ); 
+    error_msg( loc, "syntax not allowed for PROTOTYPE" );
     return false;
   }
   return true;
-}
-
-void
-cobol_set_indicator_column( int column ) {
-  cdf_directives.source_format.value().indicator_column_set(column);
-  dbgmsg("%s: format now %s", __func__,
-         cdf_directives.source_format.value().description());
-}
-source_format_t& cdf_source_format() {
-  return cdf_directives.source_format.value();
 }
 
 cbl_enabled_exceptions_t&
@@ -300,22 +280,12 @@ void cdf_push_call_convention() { cdf_directives.call_convention.push(); }
 void cdf_push_current_tokens() { cdf_directives.cobol_words.push(); }
 void cdf_push_dictionary() { cdf_directives.dictionary.push(); }
 void cdf_push_enabled_exceptions() { cdf_directives.enabled_exceptions.push(); }
-void cdf_push_source_format() {
-  cdf_directives.source_format.push();
-  dbgmsg("%s: format still %s", __func__,
-         cdf_directives.source_format.value().description());
-}
 
 void cdf_pop() { cdf_directives.pop(); }
 void cdf_pop_call_convention() { cdf_directives.call_convention.pop(); }
 void cdf_pop_current_tokens() { cdf_directives.cobol_words.pop(); }
 void cdf_pop_dictionary() { cdf_directives.dictionary.pop(); }
 void cdf_pop_enabled_exceptions() { cdf_directives.enabled_exceptions.pop(); }
-void cdf_pop_source_format() {
-  cdf_directives.source_format.pop();
-  dbgmsg("%s: format now %s", __func__,
-         cdf_directives.source_format.value().description());
-}
 
 void cdf_unreachable() { gcc_unreachable(); }
 
@@ -357,7 +327,7 @@ cdf_file( size_t program, const cbl_name_t name ) {
     return cbl_file_of(e);
   }
   return nullptr;
-} 
+}
 
 size_t
 cdf_file_index( const cbl_file_t *file ) {
@@ -369,12 +339,12 @@ cdf_file_name( const cbl_file_t *file ) {
   return file->name;
 }
 
-
 void
 cdf_field_add( const cbl_loc_t& loc, const std::string& name, const cdfval_t& value ) {
   if( symbols_begin() < symbols_end() ) {
     cbl_field_t field = cdf_literalize(loc, name, value);
-    symbol_field_add(current_program_index(), &field);                    
+    auto e = symbol_field_add(current_program_index(), &field);
+    update_prior_invalid_field( cbl_field_of(e) );
   }
 }
 
@@ -460,7 +430,7 @@ cbl_field_type_str( enum cbl_field_type_t type )
   case FldPointer:
     return "FldPointer";
  }
-  cbl_internal_error("%s:%d: invalid %<symbol_type_t%> %d", __func__, __LINE__, type);
+  ////cbl_internal_error("%s:%d: invalid %<field_type_t%> %d", __func__, __LINE__, type);
   return "???";
 }
 
@@ -559,7 +529,6 @@ determine_intermediate_type( const cbl_refer_t& aref,
     {
     output.type = FldNumericBin5;
     output.data.capacity(16);
-    output.data.digits   = MAX_FIXED_POINT_DIGITS;
     output.attr = (intermediate_e | signable_e );
     }
 
@@ -568,20 +537,91 @@ determine_intermediate_type( const cbl_refer_t& aref,
 
 static char regexmsg[80];
 
+static int
+named_constant( const cbl_name_t name, cbl_field_type_t *type_out ) {
+  int output = -1;
+
+  auto e = symbol_field( current_program_index(), 0, name );
+  if( e && e->type == SymField ) {
+    auto f = cbl_field_of(e);
+    if( is_numeric(f->type) ) {
+      if( f->has_attr(constant_e) && is_numeric(f->type) ) {
+        auto result = f->data.int64_of();
+        if( result.second) output = result.first;
+      }
+    } else {
+      *type_out = f->type;
+    }
+  }
+  return output;
+}
+
 /*
- * Scan part of the picture, parsing any repetition count.
+ * Scan part of the picture, parsing any repetition count.  Return the parsed
+ * count (a named constant, perhaps), and an index to any remaining input.  Use
+ * negative position to indicate failure.
  */
-int
-repeat_count( const char picture[] )
+extern cbl_loc_t yylloc;
+
+std::pair<uint32_t, int>
+repeat_count(const cbl_loc_t& loc, const char picture[])
 {
   char ch;
-  int n, count = -1;
+  long count = 0;
+  int pos = -1;
 
-  n = sscanf( picture, "%c(%d)", &ch, &count );
-  if( count <= 0 && 4 < n ) { // parsed count is negative
-    count = 0; // zero is invalid; -1 means no repetition
+  int n = sscanf(picture, "%c(%ld)%n", &ch, &count, &pos);
+
+  if( n == 2 ) {
+    if( count == 0 ) {
+      error_msg(loc, "%<(0)%> invalid in PICTURE (ISO 2023 13.18.40.3)");
+    } else if( count < 0 ) {
+      error_msg(loc, "not a positive integer constant: %ld", count);
+    } else {
+      uint32_t n = count;
+      if( n != count ) {
+        error_msg(loc, "count exceeds 4 GB: %ld", count);
+      }
+    }
+  } else {
+    cbl_name_t name;
+    cbl_field_type_t type = FldInvalid;
+    n = sscanf(picture, "%c(%s)%n", &ch, name, &pos);
+
+    if( n == 2 ) {
+      auto ename = name + sizeof(name);
+      auto p = std::find(name, ename, ')');
+      if( p < ename ) *p = '\0';
+      if( (count = named_constant(name, &type)) <= 0 ) {
+        if( is_numeric(type) ) {
+          if( count == 0 ) {
+            error_msg(loc, "%qs is 0, invalid in PICTURE (ISO 2023 13.18.40.3)", name);
+          } else {
+            error_msg(loc, "not a positive integer constant: %qs: %ld", name, count);
+          }
+        } else {
+          error_msg(loc, "not an integer constant: %qs", name);
+        }
+      } else {
+        uint32_t n = count;
+        if( n != count ) {
+          error_msg(loc, "count exceeds 4 GB: %qs: %ld", name, count);
+        }
+      }
+    }
   }
-  return count;
+
+  if( n == 2 && 0 <= count ) {
+    return {count, pos};
+  }
+
+  return {0, -1};
+}
+
+std::pair<uint32_t, int>
+repeat_count(const char picture[])
+{
+  return repeat_count(yylloc, picture);
 }
 
 const char *numed_message;
@@ -1611,7 +1651,7 @@ cbl_field_t::encode_numeric( const char input[], cbl_loc_t loc ) {
                 // The final value will have data.digits + l_rdigits decimal
                 // places.  Let's scale rvalue to that range, taking into
                 // account that we already have l_rdigits of those places.
-                tester *= 
+                tester *=
                      get_power_of_ten(data.digits + data.rdigits - l_rdigits);
 
                 // In the case of PPP9999, tester needs to be between 1 and
@@ -1814,9 +1854,47 @@ cbl_field_t::encode_numeric( const char input[], cbl_loc_t loc ) {
             *pretval++ = ascii_plus;
             }
           }
-
+        if(     (attr & signable_e)
+            && !(attr & separate_e) )
+          {
+          // The value is signable and internal;
+          char *sign_loc;
+          if( attr & leading_e )
+            {
+            // The sign is in the first character
+            sign_loc = retval;
+            }
+          else
+            {
+            // The sign is in the final character
+            sign_loc = retval + char_capacity() - 1;
+            }
+          if( negative )
+            {
+            // We have to convert the very first digit into the negative flag
+            const charmap_t *charmap = __gg__get_charmap(codeset.encoding);
+            if( charmap->is_like_ebcdic() )
+              {
+              if( *sign_loc == ascii_zero )
+                {
+                /* When EBCDIC '0' is 0xF0.  The negative flag version is 0xD0,
+                   which is right left brace.  */
+                *sign_loc = ascii_rbrace;
+                }
+              else
+                {
+                /* EBCDIC '1' through '9' is 0xF1 through 0xF9, and they need
+                   to be converted to 0xD0 through 0xD9.  */
+                *sign_loc = (*sign_loc - ascii_zero) + ascii_J-1;
+                }
+              }
+            else
+              {
+              *sign_loc = (*sign_loc - ascii_zero) + ascii_p;
+              }
+            }
+          }
         // It's at this point we convert to the target encoding:
-        charmap_t *charmap = __gg__get_charmap(codeset.encoding);
         size_t retval_length = pretval - retval;
         if( retval_length != char_capacity() ) {
           cbl_errx( "%s: %s %lu %s %lu",
@@ -1842,38 +1920,6 @@ cbl_field_t::encode_numeric( const char input[], cbl_loc_t loc ) {
         }
         gcc_assert(nbytes == data.capacity());
         memcpy(retval, converted, data.capacity());
-        if(     (attr & signable_e)
-            && !(attr & separate_e) )
-          {
-          // This value is signable, and not separate.  So, the sign
-          // information goes into the first or last byte:
-          char *sign_location = attr & leading_e
-                        ? retval
-                        : retval + (data.digits-1) * charmap->stride() ;
-          cbl_char_t schar = charmap->set_digit_negative(*sign_location,
-                                                          negative);
-          switch(charmap->stride())
-            {
-            case 1:
-              {
-              uint8_t v = schar;
-              memcpy(sign_location, &v, charmap->stride());
-              break;
-              }
-            case 2:
-              {
-              uint16_t v = schar;
-              memcpy(sign_location, &v, charmap->stride());
-              break;
-              }
-            case 4:
-              {
-              uint32_t v = schar;
-              memcpy(sign_location, &v, charmap->stride());
-              break;
-              }
-            }
-          }
         break;
         }
 
@@ -1910,14 +1956,23 @@ cbl_field_t::encode_numeric( const char input[], cbl_loc_t loc ) {
             }
           else
             {
-            digits_from_int128(ach, this, char_capacity(), value, l_rdigits);
+            digits_from_int128(ach,
+                               this,
+                               data.digits,
+                               value,
+                               l_rdigits);
 
             // __gg__string_to_numeric_edited operates in ASCII space:
+            char *expanded = expand_picture(data.picture);
+            if( type == FldNumericEdited )
+              {
+              expanded = expand_expanded(expanded);
+              }
             __gg__string_to_numeric_edited( reinterpret_cast<char *>(retval),
                                             ach,
-                                            data.rdigits,
                                             negative,
-                                            data.picture);
+                                            expanded);
+            free(expanded);
             // So now we convert it to the target encoding:
             size_t nbytes;
             const char *converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
@@ -1942,7 +1997,6 @@ cbl_field_t::encode_numeric( const char input[], cbl_loc_t loc ) {
 }
 
 size_t parse_error_inc();
-size_t parse_error_count();
 
 bool // true if error reported
 cbl_field_t::report_invalid_initial_value(const cbl_loc_t& loc) const {
@@ -2084,17 +2138,17 @@ cbl_field_t::report_invalid_initial_value(const cbl_loc_t& loc) const {
     /*
      * This is overspecific: It catches numeric literal VALUE for all_alpha_e\
      *  only.
-     * The general error is: 
+     * The general error is:
      * - alphanumeric type
      * - data.initial is all spaces (based on PICTURE)
      * - data.original() is numeric or data.etc_type == value_e
      * - quoted_e clear, of course
-     * 
+     *
      * This happens because VALUE was captured as a cce and stored in
      * data.original for encode_numeric.  But encode_numeric was never called
      * because it's not a numeric field.
      *
-     * It is also insufficient.  It does not deal with VALUE LENGTH OF.  
+     * It is also insufficient.  It does not deal with VALUE LENGTH OF.
      */
     if( is_alpha_only ) {
       charmap_t *charmap = __gg__get_charmap(codeset.encoding);
@@ -2109,13 +2163,13 @@ cbl_field_t::report_invalid_initial_value(const cbl_loc_t& loc) const {
         }
       }
     }
-    
+
     if( ! is_alpha_only ) {
       error_msg(loc, "alpha-only %s VALUE '%s' contains non-alphabetic data",
                name, fig == zero_value_e? cbl_figconst_str(fig) : orig);
-      
+
       auto pend = orig + strlen(orig);
-      auto p = std::find_if( orig, pend, 
+      auto p = std::find_if( orig, pend,
                              []( char ch ) { return ! ISALPHA(ch); } );
       dbgmsg("%zu nonalpha '%.*s'", pend - p, int(pend - p), p);
     }
@@ -2131,32 +2185,37 @@ const cbl_field_t *
 literal_subscript_oob( const cbl_refer_t& r, size_t& isub /* output */)  {
   // Verify literal subscripts if dimensions are correct.
   size_t ndim(dimensions(r.field));
-  if( ndim == 0 || ndim != r.nsubscript() ) return NULL;
-  std::vector<cbl_field_t *> dims( ndim, NULL );
-  auto pdim = dims.end();
+  if( ndim == 0 || ndim != r.nsubscript() ) return nullptr;
+  std::deque<cbl_field_t *> dims(1, r.field);
+  if( ! is_table(dims[0]) ) dims.clear();
 
-  for( auto f = r.field; f; f = parent_of(f) ) {
-    if( f->occurs.ntimes() ) {
-      --pdim;
-      *pdim = f;
+  // dims is a vector of fields representing the dimensions, starting topmost.
+  cbl_field_t *parent;
+  for( auto f = r.field; (parent = parent_of(f)) != nullptr; f = parent ) {
+    if( parent != symbol_redefines(f) ) {
+      if( is_table(parent) ) {
+        dims.push_front(parent);
+      }
     }
   }
-  assert(dims[0] != NULL);
-  assert(pdim == dims.begin());
+
+  assert(dims.size() == ndim);
 
   /*
    * For each subscript, if it is a literal, verify it is in bounds
    * for the corresponding dimension.  Return the first subscript not
    * meeting those criteria, if any.
    */
-  auto psub = std::find_if( r.subscripts.begin(), r.subscripts.end(),
-                         [pdim]( const cbl_refer_t& r ) mutable {
-                           const auto& occurs((*pdim)->occurs);
-                           pdim++;
-                           return ! occurs.subscript_ok(r.field);
-                         } );
-  isub = psub - r.subscripts.begin();
-  return psub == r.subscripts.end()? NULL : dims[isub];
+  for( isub=0; isub < ndim; isub++ ) {
+    const auto& subscript = r.subscripts[isub];
+    const auto& occurs = dims[isub]->occurs;
+
+    if( ! occurs.subscript_ok(subscript.field) ) {
+      break; // found one
+    }
+  }
+
+  return isub == ndim? nullptr : dims[isub];
 }
 
 size_t
@@ -2278,10 +2337,9 @@ valid_move( const cbl_refer_t& tgt_ref, const cbl_refer_t& src_ref )
         { 0, 1, 6, 1, 1, 1, 1, 1, 1, 2, 0, 0, },  // FldNumericDisplay (numeric)
         { 0, 1, 4, 1, 1, 1, 1, 1, 1, 1, 0, 0, },  // FldNumericEdited
         { 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, },  // FldAlphaEdited
-        { 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, },  // FldLiteralA
+        { 0, 1, 1, 0, 0, 0, 0, 0, 8, 1, 0, 0, },  // FldLiteralA
         { 0, 1, 6, 1, 1, 1, 1, 1, 1, 2, 0, 0, },  // FldLiteralN       (numeric)
     };
-  /* Needs C++11 */
   static_assert(sizeof(matrix[0]) == COUNT_OF(matrix[0]),
                 "matrix should be square");
 
@@ -2308,12 +2366,25 @@ valid_move( const cbl_refer_t& tgt_ref, const cbl_refer_t& src_ref )
   assert(tgt->type < sizeof(matrix[0]));
   assert(src->type < sizeof(matrix[0]));
 
+  if( tgt->type != FldGroup ) {
+    if( ! is_numericish(effective_type(tgt_ref)) ) {
+      if( is_numeric(effective_type(src_ref)) ) {
+        if( 0 < src_ref.field->data.rdigits ) {
+          dbgmsg("%s:%d: src not integer %s, %s rdigits=%d", __func__, __LINE__,
+                 cbl_field_type_str(src->type), cbl_field_type_str(tgt->type),
+                 src_ref.field->data.rdigits);
+          dbgmsg("%s:%d: %s", __func__, __LINE__, field_str(src));
+          return false;
+        }
+      }
+    }
+  }
   /*
    * 8.4.3.3.3 Syntax rules
-   * A refmod may apply to: 
+   * A refmod may apply to:
    * "a numeric data item of usage display or national that is not subordinate
    * to a strongly-typed group item,"
-   * 
+   *
    * 8.4.3.3.4 General rules
    *
    * "If the data item referenced by identifier-1 is explicitly or implicitly
@@ -2511,6 +2582,18 @@ hex_decode( const char input[] ) {
   return output;
 }
 
+// input: H'[[:xdigit:]]+', for GnuCOBOL
+char *
+hex2numstr( const char input[] ) {
+  char q;
+  long unsigned int value;
+
+  int n = sscanf(++input, "%c%" GCC_PRISZ "x%c", &q, &value, &q);
+  assert(n == 3 && (q == '\'' || q == '"'));
+
+  return xasprintf("%lu", value);
+}
+
 /*
  * Verify unique procedure reference.
  *
@@ -2629,28 +2712,15 @@ namespace match_proc {
       found_t() : n(0), isym(0) {}
       found_t(size_t n, size_t isym) : n(n), isym(isym) {}
     };
-    void error(const cbl_name_t program_name,
+    void error(const cbl_loc_t& loc,
                const tgt_t&tgt,
-               const found_t& found) const 
+               const found_t& found) const
     {
       const char *clause = tgt == tgts.first? "" : "THRU ";
-          
-      switch( found.n ) {
-      case 1:
-        gcc_unreachable();
-        break;
-      case 0:
-        // error: not found
-        dbgmsg("%s:%d PERFORM %s%s not resolved",
-               program_name, line, clause, tgt.name.c_str());
-        break;
-      default:        
-        assert( 1 < found.n );
-        // error: ambiguous
-        dbgmsg("%s:%d PERFORM %s%s ambiguous",
-               program_name, line, clause, tgt.name.c_str());
-        break;
-      }
+      assert( 1 != found.n );
+      const char *status = found.n == 0? "procedure not found" : "ambiguous reference";
+
+      error_msg(loc, "%s: PERFORM %s%s", status, clause, tgt.name.c_str());
     }
   };
 
@@ -2664,7 +2734,15 @@ namespace match_proc {
     bool operator<( const sect_t& that ) const {
       return name < that.name;
     }
+    const sect_t& ambiguous() {
+      isym = 0;
+      return *this;
+    }
+    bool is_unique() const {
+      return isym != 0;
+    }
   };
+
   struct para_t {
     size_t isym, parent;
     std::string name;
@@ -2679,65 +2757,51 @@ namespace match_proc {
       }
       return name < that.name;
     }
+    const para_t& ambiguous() {
+      isym = 0;
+      return *this;
+    }
     std::string parent_name() const {
       if( ! parent ) return std::string();
       const auto f = cbl_label_of(symbol_at(parent));
       return lcase(f->name);
     }
   };
-  struct proc_t {
-    size_t n, isym; // index of first of n matching pairs
-    std::string para, sect;
-    proc_t( size_t n, size_t isym,
-            const std::string& para,
-            const std::string& sect )
-      : n(n), isym(isym), para(para), sect(sect)
-    {}
-    bool operator<( const proc_t& that ) const {
-      if( para == that.para ) {
-        return sect < that.sect;
-      }
-      return para < that.para;
-    }
-  };
 
   class procedures_t {
     std::set<sect_t> sects;
     std::set<para_t> paras;
-    std::set<proc_t> procs;
     friend bool statements_verify();
+    template <typename T>
+    // If the element name is not unique, set its isym to 0 so it can't be referenced.
+      static void update_set( T& names, size_t isym ) {
+        auto p = names.insert(isym);
+        if( ! p.second ) {
+          auto ambig = *p.first;
+          names.erase(p.first);
+          p = names.insert(ambig.ambiguous());
+          assert(p.second);
+        }
+      }
   public:
     procedures_t( size_t program ) {
       // find sections and paragraphs
-      for( symbol_elem_t *e = symbols_begin(program+1); e->program == program; e++ ) {
-        if( e->type == SymLabel ) {
+      for( symbol_elem_t *e = symbols_begin(program+1);
+          e < symbols_end() && e->program == program; e++ ) {
+          if( e->type == SymLabel ) {
           const auto& L = *cbl_label_of(e);
           auto isym = e - symbols_begin();
           switch(L.type) {
-          case LblSection: 
-            sects.insert(isym);
+          case LblSection:
+            update_set(sects, isym);
             break;
           case LblParagraph:
-            paras.insert(isym);
+            update_set(paras, isym);
             break;
           default:
             continue;
           }
         }
-      }
-      // join sections and paragraphs, unreduced
-      std::list<proc_t> all;
-      for( const auto& para : paras ) {
-        std::set<sect_t> parents;
-        std::copy_if( sects.begin(), sects.end(), std::inserter(parents, parents.begin()),
-                      [para]( const auto& sect ) {
-                        return para.parent_name() == sect.name;
-                      } );
-        std::transform( parents.begin(), parents.end(), std::back_inserter(all), 
-                        [para]( const auto& sect ) {
-                          proc_t proc(1, para.isym, para.name, sect.name);
-                          return proc;
-                        } );
       }
       // insert paragraph procedures
       struct stat_t {
@@ -2749,58 +2813,94 @@ namespace match_proc {
           return *this;
         }
       };
-      std::map<proc_t, stat_t> nprocs;
-      for( const auto& proc : all ) {
-        auto& stat = nprocs[proc];
-        stat.update( proc.isym );
-      }
-      std::transform(nprocs.begin(), nprocs.end(), std::inserter(procs, procs.begin()),
-                     []( const auto& elem ) {
-                       proc_t proc ( elem.second.n, elem.second.isym,
-                                     elem.first.para, elem.first.sect );
-                       return proc;
-                     } );
       // insert section procedures
       std::map<sect_t, stat_t> nsects;
       for( const auto& sect : sects ) {
         auto& stat = nsects[sect];
         stat.update( sect.isym );
       }
-      std::transform(nsects.begin(), nsects.end(), std::inserter(procs, procs.begin()),
-                     []( const auto& elem ) {
-                       proc_t proc ( elem.second.n, elem.second.isym,
-                                     std::string(), elem.first.name );
-                       return proc;
-                     } );
     }
 
     stmt_t::found_t
     find( const stmt_t& stmt, const stmt_t::tgt_t& tgt ) {
       if( tgt.empty() ) return stmt_t::found_t();
       std::string curr ( lcase( cbl_label_of(symbol_at(stmt.curr))->name ) );
+      std::set<para_t> matched;
 
-      auto p = std::find_if(procs.cbegin(), procs.cend(),
-                            [curr, tgt](auto proc) {
-                              return match(proc, tgt, curr);
-                            });
-      size_t n = std::count_if(p, procs.end(),
-                               [curr, tgt](const auto& proc) {
-                                 return match(proc, tgt, curr);
-                               });
+      // Match a paragraph name tgt.proc within curr, the current section.
+      std::copy_if(paras.cbegin(), paras.cend(),
+                   std::inserter(matched, matched.begin()),
+                   [curr, tgt](const auto& para) {
+                     return match_in_section(para, tgt, curr);
+                   });
+      // Match a section name if unqualified and unique.
+      if( matched.empty() && tgt.qual.empty() ) {
+        // target does not name a paragraph
+        if( std::none_of(paras.cbegin(), paras.cend(),
+                         [tgt](const auto& para) {
+                           return match_any_paragraph(para, tgt);
+                         }) ) {
+          // target may name a section
+          if( ! sects.empty() ) {
+            auto fake = *sects.begin();
+            fake.isym = 0;
+            fake.name = tgt.name;
+            auto p = sects.find(fake); // matches by name only, not isym
+            if( p != sects.end() && p->is_unique()) {
+              para_t para( p->isym );
+              matched.insert(para);
+            }
+          }
+        }
+      }
+      if( matched.empty() ){
+        // Match a paragraph or section anywhere in the program.
+        std::copy_if(paras.cbegin(), paras.cend(),
+                     std::inserter(matched, matched.begin()),
+                     [tgt](const auto& para) {
+                       return match(para, tgt);
+                   });
+      };
+
+      size_t n = matched.size();
       stmt_t::found_t found = {n, 0};
       if( n ) {
-        assert(p != procs.end());
-        found.isym = p->isym;
+        const para_t& para(*matched.begin());
+        found.isym = para.isym;
+        if( yydebug && 1 < n ) {
+          for( const auto& para : matched ) {
+            fprintf(stderr, "procedures_t::find:%d: ambig: %s of #%lu, %s\n", __LINE__,
+                    para.name.c_str(), (unsigned long)para.parent,
+                    para.parent_name().c_str());
+          }
+        }
       }
       return found;
     }
   protected:
-    static bool match( const proc_t& proc, const stmt_t::tgt_t& tgt, const std::string& curr ) {
-      return ( proc.para == tgt.name && tgt.qual.empty() )
-        ||   ( proc.sect == tgt.name && tgt.qual.empty() )
-        ||   ( proc.para == tgt.name && proc.sect == tgt.qual )
-        ||   ( proc.para == tgt.name && proc.sect == curr );
-    }    
+    static bool match_in_section( const para_t& para,
+                                  const stmt_t::tgt_t& tgt,
+                                  const std::string& curr )
+    {
+      return para.name == tgt.name && para.parent_name() == curr
+        &&   (tgt.qual == curr || tgt.qual.empty());
+    }
+    static bool match_any_paragraph( const para_t& para,
+                                     const stmt_t::tgt_t& tgt )
+    {
+      assert( tgt.qual.empty() );
+      return para.name == tgt.name;
+    }
+    static bool match( const para_t& para,
+                       const stmt_t::tgt_t& tgt )
+    {
+      if( tgt.qual.empty() ) {
+        return para.parent_name() == tgt.name
+          ||   para.name == tgt.name;
+      }
+      return para.name == tgt.name
+        &&   para.parent_name() == tgt.qual;
+    }
 
     void dump(const stmt_t& stmt) {
       std::string target( stmt.tgts.first.name );
@@ -2825,13 +2925,6 @@ namespace match_proc {
         fprintf(stderr, "\t" "#%lu %s of #%lu\n",
                 (unsigned long)para.isym, para.name.c_str(), (unsigned long)para.parent);
       }
-      fprintf(stderr, "%lu Procedures:\n", (unsigned long)procs.size());
-      for( auto proc : procs ) {
-        std::string section("");
-        if( ! proc.sect.empty() ) section += "of " + proc.sect;
-        fprintf(stderr, "\t" "n=%lu %s %s\n",
-                (unsigned long)proc.isym, proc.para.c_str(), section.c_str());
-      }
       return;
     }
   }; // procedures
@@ -2850,11 +2943,11 @@ namespace match_proc {
 
     // Verify each PERFORM statement target is a unique reference
     for( const auto& stmt : stmts ) {
+      if( symbol_at(stmt.curr)->program != iprog ) continue;
       stmt_t::found_t found = procedures.find(stmt, stmt.tgts.first.lcase());
       stmt_t::found_t thru  = procedures.find(stmt, stmt.tgts.second.lcase());
 
       if( found.n == 1 && (thru.n == 1 || stmt.tgts.second.empty()) ) {
-        // update proc call list
         if( stmt.tgts.first.qual.empty() ) {
           dbgmsg("%s:%d PERFORM %s is ok", program_name, stmt.line,
                  stmt.tgts.first.name.c_str());
@@ -2866,20 +2959,20 @@ namespace match_proc {
         continue;
       }
       nerr++;
-      
+      cbl_loc_t loc(stmt.line);
       if( found.n != 1 ) {
-        stmt.error(program_name, stmt.tgts.first, found);
+        stmt.error(loc, stmt.tgts.first, found);
         if( nerr == 1 && yydebug ) {
           procedures.dump(stmt);
         }
       }
       if( thru.n != 1 && ! stmt.tgts.second.empty() ) {
-        stmt.error(program_name, stmt.tgts.second, thru);
+        stmt.error(loc, stmt.tgts.second, thru);
       }
     }
     return nerr == 0;
   }
-  
+
   void statement_add() {
     stmts.push_back(prototype);
     prototype = stmt_t();
@@ -3401,7 +3494,6 @@ void cobol_trunc_binary( int cobol_trunc_binary ) {
  * to enforce uniqueness, and the scanner to maintain line numbers.
  */
 bool cobol_filename( const char *name, ino_t inode ) {
-  //const line_map *lines = NULL;
   if( inode == 0 ) {
     auto p = old_filenames.find(name);
     if( p == old_filenames.end() ) {
@@ -3416,10 +3508,14 @@ bool cobol_filename( const char *name, ino_t inode ) {
       assert(inode != 0);
     }
   }
+
   linemap_add(line_table, LC_ENTER, sysp, name, 1);
   input_filename_vestige = name;
   bool pushed = input_filenames.push( input_file_t(name, inode, 1) );
-  dbgmsg("%s: %s %s", __func__, pushed? "pushed" : "set to", name);
+  dbgmsg("%s: %s %s line %d-%d inode %lu", __func__,
+         pushed? "pushed" : "set to", name,
+         cobol_location().first_line,
+         cobol_location().last_line, (unsigned long) inode);
   return pushed;
 }
 
@@ -3505,42 +3601,32 @@ void current_location_minus_one_clear()
  * with start and caret at the first line/column of LOC, and finishing at the
  * last line/column of LOC.
  */
-static void
-gcc_location_set_impl( const cbl_loc_t& loc ) {
+void
+gcc_location_set( const cbl_loc_t& loc ) {
   // Set the position to the first line & column in the location.
- static location_t loc_m_1 = 0;
- const location_t
-   start_line   = linemap_line_start( line_table, loc.first_line, 80 ),
-   token_start  = linemap_position_for_column( line_table, loc.first_column),
-   finish_line  = linemap_line_start( line_table, loc.last_line, 80 ),
-   token_finish = linemap_position_for_column( line_table, loc.last_column);
- token_location = make_location (token_start, token_start, token_finish);
+  static location_t loc_m_1 = 0;
+  const location_t
+    start_line   = linemap_line_start( line_table, loc.first_line, 80 ),
+    token_start  = linemap_position_for_column( line_table, loc.first_column),
+    finish_line  = linemap_line_start( line_table, loc.last_line, 80 ),
+    token_finish = linemap_position_for_column( line_table, loc.last_column);
+  token_location = make_location (token_start, token_start, token_finish);
 
- if( loc.first_line > first_line_minus_1 ) {
-   // In order for GDB-COBOL to be able to step through COBOL code properly,
-   // it is sometimes necessary for the code at the beginning of a COBOL
-   // line to be using the location_t of the previous line.  This is true, for
-   // example, when laying down the infrastructure code between the last
-   // statement of a paragraph and the code created at the beginning of the
-   // following paragragh.  This code assumes that token_location values of
-   // interest are monotonic, and stores that prior value.
-   first_line_minus_1 = loc.first_line;
-   token_location_minus_1 = loc_m_1;
-   loc_m_1 = token_location;
- }
+  if( loc.first_line > first_line_minus_1 ) {
+    // In order for GDB-COBOL to be able to step through COBOL code properly,
+    // it is sometimes necessary for the code at the beginning of a COBOL
+    // line to be using the location_t of the previous line.  This is true, for
+    // example, when laying down the infrastructure code between the last
+    // statement of a paragraph and the code created at the beginning of the
+    // following paragragh.  This code assumes that token_location values of
+    // interest are monotonic, and stores that prior value.
+    first_line_minus_1 = loc.first_line;
+    token_location_minus_1 = loc_m_1;
+    loc_m_1 = token_location;
+  }
 
   location_dump(__func__, __LINE__, "parser", loc);
 }
-
-void gcc_location_set( const cbl_loc_t& loc ) {
-  gcc_location_set_impl(loc);
-}
-
-#if 0
-void gcc_location_set( const YDFLTYPE& loc ) {
-  gcc_location_set_impl(loc);
-}
-#endif
 
 #ifdef NDEBUG
 # define verify_format(M)
@@ -3575,8 +3661,28 @@ static const diagnostics::option_id option_zero;
 
 void gcc_location_dump() {
     linemap_dump_location( line_table, token_location, stderr );
+    fprintf(stderr, "\n");
 }
 
+// tree.h defines yy_flex_debug as a macro because options.h
+#ifdef yy_flex_debug
+#undef yy_flex_debug
+#endif
+void
+location_dump( const char func[], int line, const char tag[],
+               const cbl_loc_t& loc, bool force) {
+  extern int yy_flex_debug; // cppcheck-suppress shadowVariable
+  if( yy_flex_debug ) {
+    const char *detail = gcobol_getenv("update_location");
+    if( force || detail ) { // cppcheck-suppress knownConditionTrueFalse
+      bool gcc_detail = force || (detail && detail[0] == '2');
+      fprintf(stderr, "%s:%d: %s location (%d,%d) to (%d,%d)\n",
+              func, line, tag,
+              loc.first_line, loc.first_column, loc.last_line, loc.last_column);
+      if( gcc_detail ) gcc_location_dump();
+    }
+  }
+}
 
 void ydferror( const char gmsgid[], ... ) ATTRIBUTE_GCOBOL_DIAG(1, 2);
 
@@ -3621,35 +3727,19 @@ class temp_loc_t {
   }
 };
 
-/*
- * Both CDF and parser need to call error_msg, each with their own distinct
- * location type, not because they *need* to be different, but because they
- * are, as an artifact of using different prefixes.  Possibly a better plan
- * would be to convert cdf.y to a pure parser, using no global variables.  But
- * this is where we are.
- *
- * Because we can't reliably instantiate it as a forward-declared template
- * function, and because the parameters are variadic, we can't use a template
- * function or call one.  So, a macro.
- */
-
-#define ERROR_MSG_BODY                                                  \
-  temp_loc_t looker(loc);                                               \
-  verify_format(gmsgid);                                                \
-  parse_error_inc();                                                    \
-  global_dc->begin_group();                                             \
-  va_list ap;                                                           \
-  va_start (ap, gmsgid);                                                \
-  rich_location richloc (line_table, token_location);                   \
-  bool ret = global_dc->diagnostic_impl (&richloc, nullptr, option_zero,        \
-                                         gmsgid, &ap,                   \
-                                         diagnostics::kind::error);     \
-  va_end (ap);                                                          \
-  global_dc->end_group();
-
-
 void error_msg( const cbl_loc_t& loc, const char gmsgid[], ... ) {
-  ERROR_MSG_BODY
+  temp_loc_t looker(loc);
+  verify_format(gmsgid);
+  parse_error_inc();
+  global_dc->begin_group();
+  va_list ap;
+  va_start (ap, gmsgid);
+  rich_location richloc (line_table, token_location);
+  bool ret = global_dc->diagnostic_impl (&richloc, nullptr, option_zero,
+                                         gmsgid, &ap,
+                                         diagnostics::kind::error);
+  va_end (ap);
+  global_dc->end_group();
 }
 
 bool
@@ -3825,7 +3915,7 @@ parse_file( const char filename[] )
 #endif
 
   parser_leave_file();
-  
+
   fclose (yyin);
 
   if( erc ) {
@@ -4081,6 +4171,14 @@ static const std::set<std::string> reserved_words = {
   "END-START",
 
   // ISO 2023 keywords
+  "B_AND",
+  "B_NOT",
+  "B_OR",
+  "B_SHIFT_L",
+  "B_SHIFT_LC",
+  "B_SHIFT_R",
+  "B_SHIFT_RC",
+  "B_XOR",
   "ACCEPT",
   "ACCESS",
   "ACTIVE-CLASS",
@@ -4217,6 +4315,7 @@ static const std::set<std::string> reserved_words = {
   "END-SUBTRACT",
   "END-UNSTRING",
   "END-WRITE",
+  "END-XML",
   "ENVIRONMENT",
   "EO",
   "EOP",
@@ -4613,4 +4712,3 @@ iso_cobol_word( const std::string& name, bool include_context ) {
   }
   return ok;
 }
-

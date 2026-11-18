@@ -28,6 +28,9 @@ struct gimplify_omp_ctx;
 
 struct array_descr_info;
 
+/* Forward-declaration for qualifier_set in tree.h.  */
+struct qualifier_set;
+
 /* A print hook for print_tree ().  */
 typedef void (*lang_print_tree_hook) (FILE *, tree, int indent);
 
@@ -53,7 +56,7 @@ struct lang_hooks_for_tree_dump
   bool (*dump_tree) (void *, tree);
 
   /* Determine type qualifiers in a language-specific way.  */
-  int (*type_quals) (const_tree);
+  qualifier_set (*type_quals) (const_tree);
 };
 
 /* Hooks related to types.  */
@@ -643,6 +646,10 @@ struct lang_hooks
 
   /* Map a type to a runtime object to match type.  */
   tree (*eh_runtime_type) (tree);
+
+  /* Return true if a handler of HANDLER_TYPE can catch an exception
+     of EXCEPTION_TYPE, per the language's exception-matching rules.  */
+  bool (*exception_matches_type_p) (tree handler_type, tree exception_type);
 
   /* If non-NULL, this is a function that returns a function decl to be
      executed if an unhandled exception is propagated out of a cleanup

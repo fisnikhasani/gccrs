@@ -636,6 +636,15 @@ branch is not taken.  When @code{INSN_ANNULLED_BRANCH_P} is not set,
 this insn will always be executed.  Stored in the @code{in_struct}
 field and printed as @samp{/s}.
 
+@findex JUMP_TABLE_SHARED_P
+@cindex @code{addr_vec} and @samp{/u}
+@cindex @code{addr_diff_vec} and @samp{/u}
+@cindex @code{unchanging}, in @code{addr_vec} and @code{addr_diff_vec}
+@item JUMP_TABLE_SHARED_P (@var{x})
+In an @code{addr_vec} or @code{addr_diff_vec}, nonzero if several table
+jumps can use the jump table.  The flag stays set when users are deleted.
+Stored in the @code{unchanging} field and printed as @samp{/u}.
+
 @findex LABEL_PRESERVE_P
 @cindex @code{code_label} and @samp{/i}
 @cindex @code{note} and @samp{/i}
@@ -702,6 +711,42 @@ writable, but after control is transferred from the runtime loader to the
 application, this memory will never be subsequently modified.
 
 Stored in the @code{unchanging} field and printed as @samp{/u}.
+
+@findex MEM_INDEPENDENT_P
+@cindex @code{mem} and @samp{/i}
+@item MEM_INDEPENDENT_P (@var{x})
+This flag only applies to @code{mem}s that have vector addresses (that is,
+to @code{mem}s whose addresses have a vector mode).  The flag is nonzero
+if the creator asserts that the @code{mem}'s address vector specifies
+independent, non-overlapping memory locations, so that the @code{mem}
+does not refer to the same byte twice.
+
+This assertion does not mean that overlap is numerically impossible.
+It instead means that, if the instruction containing the @code{mem}
+is reached, the semantics of the source program require the addresses
+to be independent.  The behavior in other cases is undefined.
+
+RTL semantics apply the following restrictions:
+
+@itemize
+@item
+If the assertion made by @code{MEM_INDEPENDENT_P} does not hold at runtime,
+reading from the @code{mem} will return an undefined value, but will have
+no side effects other than reading from the specified bytes.
+
+@item
+Similarly, writing to such a @code{mem} will set the specified bytes
+to undefined values, but will have no side effects other than that.
+@end itemize
+
+@code{MEM_INDEPENDENT_P} can be useful when writing to a @code{mem}
+that has a vector address.  RTL semantics require such writes to behave
+@emph{as if} they processed the vector in left-to-right order, with later
+writes winning over earlier writes.  However, when @code{MEM_INDEPENDENT_P}
+is true, an instruction can adhere to these semantics by writing to the
+bytes in any order, or in parallel.
+
+Stored in the @code{return_val} field and printed as @samp{/i}.
 
 @findex PREFETCH_SCHEDULE_BARRIER_P
 @cindex @code{prefetch} and @samp{/v}
@@ -1012,6 +1057,9 @@ something in the per-function constant pool.
 
 In a @code{call_insn} 1 means that this instruction is a call to a const
 function.
+
+In an @code{addr_vec} or @code{addr_diff_vec}, 1 means that several table
+jumps can share the jump table.
 
 In an RTL dump, this flag is represented as @samp{/u}.
 
@@ -2368,6 +2416,15 @@ represented by the expression @var{addr}.  @var{m} specifies how large
 a unit of memory is accessed.  @var{alias} specifies an alias set for the
 reference.  In general two items are in different alias sets if they cannot
 reference the same memory address.
+
+The @var{addr} expression can represent either a scalar base address, or a
+vector of addresses (using an appropriate vector mode).  In the vector case,
+the number of lanes in the address mode must match the number of lanes in the
+data mode @var{m}.  Each vector lane can be viewed as an independent memory
+access of the corresponding scalar mode, performed in left-to-right order.  The
+@code{MEM_INDEPENDENT_P} flag can be used to assert that the addresses will not
+conflict.  All lanes are assumed to have the same attributes (address space,
+volatile, etc.).
 
 The construct @code{(mem:BLK (scratch))} is considered to alias all
 other memories.  Thus it may be used as a memory barrier in epilogue
@@ -3886,13 +3943,14 @@ To set the kind of a label, use the @code{SET_LABEL_KIND} macro.
 @findex jump_table_data
 @item jump_table_data
 A @code{jump_table_data} insn is a placeholder for the jump-table data
-of a @code{casesi} or @code{tablejump} insn.  They are placed after
-a @code{tablejump_p} insn.  A @code{jump_table_data} insn is not part of
-a basic block but it is associated with the basic block that ends with
-the @code{tablejump_p} insn.  The @code{PATTERN} of a @code{jump_table_data}
-is always either an @code{addr_vec} or an @code{addr_diff_vec}, and a
-@code{jump_table_data} insn is always preceded by a @code{code_label}.
-The @code{tablejump_p} insn refers to that @code{code_label} via its
+of a @code{casesi} or @code{tablejump} insn.  It is normally placed after
+the @code{tablejump_p} insn and associated with that insn's basic block.
+A late RTL pass can instead make several table jumps share one table.  The
+table then follows only one of them and its pattern has
+@code{JUMP_TABLE_SHARED_P} set.  A @code{jump_table_data} insn is not part
+of a basic block.  Its @code{PATTERN} is always either an @code{addr_vec}
+or an @code{addr_diff_vec}, and it is always preceded by a @code{code_label}.
+Each @code{tablejump_p} insn refers to that @code{code_label} through its
 @code{JUMP_LABEL}.
 
 @findex barrier

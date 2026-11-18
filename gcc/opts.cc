@@ -685,6 +685,7 @@ static const struct default_options default_options_table[] =
     { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_falign_jumps, NULL, 1 },
     { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_falign_labels, NULL, 1 },
     { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_falign_loops, NULL, 1 },
+    { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_fduplicate_switch_dispatch, NULL, 1 },
     { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_foptimize_strlen, NULL, 1 },
     { OPT_LEVELS_2_PLUS_SPEED_ONLY, OPT_freorder_blocks_algorithm_, NULL,
       REORDER_BLOCKS_ALGORITHM_STC },
@@ -707,7 +708,6 @@ static const struct default_options default_options_table[] =
     { OPT_LEVELS_3_PLUS, OPT_fpeel_loops, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_fpredictive_commoning, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_fsplit_loops, NULL, 1 },
-    { OPT_LEVELS_3_PLUS, OPT_fsplit_paths, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_ftree_loop_distribution, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_ftree_partial_pre, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_funswitch_loops, NULL, 1 },
@@ -1165,8 +1165,10 @@ finish_options (struct gcc_options *opts, struct gcc_options *opts_set,
   if (opts->x_flag_hardened)
     {
       if (!opts_set->x_flag_auto_var_init)
-	opts->x_flag_auto_var_init = AUTO_INIT_ZERO;
-      else if (opts->x_flag_auto_var_init != AUTO_INIT_ZERO)
+	opts->x_flag_auto_var_init
+	  = auto_init_type (opts->x_flag_auto_var_init | AUTO_INIT_ZERO);
+      else if ((opts->x_flag_auto_var_init & ~AUTO_INIT_CXX26)
+	       != AUTO_INIT_ZERO)
 	warning_at (loc, OPT_Whardened,
 		    "%<-ftrivial-auto-var-init=zero%> is not enabled by "
 		    "%<-fhardened%> because it was specified on the command "
@@ -1500,9 +1502,8 @@ finish_options (struct gcc_options *opts, struct gcc_options *opts_set,
       opts->x_flag_var_tracking_assignments = 0;
     }
 
-  /* One could use EnabledBy, but it would lead to a circular dependency.  */
-  if (!opts_set->x_flag_var_tracking_uninit)
-    opts->x_flag_var_tracking_uninit = opts->x_flag_var_tracking;
+  if (opts_set->x_flag_var_tracking_uninit && opts->x_flag_var_tracking_uninit)
+    opts->x_flag_var_tracking = 1;
 
   if (!opts_set->x_flag_var_tracking_assignments)
     opts->x_flag_var_tracking_assignments
@@ -1537,6 +1538,9 @@ finish_options (struct gcc_options *opts, struct gcc_options *opts_set,
 		    "%<-Wstrict-flex-arrays%> is ignored when"
 		    " %<-fstrict-flex-arrays%> is not present");
       }
+
+  if (opts->x_flag_openmp_ompt && !opts->x_flag_openmp)
+    error_at (loc, "%<-fopenmp-ompt%> requires %<-fopenmp%>");
 
   diagnose_options (opts, opts_set, loc);
 }
@@ -3959,6 +3963,7 @@ gen_command_line_string (cl_decoded_option *options,
       case OPT_nostdinc__:
       case OPT_fpreprocessed:
       case OPT_fltrans_output_list_:
+      case OPT_fltrans_linemap_file_:
       case OPT_fresolution_:
       case OPT_fdebug_prefix_map_:
       case OPT_fmacro_prefix_map_:

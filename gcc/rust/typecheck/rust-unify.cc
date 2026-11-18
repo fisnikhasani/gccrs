@@ -18,7 +18,6 @@
 
 #include "rust-unify.h"
 #include "fold-const.h"
-#include "rust-substitution-mapper.h"
 #include "rust-tyty-util.h"
 #include "rust-tyty.h"
 #include "rust-type-util.h"
@@ -39,10 +38,13 @@ UnifyRules::UnifyRules (TyTy::TyWithLocation lhs, TyTy::TyWithLocation rhs,
 			location_t locus, bool commit_flag, bool emit_error,
 			bool check_bounds, bool infer,
 			std::vector<CommitSite> &commits,
-			std::vector<InferenceSite> &infers)
+			std::vector<InferenceSite> &infers,
+			ActiveADTs &active_adts, bool allow_never_coercion)
   : lhs (lhs), rhs (rhs), locus (locus), commit_flag (commit_flag),
     emit_error (emit_error), infer_flag (infer),
-    check_bounds_flag (check_bounds), commits (commits), infers (infers),
+    check_bounds_flag (check_bounds),
+    allow_never_coercion (allow_never_coercion), commits (commits),
+    infers (infers), active_adts (active_adts),
     mappings (Analysis::Mappings::get ()), context (*TypeCheckContext::get ())
 {}
 
@@ -51,10 +53,15 @@ UnifyRules::Resolve (TyTy::TyWithLocation lhs, TyTy::TyWithLocation rhs,
 		     location_t locus, bool commit_flag, bool emit_error,
 		     bool check_bounds, bool infer,
 		     std::vector<CommitSite> &commits,
-		     std::vector<InferenceSite> &infers)
+		     std::vector<InferenceSite> &infers,
+		     ActiveADTs *active_adts, bool allow_never_coercion)
 {
-  UnifyRules r (lhs, rhs, locus, commit_flag, emit_error, infer, check_bounds,
-		commits, infers);
+  ActiveADTs root_active_adts;
+  if (active_adts == nullptr)
+    active_adts = &root_active_adts;
+
+  UnifyRules r (lhs, rhs, locus, commit_flag, emit_error, check_bounds, infer,
+		commits, infers, *active_adts, allow_never_coercion);
 
   TyTy::BaseType *result = r.go ();
   bool failed = result->get_kind () == TyTy::TypeKind::ERROR;
@@ -76,8 +83,9 @@ TyTy::BaseType *
 UnifyRules::resolve_subtype (TyTy::TyWithLocation lhs, TyTy::TyWithLocation rhs)
 {
   TyTy::BaseType *result
-    = UnifyRules::Resolve (lhs, rhs, locus, commit_flag, emit_error, infer_flag,
-			   check_bounds_flag, commits, infers);
+    = UnifyRules::Resolve (lhs, rhs, locus, commit_flag, emit_error,
+			   check_bounds_flag, infer_flag, commits, infers,
+			   &active_adts, allow_never_coercion);
 
   // If the recursive call resulted in an error and would have emitted an error
   // message, disable error emission for the current level to avoid duplicate
@@ -246,15 +254,18 @@ UnifyRules::go ()
     }
   if (infer_flag)
     {
+      // an impl parameter can infer to Split<T, P> without requiring T and P to
+      // be concrete
       bool rgot_param = rtype->get_kind () == TyTy::TypeKind::PARAM;
       bool lhs_is_infer_var = ltype->get_kind () == TyTy::TypeKind::INFER;
       bool lhs_is_general_infer_var
 	= lhs_is_infer_var
 	  && static_cast<TyTy::InferType *> (ltype)->get_infer_kind ()
 	       == TyTy::InferType::GENERAL;
-      bool expected_is_concrete
-	= ltype->is_concrete () && !lhs_is_general_infer_var;
-      bool rneeds_infer = expected_is_concrete && (rgot_param);
+      bool expected_can_infer_param
+	= (ltype->is_concrete () || ltype->get_kind () == TyTy::TypeKind::ADT)
+	  && !lhs_is_general_infer_var;
+      bool rneeds_infer = expected_can_infer_param && rgot_param;
 
       bool lgot_param = ltype->get_kind () == TyTy::TypeKind::PARAM;
       bool rhs_is_infer_var = rtype->get_kind () == TyTy::TypeKind::INFER;
@@ -262,9 +273,10 @@ UnifyRules::go ()
 	= rhs_is_infer_var
 	  && static_cast<TyTy::InferType *> (rtype)->get_infer_kind ()
 	       == TyTy::InferType::GENERAL;
-      bool receiver_is_concrete
-	= rtype->is_concrete () && !rhs_is_general_infer_var;
-      bool lneeds_infer = receiver_is_concrete && (lgot_param);
+      bool receiver_can_infer_param
+	= (rtype->is_concrete () || rtype->get_kind () == TyTy::TypeKind::ADT)
+	  && !rhs_is_general_infer_var;
+      bool lneeds_infer = receiver_can_infer_param && lgot_param;
 
       if (rneeds_infer)
 	{
@@ -586,6 +598,9 @@ UnifyRules::expect_adt (TyTy::ADTType *ltype, TyTy::BaseType *rtype)
     case TyTy::ADT:
       {
 	TyTy::ADTType &type = *static_cast<TyTy::ADTType *> (rtype);
+	if (ltype == &type)
+	  return ltype;
+
 	if (ltype->get_adt_kind () != type.get_adt_kind ())
 	  {
 	    return unify_error_type_node ();
@@ -605,6 +620,10 @@ UnifyRules::expect_adt (TyTy::ADTType *ltype, TyTy::BaseType *rtype)
 	  {
 	    return unify_error_type_node ();
 	  }
+
+	ActiveADTGuard guard (active_adts, {ltype, &type});
+	if (guard.already_active ())
+	  return ltype;
 
 	for (size_t i = 0; i < type.number_of_variants (); ++i)
 	  {
@@ -988,7 +1007,10 @@ UnifyRules::expect_array (TyTy::ArrayType *ltype, TyTy::BaseType *rtype)
 	auto capacity_type_unify = capacity_unify->as_const_type ();
 	if (capacity_type_unify->const_kind ()
 	    == TyTy::BaseConstType::ConstKind::Error)
-	  return unify_error_type_node ();
+	  {
+	    emit_error = false;
+	    return unify_error_type_node ();
+	  }
 
 	return new TyTy::ArrayType (
 	  type.get_ref (), type.get_ty_ref (), type.get_ident ().locus,
@@ -1814,8 +1836,15 @@ UnifyRules::expect_never (TyTy::NeverType *ltype, TyTy::BaseType *rtype)
       }
       break;
 
+    case TyTy::NEVER:
+      return ltype;
+
     default:
-      return rtype;
+      {
+	if (allow_never_coercion)
+	  return rtype;
+      }
+      break;
     }
   return unify_error_type_node ();
 }
@@ -1989,6 +2018,12 @@ UnifyRules::expect_projection (TyTy::ProjectionType *ltype,
       {
 	if (ltype->is_trait_position ())
 	  {
+	    // A trait-position projection whose Self is still generic cannot be
+	    // normalized against a concrete impl candidate.
+	    auto dself = ltype->get_self ()->destructure ();
+	    if (dself->is<TyTy::ParamType> ())
+	      return ltype;
+
 	    TyTy::BaseType *ln
 	      = normalize_projection (ltype, locus, false, false);
 	    if (ln != nullptr && ln != ltype)

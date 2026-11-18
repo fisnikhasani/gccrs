@@ -188,6 +188,7 @@ private:
   virtual void visit (UseDeclaration &use_decl) override final{};
   virtual void visit (Function &function) override final{};
   virtual void visit (TypeAlias &type_alias) override final{};
+  virtual void visit (TraitAlias &trait_alias) override final{};
   virtual void visit (EnumItem &item) override final{};
   virtual void visit (EnumItemTuple &item) override final{};
   virtual void visit (EnumItemStruct &item) override final{};
@@ -232,8 +233,6 @@ private:
   virtual void visit (TuplePatternItemsHasRest &tuple_items) override final{};
   virtual void visit (TuplePattern &pattern) override final{};
   virtual void visit (GroupedPattern &pattern) override final{};
-  virtual void visit (SlicePatternItemsNoRest &items) override final{};
-  virtual void visit (SlicePatternItemsHasRest &items) override final{};
   virtual void visit (SlicePattern &pattern) override final{};
   virtual void visit (AltPattern &pattern) override final{};
   virtual void visit (EmptyStmt &stmt) override final{};

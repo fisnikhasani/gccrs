@@ -2019,9 +2019,16 @@ private:
        #define NAME 42
      and other bases but not negative numbers, parentheses or e.g.
        #define NAME 1 << 7
-     as doing so would require a parser.  */
-  tree consider_macro (cpp_macro *macro) const
+     as doing so would require a parser.
+     Also handle the case where MACRO's definition is a single identifier
+     that is itself a macro name (e.g. "#define O_CREAT _FCREAT"), by
+     following the chain of aliases.  */
+  tree consider_macro (cpp_macro *macro, int depth = 0) const
   {
+    /* UInteger option variables are stored as int, so "depth" must be signed
+       to avoid a signed/unsigned comparison here. */
+    gcc_assert (depth >= 0);
+
     if (macro->paramc > 0)
       return NULL_TREE;
     if (macro->kind != cmk_macro)
@@ -2029,7 +2036,20 @@ private:
     if (macro->count != 1)
       return NULL_TREE;
     const cpp_token &tok = macro->exp.tokens[0];
-    if (tok.type != CPP_NUMBER)
+    if (tok.type == CPP_NAME)
+      {
+	/* Limit recursion.  */
+	if (depth >= param_analyzer_max_macro_alias_depth)
+	  return NULL_TREE;
+
+	cpp_hashnode *alias = tok.val.node.node;
+	if (cpp_macro_p (alias))
+	  return consider_macro (alias->value.macro, depth + 1);
+
+	/* Not a simple alias.  */
+	return NULL_TREE;
+      }
+    else if (tok.type != CPP_NUMBER)
       return NULL_TREE;
 
     cpp_reader *old_parse_in = parse_in;
@@ -4833,12 +4853,12 @@ c_parser_typeof_specifier (c_parser *parser)
       if (is_unqual)
 	{
 	  bool is_array = TREE_CODE (ret.spec) == ARRAY_TYPE;
-	  int quals = TYPE_QUALS (strip_array_types (ret.spec));
-	  if ((is_array ? quals & ~TYPE_QUAL_ATOMIC : quals)
+	  auto quals = TYPE_QUALS (strip_array_types (ret.spec));
+	  if ((is_array ? quals.without (TYPE_QUAL_ATOMIC) : quals)
 	      != TYPE_UNQUALIFIED)
 	    {
 	      ret.spec = TYPE_MAIN_VARIANT (ret.spec);
-	      if (quals & TYPE_QUAL_ATOMIC && is_array)
+	      if (quals.has (TYPE_QUAL_ATOMIC) && is_array)
 		ret.spec = c_build_qualified_type (ret.spec,
 						   TYPE_QUAL_ATOMIC);
 	    }
@@ -13536,15 +13556,29 @@ c_parser_postfix_expression (c_parser *parser)
 	  }
 	case RID_BUILTIN_BSWAPG:
 	case RID_BUILTIN_BITREVERSEG:
+	case RID_BUILTIN_CLMULG:
 	  {
 	    vec<c_expr_t, va_gc> *cexpr_list;
 	    location_t close_paren_loc;
-	    internal_fn ifn
-	      = (c_parser_peek_token (parser)->keyword == RID_BUILTIN_BSWAPG
-		 ? IFN_BSWAP : IFN_BITREVERSE);
-	    const char *name
-	      = (ifn == IFN_BSWAP ? "__builtin_bswapg"
-		 : "__builtin_bitreverseg");
+	    internal_fn ifn;
+	    const char *name;
+	    switch (c_parser_peek_token (parser)->keyword)
+	      {
+	      case RID_BUILTIN_BSWAPG:
+		ifn = IFN_BSWAP;
+		name = "__builtin_bswapg";
+		break;
+	      case RID_BUILTIN_BITREVERSEG:
+		ifn = IFN_BITREVERSE;
+		name = "__builtin_bitreverseg";
+		break;
+	      case RID_BUILTIN_CLMULG:
+		ifn = IFN_CLMUL;
+		name = "__builtin_clmulg";
+		break;
+	      default:
+		gcc_unreachable ();
+	      }
 
 	    c_parser_consume_token (parser);
 	    if (!c_parser_get_builtin_args (parser, name, &cexpr_list, false,
@@ -13554,7 +13588,9 @@ c_parser_postfix_expression (c_parser *parser)
 		break;
 	      }
 
-	    if (vec_safe_length (cexpr_list) != 1)
+	    const unsigned nargs = vec_safe_length (cexpr_list);
+	    if (nargs < (ifn == IFN_CLMUL ? 2 : 1)
+		|| nargs > (ifn == IFN_CLMUL ? 3 : 1))
 	      {
 		error_at (loc, "wrong number of arguments to %qs", name);
 		expr.set_error ();
@@ -13572,41 +13608,119 @@ c_parser_postfix_expression (c_parser *parser)
 	    tree type = TYPE_MAIN_VARIANT (TREE_TYPE (arg));
 	    if (!INTEGRAL_TYPE_P (type))
 	      {
-		error_at (loc, "%qs operand not an integral type", name);
+		error_at (arg_p->get_location (),
+			  "%qs operand not an integral type", name);
 		expr.set_error ();
 		break;
 	      }
 	    if (TREE_CODE (type) == ENUMERAL_TYPE)
 	      {
-		error_at (loc, "argument %u in call to function "
+		error_at (arg_p->get_location (),
+			  "argument %u in call to function "
 			  "%qs has enumerated type", 1, name);
 		expr.set_error ();
 		break;
 	      }
 	    if (TREE_CODE (type) == BOOLEAN_TYPE)
 	      {
-		error_at (loc, "argument %u in call to function "
+		error_at (arg_p->get_location (),
+			  "argument %u in call to function "
 			  "%qs has boolean type", 1, name);
 		expr.set_error ();
 		break;
 	      }
 	    if (!TYPE_UNSIGNED (type))
 	      {
-		error_at (loc, "argument 1 in call to function "
+		error_at (arg_p->get_location (),
+			  "argument 1 in call to function "
 			  "%qs has signed type", name);
 		expr.set_error ();
 		break;
 	      }
 	    if (ifn == IFN_BSWAP && (TYPE_PRECISION (type) % 8) != 0)
 	      {
-		error_at (loc, "precision %d of argument 1 to function "
+		error_at (arg_p->get_location (),
+			  "precision %d of argument 1 to function "
 			  "%qs is not a multiple of 8",
 			  TYPE_PRECISION (type), name);
 		expr.set_error ();
 		break;
 	      }
 	    arg = c_fully_fold (arg, false, NULL);
-	    expr.value = fold_build_builtin_bswapg_bitreverseg (loc, ifn, arg);
+	    if (ifn == IFN_CLMUL)
+	      {
+		arg_p = &(*cexpr_list)[1];
+		*arg_p = convert_lvalue_to_rvalue (loc, *arg_p, true, true);
+		tree arg2 = arg_p->value;
+		if (error_operand_p (arg2))
+		  {
+		    expr.set_error ();
+		    break;
+		  }
+		if (!comptypes_same_p (type,
+				       TYPE_MAIN_VARIANT (TREE_TYPE (arg2))))
+		  {
+		    error_at (loc, "arguments 1 and 2 to function %qs "
+				   "have different types %qT and %qT",
+			      name, type,
+			      TYPE_MAIN_VARIANT (TREE_TYPE (arg2)));
+		    expr.set_error ();
+		    break;
+		  }
+		arg2 = c_fully_fold (arg2, false, NULL);
+		tree arg3 = NULL_TREE;
+		if (nargs == 3)
+		  {
+		    arg_p = &(*cexpr_list)[2];
+		    *arg_p = convert_lvalue_to_rvalue (loc, *arg_p,
+						       true, true);
+		    arg3 = arg_p->value;
+		    if (error_operand_p (arg3))
+		      {
+			expr.set_error ();
+			break;
+		      }
+		    if (!POINTER_TYPE_P (TREE_TYPE (arg3)))
+		      {
+			error_at (arg_p->get_location (),
+				  "argument 3 to function %qs does not have "
+				  "pointer type", name);
+			expr.set_error ();
+			break;
+		      }
+		    tree htype = TREE_TYPE (TREE_TYPE (arg3));
+		    if (!comptypes_same_p (type, TYPE_MAIN_VARIANT (htype)))
+		      {
+			error_at (loc, "arguments 1 and 3 to function %qs "
+				       "have incompatible types %qT and %qT",
+				  name, type, TREE_TYPE (arg3));
+			expr.set_error ();
+			break;
+		      }
+		    if (TYPE_READONLY (htype))
+		      {
+			error_at (arg_p->get_location (),
+				  "argument 3 to function %qs has pointer to "
+				  "%qs type %qT",
+				  name, "const", TREE_TYPE (arg3));
+			expr.set_error ();
+			break;
+		      }
+		    if (TYPE_ATOMIC (htype))
+		      {
+			error_at (arg_p->get_location (),
+				  "argument 3 to function %qs "
+				  "has pointer to %qs type %qT",
+				  name, "_Atomic", TREE_TYPE (arg3));
+			expr.set_error ();
+			break;
+		      }
+		  }
+		expr.value = fold_build_builtin_clmulg (loc, arg, arg2, arg3);
+	      }
+	    else
+	      expr.value = fold_build_builtin_bswapg_bitreverseg (loc, ifn,
+								  arg);
 	    set_c_expr_source_range (&expr, loc, close_paren_loc);
 	    break;
 	  }
@@ -13818,7 +13932,7 @@ c_parser_postfix_expression_after_paren_type (c_parser *parser,
 	 restrict qualified or have a member with such a qualifier.
 	 const qualification is implicitly added.  */
       if (TYPE_QUALS (type_no_array)
-	  & (TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
+	  .has (TYPE_QUAL_VOLATILE | TYPE_QUAL_RESTRICT | TYPE_QUAL_ATOMIC))
 	error_at (type_loc, "invalid qualifiers for %<constexpr%> object");
       else if (RECORD_OR_UNION_TYPE_P (type_no_array)
 	       && C_TYPE_FIELDS_NON_CONSTEXPR (type_no_array))
@@ -16592,6 +16706,8 @@ c_parser_omp_clause_name (c_parser *parser)
 	    result = PRAGMA_OMP_CLAUSE_LINEAR;
 	  else if (!strcmp ("link", p))
 	    result = PRAGMA_OMP_CLAUSE_LINK;
+	  else if (!strcmp ("local", p))
+	    result = PRAGMA_OMP_CLAUSE_LOCAL;
 	  break;
 	case 'm':
 	  if (!strcmp ("map", p))
@@ -19640,11 +19756,14 @@ c_parser_omp_clause_allocate (c_parser *parser, tree list)
 	  location_t expr_loc = c_parser_peek_token (parser)->location;
 	  c_expr expr = c_parser_expr_no_commas (parser, NULL);
 	  expr = convert_lvalue_to_rvalue (expr_loc, expr, false, true);
-	  allocator = expr.value;
-	  allocator = c_fully_fold (allocator, false, NULL);
-	  orig_type = expr.original_type
-		      ? expr.original_type : TREE_TYPE (allocator);
-	  orig_type = TYPE_MAIN_VARIANT (orig_type);
+	  if (expr.value != error_mark_node)
+	    {
+	      allocator = expr.value;
+	      allocator = c_fully_fold (allocator, false, NULL);
+	      orig_type = expr.original_type
+			  ? expr.original_type : TREE_TYPE (allocator);
+	      orig_type = TYPE_MAIN_VARIANT (orig_type);
+	    }
 	}
       if (allocator
 	  && (!INTEGRAL_TYPE_P (TREE_TYPE (allocator))
@@ -19790,6 +19909,7 @@ parse_next:
 	    {
 	      traits_var = expr.value;
 	      traits_var = c_fully_fold (traits_var, false, NULL);
+	      mark_exp_read (traits_var);
 	    }
 	  else
 	    {
@@ -19828,6 +19948,7 @@ parse_next:
 		{
 		  traits_var = expr.value;
 		  traits_var = c_fully_fold (traits_var, false, NULL);
+		  mark_exp_read (traits_var);
 		}
 	      else
 		{
@@ -19879,6 +20000,7 @@ parse_next:
 	  legacy_traits = c_fully_fold (expr.value, false, NULL);
 	  if (legacy_traits == error_mark_node)
 	    goto end;
+	  mark_exp_read (legacy_traits);
 
 	  gcc_rich_location richloc (make_location (alloc_loc, alloc_loc, close_loc));
 	  if (nl == list)
@@ -20170,40 +20292,93 @@ c_parser_omp_clause_safelen (c_parser *parser, tree list)
 }
 
 /* OpenMP 4.0:
-   simdlen ( constant-expression ) */
+   simdlen ( constant-expression )
+
+   OpenMP 6.1:
+   simdlen ([scaled(type[, constant-expression]):] constant-expression )  */
 
 static tree
 c_parser_omp_clause_simdlen (c_parser *parser, tree list)
 {
   location_t clause_loc = c_parser_peek_token (parser)->location;
-  tree c, t;
+  tree c, t = NULL_TREE, type = NULL_TREE, divisor = NULL_TREE;
 
   matching_parens parens;
   if (!parens.require_open (parser))
     return list;
 
-  location_t expr_loc = c_parser_peek_token (parser)->location;
-  c_expr expr = c_parser_expr_no_commas (parser, NULL);
-  expr = convert_lvalue_to_rvalue (expr_loc, expr, false, true);
-  t = expr.value;
-  t = c_fully_fold (t, false, NULL);
-  if (TREE_CODE (t) != INTEGER_CST
-      || !INTEGRAL_TYPE_P (TREE_TYPE (t))
-      || tree_int_cst_sgn (t) != 1)
+  unsigned pos = 3;
+  if (c_parser_next_token_is (parser, CPP_NAME)
+      && c_parser_peek_2nd_token (parser)->type == CPP_OPEN_PAREN
+      && strcmp (IDENTIFIER_POINTER (c_parser_peek_token (parser)->value),
+		 "scaled") == 0
+      && c_parser_check_balanced_raw_token_sequence (parser, &pos)
+      && c_parser_peek_nth_token_raw (parser, ++pos)->type == CPP_COLON)
     {
-      error_at (clause_loc, "%<simdlen%> clause expression must "
-			    "be positive constant integer expression");
-      t = NULL_TREE;
+      c_parser_consume_token (parser);
+      matching_parens parens2;
+      parens2.require_open (parser);
+
+      location_t loc = c_parser_peek_token (parser)->location;
+      struct c_type_name *ctype = c_parser_type_name (parser);
+      if (ctype == NULL
+	  || (type = groktypename (ctype, NULL, NULL)) == NULL
+	  || (!INTEGRAL_TYPE_P (type)
+	      && !SCALAR_FLOAT_TYPE_P (type)
+	      && TREE_CODE (type) != COMPLEX_TYPE))
+	{
+	  error_at (loc, "expected arithmetic type name as argument to the "
+			 "%<scaled%> modifier");
+	  type = error_mark_node;
+	}
+      else if (c_parser_next_token_is (parser, CPP_COMMA))
+	{
+	  c_parser_consume_token (parser);
+	  loc = c_parser_peek_token (parser)->location;
+	  c_expr expr = c_parser_expr_no_commas (parser, NULL);
+	  expr = convert_lvalue_to_rvalue (loc, expr, false, true);
+	  divisor = expr.value;
+	  divisor = c_fully_fold (divisor, false, NULL);
+	  if (TREE_CODE (divisor) != INTEGER_CST
+	      || !INTEGRAL_TYPE_P (TREE_TYPE (divisor))
+	      || tree_int_cst_sgn (divisor) != 1)
+	    {
+	      error_at (loc, "divisor expression of the %<scaled%> modifier "
+			     "must a be positive constant integer expression");
+	      type = error_mark_node;
+	    }
+	}
+      parens2.skip_until_found_close (parser);
+      c_parser_require (parser, CPP_COLON, "expected %<:%>");
+    }
+
+  if (type != error_mark_node)
+    {
+      location_t expr_loc = c_parser_peek_token (parser)->location;
+      c_expr expr = c_parser_expr_no_commas (parser, NULL);
+      expr = convert_lvalue_to_rvalue (expr_loc, expr, false, true);
+      t = expr.value;
+      t = c_fully_fold (t, false, NULL);
+      if (TREE_CODE (t) != INTEGER_CST
+	  || !INTEGRAL_TYPE_P (TREE_TYPE (t))
+	  || tree_int_cst_sgn (t) != 1)
+	{
+	  error_at (clause_loc, "%<simdlen%> clause expression must "
+				"be positive constant integer expression");
+	  t = NULL_TREE;
+	}
     }
 
   parens.skip_until_found_close (parser);
-  if (t == NULL_TREE || t == error_mark_node)
+  if (type == error_mark_node || t == NULL_TREE || t == error_mark_node)
     return list;
 
   check_no_duplicate_clause (list, OMP_CLAUSE_SIMDLEN, "simdlen");
 
   c = build_omp_clause (clause_loc, OMP_CLAUSE_SIMDLEN);
   OMP_CLAUSE_SIMDLEN_EXPR (c) = t;
+  OMP_CLAUSE_SIMDLEN_TYPE (c) = type;
+  OMP_CLAUSE_SIMDLEN_DIVISOR (c) = divisor;
   OMP_CLAUSE_CHAIN (c) = list;
   return c;
 }
@@ -22524,6 +22699,11 @@ c_parser_omp_all_clauses (c_parser *parser, omp_clause_mask mask,
 	    = c_parser_omp_var_list_parens (parser, OMP_CLAUSE_LINK, clauses);
 	  c_name = "link";
 	  break;
+	case PRAGMA_OMP_CLAUSE_LOCAL:
+	  clauses
+	    = c_parser_omp_var_list_parens (parser, OMP_CLAUSE_LOCAL, clauses);
+	  c_name = "local";
+	  break;
 	case PRAGMA_OMP_CLAUSE_TO:
 	  if ((mask & (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_LINK)) != 0)
 	    {
@@ -23637,7 +23817,7 @@ c_parser_omp_allocate (c_parser *parser)
 		 != get_identifier ("omp_allocator_handle_t"))
 	    {
 	      error_at (expr_loc,
-			"%<allocator%> clause allocator expression has type "
+			"%<allocator%> clause expression has type "
 			"%qT rather than %<omp_allocator_handle_t%>",
 			TREE_TYPE (allocator));
 	      allocator = NULL_TREE;
@@ -25586,7 +25766,7 @@ c_parser_omp_for_loop (location_t loc, c_parser *parser, enum tree_code code,
       error_at (OMP_CLAUSE_LOCATION (ordered_cl),
 		"%<ordered%> clause parameter is less than %<collapse%>");
       OMP_CLAUSE_ORDERED_EXPR (ordered_cl)
-	= build_int_cst (NULL_TREE, collapse);
+	= build_int_cst (integer_type_node, collapse);
       ordered = collapse;
     }
 
@@ -28871,6 +29051,7 @@ c_maybe_parse_omp_decl (tree decl, tree d)
 	( (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_TO)		\
 	| (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_ENTER)	\
 	| (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_LINK)		\
+	| (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_LOCAL)	\
 	| (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_DEVICE_TYPE)	\
 	| (OMP_CLAUSE_MASK_1 << PRAGMA_OMP_CLAUSE_INDIRECT))
 
@@ -28940,6 +29121,11 @@ c_parser_omp_declare_target (c_parser *parser)
 	    error_at (OMP_CLAUSE_LOCATION (c),
 		      "%qD specified both in declare target %<link%> and %qs"
 		      " clauses", t, OMP_CLAUSE_ENTER_TO (c) ? "to" : "enter");
+	  else if (OMP_CLAUSE_CODE (c) == OMP_CLAUSE_LOCAL
+		   || value_member (get_identifier ("local"), TREE_VALUE (at2)))
+	    error_at (OMP_CLAUSE_LOCATION (c),
+		      "%qD specified both in declare target %<link%> and "
+		      "%<local%> clauses", t);
 	  else
 	    error_at (OMP_CLAUSE_LOCATION (c),
 		      "%qD specified both in declare target %<link%> and "
@@ -28949,6 +29135,11 @@ c_parser_omp_declare_target (c_parser *parser)
       if (!at1)
 	{
 	  DECL_ATTRIBUTES (t) = tree_cons (id, NULL_TREE, DECL_ATTRIBUTES (t));
+	  if (OMP_CLAUSE_CODE (c) == OMP_CLAUSE_LOCAL)
+	    TREE_VALUE (DECL_ATTRIBUTES (t))
+	      = tree_cons (NULL_TREE, get_identifier ("local"),
+			   TREE_VALUE (DECL_ATTRIBUTES (t)));
+
 	  if (TREE_CODE (t) != FUNCTION_DECL && !is_global_var (t))
 	    continue;
 
@@ -28959,9 +29150,30 @@ c_parser_omp_declare_target (c_parser *parser)
 	      if (ENABLE_OFFLOADING)
 		{
 		  g->have_offload = true;
-		  if (is_a <varpool_node *> (node))
+		  if (is_a <varpool_node *> (node)
+		      && OMP_CLAUSE_CODE (c) != OMP_CLAUSE_LOCAL)
 		    vec_safe_push (offload_vars, t);
 		}
+	    }
+	}
+      else
+	{
+	  bool saw_local = value_member (get_identifier ("local"),
+					 TREE_VALUE (at1));
+	  if (saw_local && OMP_CLAUSE_CODE (c) == OMP_CLAUSE_ENTER)
+	    {
+	      error_at (OMP_CLAUSE_LOCATION (c),
+			"%qD specified both in declare target %<local%> and "
+			"%qs clauses", t,
+			OMP_CLAUSE_ENTER_TO (c) ? "to" : "enter");
+	      continue;
+	    }
+	  else if (!saw_local && OMP_CLAUSE_CODE (c) == OMP_CLAUSE_LOCAL)
+	    {
+	      error_at (OMP_CLAUSE_LOCATION (c),
+			"%qD specified both in declare target %<local%> and "
+			"%<to%> or %<enter%> clauses", t);
+	      continue;
 	    }
 	}
       if (TREE_CODE (t) != FUNCTION_DECL)

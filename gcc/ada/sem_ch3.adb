@@ -2142,15 +2142,15 @@ package body Sem_Ch3 is
                  ("access to specific tagged type required (RM 3.9.2(9))", E);
             end if;
 
-            --  (Ada 2005: AI-230): Accessibility check for anonymous
+            --  Ada 2005 (AI-230): Accessibility check for anonymous
             --  components
 
-            if Type_Access_Level (Etype (E)) >
-               Deepest_Type_Access_Level (T)
+            if Static_Type_Access_Level (Etype (E))
+                 > Static_Type_Access_Level (T, Deepest => True)
             then
                Error_Msg_N
-                 ("expression has deeper access level than component " &
-                  "(RM 3.10.2 (12.2))", E);
+                 ("expression has deeper accessibility level than component"
+                  & " (RM 3.10.2(12.2))", E);
             end if;
 
             --  The initialization expression is a reference to an access
@@ -2163,8 +2163,8 @@ package body Sem_Ch3 is
               and then Present (Discriminal_Link (Entity (E)))
             then
                Error_Msg_N
-                 ("discriminant has deeper accessibility level than target",
-                  E);
+                 ("access discriminant has deeper accessibility level than"
+                  & " component (RM 3.10.2(12.2))", E);
             end if;
          end if;
       end if;
@@ -2319,12 +2319,6 @@ package body Sem_Ch3 is
       --  of the parameter block, etc. to catch illegal uses within the
       --  contract expression. Full analysis of the expression is done when
       --  the contract is processed.
-
-      function Contains_Lib_Incomplete_Type (Pkg : Entity_Id) return Boolean;
-      --  Check if a nested package has entities within it that rely on library
-      --  level private types where the full view has not been completed for
-      --  the purposes of checking if it is acceptable to freeze an expression
-      --  function at the point of declaration.
 
       procedure Handle_Late_Controlled_Primitive (Body_Decl : Node_Id);
       --  Determine whether Body_Decl denotes the body of a late controlled
@@ -2528,40 +2522,6 @@ package body Sem_Ch3 is
             Next_Entity (Ent);
          end loop;
       end Check_Entry_Contracts;
-
-      ----------------------------------
-      -- Contains_Lib_Incomplete_Type --
-      ----------------------------------
-
-      function Contains_Lib_Incomplete_Type (Pkg : Entity_Id) return Boolean is
-         Curr : Entity_Id;
-
-      begin
-         --  Avoid looking through scopes that do not meet the precondition of
-         --  Pkg not being within a library unit spec.
-
-         if not Is_Compilation_Unit (Pkg)
-           and then not Is_Generic_Instance (Pkg)
-           and then not In_Package_Body (Enclosing_Lib_Unit_Entity (Pkg))
-         then
-            --  Loop through all entities in the current scope to identify
-            --  an entity that depends on a private type.
-
-            Curr := First_Entity (Pkg);
-            loop
-               if Nkind (Curr) in N_Entity
-                 and then Depends_On_Private (Curr)
-               then
-                  return True;
-               end if;
-
-               exit when Last_Entity (Current_Scope) = Curr;
-               Next_Entity (Curr);
-            end loop;
-         end if;
-
-         return False;
-      end Contains_Lib_Incomplete_Type;
 
       --------------------------------------
       -- Handle_Late_Controlled_Primitive --
@@ -2806,10 +2766,6 @@ package body Sem_Ch3 is
                Check_Entry_Contracts;
 
             elsif Nkind (Parent (L)) /= N_Package_Specification then
-               if Nkind (Parent (L)) = N_Package_Body then
-                  Freeze_From := First_Entity (Current_Scope);
-               end if;
-
                --  There may have been several freezing points previously,
                --  for example object declarations or subprogram bodies, but
                --  at the end of a declarative part we check freezing from
@@ -2881,7 +2837,7 @@ package body Sem_Ch3 is
                Resolve_Aspects;
             end if;
 
-         --  If next node is a body then freeze all types before the body.
+         --  If next node is a body, then freeze all entities before the body.
          --  An exception occurs for some expander-generated bodies. If these
          --  are generated at places where in general language rules would not
          --  allow a freeze point, then we assume that the expander has
@@ -2892,25 +2848,11 @@ package body Sem_Ch3 is
 
          --  In all other cases (bodies that come from source, and expander
          --  generated bodies that have not been analyzed yet), freeze all
-         --  types now. Note that in the latter case, the expander must take
-         --  care to attach the bodies at a proper place in the tree so as to
-         --  not cause unwanted freezing at that point. The exception is the
-         --  generated body of an expression function, which does not freeze.
+         --  entities now. Note that in the latter case, the expander must
+         --  take care to attach the bodies at a proper place in the tree,
+         --  so as not to cause unwanted freezing at that point.
 
-         --  It is also necessary to check for a case where both an expression
-         --  function is used and the current scope depends on an incomplete
-         --  private type from a library unit, otherwise premature freezing of
-         --  the private type will occur.
-
-         elsif not Analyzed (Next_Decl)
-           and then Is_Body (Next_Decl)
-           and then ((Nkind (Next_Decl) /= N_Subprogram_Body
-                      or else not Was_Expression_Function (Next_Decl))
-                     or else (not Is_Ignored_Ghost_Entity_In_Codegen
-                                    (Current_Scope)
-                              and then not Contains_Lib_Incomplete_Type
-                                             (Current_Scope)))
-         then
+         elsif Is_Body (Next_Decl) and then not Analyzed (Next_Decl) then
             --  When a controlled type is frozen, the expander generates stream
             --  and controlled-type support routines. If the freeze is caused
             --  by the stand-alone body of Initialize, Adjust, or Finalize, the
@@ -5264,17 +5206,28 @@ package body Sem_Ch3 is
          Rewrite (Object_Definition (N), New_Occurrence_Of (Act_T, Loc));
          Freeze_Before (N, Act_T);
 
-      --  If this is a constant declaration of an unconstrained type and
-      --  the initialization is an aggregate, we can use the subtype of the
-      --  aggregate for the declared entity because it is immutable.
+      --  If this is the declaration of a constant whose nominal subtype is an
+      --  unconstrained discriminated record type, or a constrained array type
+      --  whose component type is such a type, then we can use the subtype of
+      --  the aggregate for the constant because it is immutable.
 
-      elsif not Is_Constrained (T)
-        and then Has_Discriminants (T)
-        and then Constant_Present (N)
-        and then not Has_Unchecked_Union (T)
-        and then Nkind (E) = N_Aggregate
-      then
-         Act_T := Etype (E);
+      elsif Constant_Present (N) and then Nkind (E) = N_Aggregate then
+         declare
+            function Is_UDR (Typ : Entity_Id) return Boolean is
+              (not Is_Constrained (Typ)
+                and then Has_Discriminants (Typ)
+                and then not Has_Unchecked_Union (Typ));
+            --  Whether Typ is an unconstrained discriminated record type
+
+         begin
+            if Is_UDR (T)
+              or else (Is_Array_Type (T)
+                        and then Is_Constrained (T)
+                        and then Is_UDR (Component_Type (T)))
+            then
+               Act_T := Etype (E);
+            end if;
+         end;
       end if;
 
       --  Check No_Wide_Characters restriction
@@ -6431,7 +6384,7 @@ package body Sem_Ch3 is
               and then not (Is_Internal (Id)
                              and then Is_TSS (Scope (Id),
                                               TSS_Composite_Equality))
-              and then not Within_Init_Proc
+              and then not Inside_Init_Proc
               and then not All_Composite_Constraints_Static (Cstr)
             then
                Check_Restriction (No_Dynamic_Sized_Objects, Cstr);
@@ -8767,8 +8720,6 @@ package body Sem_Ch3 is
          --  In any case, the primitive operations are inherited from the
          --  parent type, not from the internal full view.
 
-         Set_Etype (Base_Type (Derived_Type), Base_Type (Parent_Type));
-
          if Derive_Subps then
             --  Initialize the list of primitive operations to an empty list,
             --  to cover tagged types as well as untagged types. For untagged
@@ -8780,12 +8731,13 @@ package body Sem_Ch3 is
             Derive_Subprograms (Parent_Type, Derived_Type);
          end if;
 
+         Set_Has_Constrained_Partial_View
+           (Derived_Type, Has_Constrained_Partial_View (Par_Base));
+         Set_Is_Constrained (Derived_Type, Is_Constrained (Parent_Type));
          Set_Stored_Constraint (Derived_Type, No_Elist);
-         Set_Is_Constrained
-           (Derived_Type, Is_Constrained (Available_Full_View (Parent_Type)));
 
       else
-         --  Untagged type, No discriminants on either view
+         --  Untagged type, no discriminants on either view
 
          if Nkind (Subtype_Indication (Type_Definition (N))) =
                                                    N_Subtype_Indication
@@ -9496,7 +9448,9 @@ package body Sem_Ch3 is
       --  type, mark it accordingly.
 
       if Is_Private_Type (Parent_Type) then
-         if Scope (Parent_Base) = Scope (Derived_Type) then
+         if Scope (Parent_Base) = Scope (Derived_Type)
+           and then not Is_Generic_Type (Parent_Base)
+         then
             null;
 
          elsif In_Open_Scopes (Scope (Parent_Base))
@@ -9641,14 +9595,15 @@ package body Sem_Ch3 is
             New_Discrs := No_Elist;
          end if;
 
+         --  RM 7.3(13) says that the constraints on the full view must
+         --  statically match those given in the partial view, but we
+         --  implement full conformance instead for historical reasons.
+
          if Has_Discriminants (Derived_Type)
            and then Has_Private_Declaration (Derived_Type)
            and then Present (Discriminant_Constraint (Derived_Type))
            and then Present (New_Discrs)
          then
-            --  Verify that constraints of the full view statically match
-            --  those given in the partial view.
-
             declare
                C1, C2 : Elmt_Id;
 
@@ -9668,8 +9623,8 @@ package body Sem_Ch3 is
                   else
                      if Constraint_Present then
                         Error_Msg_N
-                          ("constraint not conformant to previous declaration",
-                           Node (C1));
+                          ("constraint not conformant with previous "
+                           & "declaration", Node (C1));
                      else
                         Error_Msg_N
                           ("constraint of full view is incompatible "
@@ -9820,31 +9775,37 @@ package body Sem_Ch3 is
          if Ada_Version >= Ada_2005 then
             Check_Generic_Ancestors;
 
-         elsif Type_Access_Level (Derived_Type) /=
-                 Type_Access_Level (Parent_Type)
+         --  In Ada 95, the accessibility level of a record extension cannot
+         --  be deeper than that of its parent type.
+
+         elsif Static_Type_Access_Level (Derived_Type)
+                 > Static_Type_Access_Level (Parent_Type)
            and then not Is_Generic_Type (Derived_Type)
          then
             if Is_Controlled (Parent_Type) then
                Error_Msg_N
-                 ("controlled type must be declared at the library level",
-                  Indic);
+                 ("controlled type must be declared at the library level"
+                  & " (RM 3.9.1(3))", Indic);
             else
                Error_Msg_N
-                 ("type extension at deeper accessibility level than parent",
-                  Indic);
+                 ("type extension at deeper accessibility level than parent"
+                  & " (RM 3.9.1(3))", Indic);
             end if;
+
+         --  In Ada 95, a type extension cannot be declared in a generic body
+         --  if the parent type is declared outside that body.
 
          else
             declare
                GB : constant Node_Id := Enclosing_Generic_Body (Derived_Type);
+
             begin
                if Present (GB)
                  and then GB /= Enclosing_Generic_Body (Parent_Base)
                then
                   Error_Msg_NE
                     ("parent type of& must not be outside generic body"
-                       & " (RM 3.9.1(4))",
-                         Indic, Derived_Type);
+                     & " (RM 3.9.1(4))", Indic, Derived_Type);
                end if;
             end;
          end if;
@@ -9977,17 +9938,19 @@ package body Sem_Ch3 is
 
             Discs := Build_Discriminant_Constraints (Parent_Type, Indic, True);
 
-            --  For untagged types all new discriminants must rename
-            --  discriminants in the parent. For private extensions new
-            --  discriminants cannot rename old ones (implied by [7.3(13)]).
-
             Discrim := First_Discriminant (Derived_Type);
             while Present (Discrim) loop
+               --  For untagged types, all new discriminants must rename
+               --  discriminants in the parent.
+
                if not Is_Tagged
                  and then No (Corresponding_Discriminant (Discrim))
                then
                   Error_Msg_N
                     ("new discriminants must constrain old ones", Discrim);
+
+               --  For private extensions, new discriminants cannot rename
+               --  old ones (implied by RM 7.3(13)).
 
                elsif Private_Extension
                  and then Present (Corresponding_Discriminant (Discrim))
@@ -9995,14 +9958,12 @@ package body Sem_Ch3 is
                   Error_Msg_N
                     ("only static constraints allowed for parent"
                      & " discriminants in the partial view", Indic);
-                  exit;
-               end if;
 
                --  If a new discriminant is used in the constraint, then its
                --  subtype must be statically compatible with the subtype of
                --  the parent discriminant (RM 3.7(15)).
 
-               if Present (Corresponding_Discriminant (Discrim)) then
+               elsif Present (Corresponding_Discriminant (Discrim)) then
                   Check_Constraining_Discriminant
                     (Discrim, Corresponding_Discriminant (Discrim));
                end if;
@@ -10010,10 +9971,14 @@ package body Sem_Ch3 is
                Next_Discriminant (Discrim);
             end loop;
 
-            --  Check whether the constraints of the full view statically
-            --  match those imposed by the parent subtype [7.3(13)].
+            --  RM 7.3(13) says that the constraints on the full view must
+            --  statically match those given in the partial view, but we
+            --  implement full conformance instead for historical reasons.
 
-            if Present (Stored_Constraint (Derived_Type)) then
+            if Has_Private_Declaration (Derived_Type)
+              and then Present (Stored_Constraint (Derived_Type))
+              and then Present (Discs)
+            then
                declare
                   C1, C2 : Elmt_Id;
 
@@ -10021,12 +9986,19 @@ package body Sem_Ch3 is
                   C1 := First_Elmt (Discs);
                   C2 := First_Elmt (Stored_Constraint (Derived_Type));
                   while Present (C1) and then Present (C2) loop
-                     if not
-                       Fully_Conformant_Expressions (Node (C1), Node (C2))
+                     if Fully_Conformant_Expressions (Node (C1), Node (C2))
+                       or else
+                         (Is_OK_Static_Expression (Node (C1))
+                           and then Is_OK_Static_Expression (Node (C2))
+                           and then
+                            Expr_Value (Node (C1)) = Expr_Value (Node (C2)))
                      then
+                        null;
+
+                     else
                         Error_Msg_N
-                          ("not conformant with previous declaration",
-                           Node (C1));
+                          ("constraint not conformant with previous "
+                           & "declaration", Node (C1));
                      end if;
 
                      Next_Elmt (C1);
@@ -10127,6 +10099,8 @@ package body Sem_Ch3 is
       Propagate_Concurrent_Flags (Derived_Type, Parent_Base);
       Propagate_Controlled_Flags (Derived_Type, Parent_Base, Deriv => True);
 
+      Set_Has_Constrained_Partial_View
+        (Derived_Type, Has_Constrained_Partial_View (Parent_Base));
       Set_Has_Non_Standard_Rep
         (Derived_Type, Has_Non_Standard_Rep     (Parent_Base));
       Set_Has_Primitive_Operations
@@ -11195,7 +11169,7 @@ package body Sem_Ch3 is
             Mutate_Ekind (Def_Id, Ekind (T));
          end if;
 
-         if For_Access and then Within_Init_Proc then
+         if For_Access and then Inside_Init_Proc then
             null;
          else
             Append_Elmt (Def_Id, Private_Dependents (T));
@@ -16989,7 +16963,8 @@ package body Sem_Ch3 is
 
       --  Derived subprograms of a tagged type must inherit the convention
       --  of the parent subprogram (a requirement of AI95-117). Derived
-      --  subprograms of untagged types simply get convention Ada by default.
+      --  subprograms of untagged types get convention Ada by default for
+      --  historical reasons, although RM 6.3.1(7) says it is intrinsic.
 
       --  If the derived type is a tagged generic formal type with unknown
       --  discriminants, its convention is intrinsic (RM 6.3.1 (8)).
@@ -18422,8 +18397,9 @@ package body Sem_Ch3 is
                --  of the type.
 
                if Scope (Root_Class_Typ) /= Scope (T)
-                 and then Deepest_Type_Access_Level (Root_Class_Typ)
-                            < Deepest_Type_Access_Level (T)
+                 and then
+                   Static_Type_Access_Level (Root_Class_Typ, Deepest => True)
+                     < Static_Type_Access_Level (T)
                then
                   Error_Msg_NE
                     ("descendant of mutably tagged type cannot be deeper than"
@@ -18923,7 +18899,6 @@ package body Sem_Ch3 is
             Set_Full_View (Prev, Id);
             Append_Entity (Id, Current_Scope);
             Set_Is_Public (Id, Is_Public (Prev));
-            Set_Is_Internal (Id);
             New_Id := Prev;
 
             --  If the incomplete view is tagged, a class_wide type has been
@@ -21954,15 +21929,6 @@ package body Sem_Ch3 is
          if Priv_Parent = Any_Type or else Full_Parent = Any_Type then
             goto Leave;
 
-         --  Ada 2005 (AI-251): Interfaces in the full type can be given in
-         --  any order. Therefore we don't have to check that its parent must
-         --  be a descendant of the parent of the private type declaration.
-
-         elsif Is_Interface (Priv_Parent)
-           and then Is_Interface (Full_Parent)
-         then
-            null;
-
          --  Ada 2005 (AI-251): If the parent of the private type declaration
          --  is an interface there is no need to check that it is an ancestor
          --  of the associated full type declaration. The required tests for
@@ -21975,116 +21941,95 @@ package body Sem_Ch3 is
               ("parent of full type must descend from parent of private "
                & "extension", Full_Indic);
 
-         --  First check a formal restriction, and then proceed with checking
-         --  Ada rules. Since the formal restriction is not a serious error, we
-         --  don't prevent further error detection for this check, hence the
-         --  ELSE.
+         --  Check the rules of 7.3(10): if the private extension inherits
+         --  known discriminants, then the full type must also inherit those
+         --  discriminants from the same (ancestor) type, and the parent
+         --  subtype of the full type must be constrained if and only if
+         --  the ancestor subtype of the private extension is constrained.
 
-         else
-            --  Check the rules of 7.3(10): if the private extension inherits
-            --  known discriminants, then the full type must also inherit those
-            --  discriminants from the same (ancestor) type, and the parent
-            --  subtype of the full type must be constrained if and only if
-            --  the ancestor subtype of the private extension is constrained.
-
-            if No (Discriminant_Specifications (Parent (Priv_T)))
-              and then not Has_Unknown_Discriminants (Priv_T)
-              and then Has_Discriminants (Base_Type (Priv_Parent))
-            then
-               declare
-                  Priv_Indic  : constant Node_Id :=
-                                  Subtype_Indication (Parent (Priv_T));
-
-                  Priv_Constr : constant Boolean :=
-                                  Is_Constrained (Priv_Parent)
-                                    or else
-                                      Nkind (Priv_Indic) = N_Subtype_Indication
-                                    or else
-                                      Is_Constrained (Entity (Priv_Indic));
-
-                  Full_Constr : constant Boolean :=
-                                  Is_Constrained (Full_Parent)
-                                    or else
-                                      Nkind (Full_Indic) = N_Subtype_Indication
-                                    or else
-                                      Is_Constrained (Entity (Full_Indic));
-
-                  Priv_Discr : Entity_Id;
-                  Full_Discr : Entity_Id;
-
-               begin
-                  Priv_Discr := First_Discriminant (Priv_Parent);
-                  Full_Discr := First_Discriminant (Full_Parent);
-                  while Present (Priv_Discr) and then Present (Full_Discr) loop
-                     if Original_Record_Component (Priv_Discr) =
-                        Original_Record_Component (Full_Discr)
-                          or else
-                        Corresponding_Discriminant (Priv_Discr) =
-                        Corresponding_Discriminant (Full_Discr)
-                     then
-                        null;
-                     else
-                        exit;
-                     end if;
-
-                     Next_Discriminant (Priv_Discr);
-                     Next_Discriminant (Full_Discr);
-                  end loop;
-
-                  if Present (Priv_Discr) or else Present (Full_Discr) then
-                     Error_Msg_N
-                       ("full view must inherit discriminants of the parent "
-                        & "type used in the private extension", Full_Indic);
-
-                  elsif Priv_Constr and then not Full_Constr then
-                     Error_Msg_N
-                       ("parent subtype of full type must be constrained",
-                        Full_Indic);
-
-                  elsif Full_Constr and then not Priv_Constr then
-                     Error_Msg_N
-                       ("parent subtype of full type must be unconstrained",
-                        Full_Indic);
-                  end if;
-               end;
-
-               --  Check the rules of 7.3(12): if a partial view has neither
-               --  known or unknown discriminants, then the full type
-               --  declaration shall define a definite subtype.
-
-            elsif not Has_Unknown_Discriminants (Priv_T)
-              and then not Has_Discriminants (Priv_T)
-              and then not Is_Constrained (Full_T)
-            then
-               Error_Msg_N
-                 ("full view must define a constrained type if partial view "
-                  & "has no discriminants", Full_T);
-            end if;
-
-            --  Do we implement the following properly???
-            --  If the ancestor subtype of a private extension has constrained
-            --  discriminants, then the parent subtype of the full view shall
-            --  impose a statically matching constraint on those discriminants
-            --  [7.3(13)].
-         end if;
-
-      else
-         --  For untagged types, verify that a type without discriminants is
-         --  not completed with an indefinite type.
-
-         if Is_Definite_Subtype (Priv_T)
-           and then not Is_Definite_Subtype (Full_T)
+         elsif No (Discriminant_Specifications (Parent (Priv_T)))
+           and then not Has_Unknown_Discriminants (Priv_T)
+           and then Has_Discriminants (Base_Type (Priv_Parent))
          then
-            Error_Msg_Sloc := Sloc (Parent (Priv_T));
-            Error_Msg_NE
-              ("full view of& not compatible with declaration#",
-               Full_T, Priv_T);
+            declare
+               Full_Inherits_Discr : constant Boolean :=
+                 not (Nkind (Parent (Full_T)) = N_Full_Type_Declaration
+                      and then
+                        Present
+                          (Discriminant_Specifications (Parent (Full_T))));
 
-            if not Is_Tagged_Type (Full_T) then
-               Error_Msg_N
-                 ("\one is constrained, the other unconstrained", Full_T);
-            end if;
+               Priv_Indic : constant Node_Id :=
+                 Subtype_Indication (Parent (Priv_T));
+
+               Priv_Constr : constant Boolean :=
+                 Is_Constrained (Priv_Parent)
+                 or else Nkind (Priv_Indic) = N_Subtype_Indication
+                 or else Is_Constrained (Entity (Priv_Indic));
+
+               Full_Constr : constant Boolean :=
+                 Full_Inherits_Discr
+                 and then
+                   (Is_Constrained (Full_Parent)
+                    or else Nkind (Full_Indic) = N_Subtype_Indication
+                    or else Is_Constrained (Entity (Full_Indic)));
+
+               Priv_Discr : Entity_Id;
+               Full_Discr : Entity_Id;
+
+            begin
+               Priv_Discr := First_Discriminant (Priv_Parent);
+               Full_Discr := First_Discriminant (Full_Parent);
+               while Present (Priv_Discr) and then Present (Full_Discr) loop
+                  if Original_Record_Component (Priv_Discr)
+                    = Original_Record_Component (Full_Discr)
+                    or else
+                      Corresponding_Discriminant (Priv_Discr)
+                      = Corresponding_Discriminant (Full_Discr)
+                  then
+                     null;
+                  else
+                     exit;
+                  end if;
+
+                  Next_Discriminant (Priv_Discr);
+                  Next_Discriminant (Full_Discr);
+               end loop;
+
+               if not Full_Inherits_Discr
+                 or else Present (Priv_Discr)
+                 or else Present (Full_Discr)
+               then
+                  Error_Msg_N
+                    ("full view must inherit discriminants of the parent "
+                     & "type used in the private extension", Full_Indic);
+
+               elsif Priv_Constr and then not Full_Constr then
+                  Error_Msg_N
+                    ("parent subtype of full type must be constrained",
+                     Full_Indic);
+
+               elsif Full_Constr and then not Priv_Constr then
+                  Error_Msg_N
+                    ("parent subtype of full type must be unconstrained",
+                     Full_Indic);
+               end if;
+            end;
          end if;
+      end if;
+
+      --  Check the rules of 7.3 (12): if a partial view has neither known or
+      --  unknown discriminants, then the full type declaration shall define a
+      --  definite subtype.
+
+      if not Has_Discriminants (Priv_T)
+        and then not Has_Unknown_Discriminants (Priv_T)
+        and then not Is_Definite_Subtype (Full_T)
+      then
+         Error_Msg_Sloc := Sloc (Parent (Priv_T));
+         Error_Msg_N
+           ("full view must be definite since partial view# has no "
+            & "discriminants",
+            Full_T);
       end if;
 
       --  RM 7.3 (10.1/3): verify that the use of "limited" is consistent
@@ -23493,8 +23438,8 @@ package body Sem_Ch3 is
 
    procedure Record_Type_Definition (Def : Node_Id; Prev_T : Entity_Id) is
       Component            : Entity_Id;
-      Final_Storage_Only   : Boolean := True;
-      Relaxed_Finalization : Boolean := True;
+      Final_Storage_Only   : Boolean;
+      Relaxed_Finalization : Boolean;
       T                    : Entity_Id;
 
    begin
@@ -23502,6 +23447,17 @@ package body Sem_Ch3 is
          T := Full_View (Prev_T);
       else
          T := Prev_T;
+      end if;
+
+      --  Initialize Final_Storage_Only and Relaxed_Finalization from the
+      --  current state if we have inherited controlled components.
+
+      if Has_Controlled_Component (T) then
+         Final_Storage_Only := Finalize_Storage_Only (T);
+         Relaxed_Finalization := Has_Relaxed_Finalization (T);
+      else
+         Final_Storage_Only := True;
+         Relaxed_Finalization := True;
       end if;
 
       Set_Is_Not_Self_Hidden (T);
@@ -23568,13 +23524,12 @@ package body Sem_Ch3 is
          if Ekind (Component) /= E_Component then
             null;
 
-         --  Do not set Has_Controlled_Component on a class-wide equivalent
-         --  type. See Make_CW_Equivalent_Type.
+         --  Do not set Has_Controlled_Component on a CW equivalent type,
+         --  see Exp_Util.Make_CW_Equivalent_Type.
 
          elsif not Is_Class_Wide_Equivalent_Type (T)
-           and then (Has_Controlled_Component (Etype (Component))
-                      or else (Chars (Component) /= Name_uParent
-                                and then Is_Controlled (Etype (Component))))
+           and then Chars (Component) /= Name_uParent
+           and then Needs_Finalization (Etype (Component))
          then
             Set_Has_Controlled_Component (T);
             Final_Storage_Only :=
@@ -23591,7 +23546,7 @@ package body Sem_Ch3 is
       --  For a type that is not directly controlled but has controlled
       --  components, Finalize_Storage_Only is set if all the controlled
       --  components are Finalize_Storage_Only. The same processing is
-      --  appled to Has_Relaxed_Finalization.
+      --  applied to Has_Relaxed_Finalization.
 
       if not Is_Controlled (T) and then Has_Controlled_Component (T) then
          Set_Finalize_Storage_Only    (T, Final_Storage_Only);

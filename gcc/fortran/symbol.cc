@@ -108,7 +108,7 @@ gfc_gsymbol *gfc_gsym_root = NULL;
 
 gfc_symbol *gfc_derived_types;
 
-static gfc_undo_change_set default_undo_chgset_var = { vNULL, vNULL, NULL };
+static gfc_undo_change_set default_undo_chgset_var = { vNULL, vNULL, vNULL, NULL };
 static gfc_undo_change_set *latest_undo_chgset = &default_undo_chgset_var;
 
 
@@ -216,6 +216,11 @@ gfc_merge_new_implicit (gfc_typespec *ts)
 	  gfc_current_ns->set_flag[i] = 1;
 	}
     }
+
+  /* The charlen belongs to ns->default_type; remove it.  */
+  if (ts->type == BT_CHARACTER && ts->u.cl)
+    gfc_remove_saved_charlen (ts->u.cl);
+
   return true;
 }
 
@@ -689,7 +694,6 @@ gfc_check_conflict (symbol_attribute *attr, const char *name, locus *where)
   conf (value, subroutine)
   conf (value, function)
   conf (value, volatile_)
-  conf (value, dimension)
   conf (value, codimension)
   conf (value, external)
 
@@ -2490,6 +2494,10 @@ static void
 find_derived_types (gfc_symbol *sym, gfc_symtree *st, const char *name,
 		    bool contained, bool stash)
 {
+  /* Visit in order so that the result does not depend on the tree shape.  */
+  if (st->left)
+    find_derived_types (sym, st->left, name, contained, stash);
+
   if (st->n.sym && st->n.sym->attr.flavor == FL_DERIVED
       && !st->n.sym->attr.is_class
       && ((contained && st->n.sym->attr.use_assoc) || !contained)
@@ -2509,9 +2517,6 @@ find_derived_types (gfc_symbol *sym, gfc_symtree *st, const char *name,
 	}
     }
 
-  if (st->left)
-    find_derived_types (sym, st->left, name, contained, stash);
-
   if (st->right)
     find_derived_types (sym, st->right, name, contained, stash);
 }
@@ -2521,7 +2526,8 @@ gfc_find_derived_types (gfc_symbol *sym, gfc_namespace *ns,
 			const char *name, bool stash)
 {
   gfc_namespace *encompassing = NULL;
-  gcc_assert (sym->assoc);
+  if (sym->assoc == NULL)
+    return 0;
 
   cts = 0;
   while (ns->parent)
@@ -3812,8 +3818,9 @@ restore_old_symbol (gfc_symbol *p)
   p->mark = 0;
   old = p->old_symbol;
 
-  p->ts.type = old->ts.type;
-  p->ts.kind = old->ts.kind;
+  /* Restore the whole typespec, not just type/kind, so ts.u.cl doesn't
+     dangle.  */
+  p->ts = old->ts;
 
   p->attr = old->attr;
 
@@ -3872,6 +3879,7 @@ free_undo_change_set_data (gfc_undo_change_set &cs)
 {
   cs.syms.release ();
   cs.tbps.release ();
+  cs.cls.release ();
 }
 
 
@@ -3930,6 +3938,7 @@ gfc_drop_last_undo_checkpoint (void)
 
   latest_undo_chgset->previous->syms.safe_splice (latest_undo_chgset->syms);
   latest_undo_chgset->previous->tbps.safe_splice (latest_undo_chgset->tbps);
+  latest_undo_chgset->previous->cls.safe_splice (latest_undo_chgset->cls);
 
   pop_undo_change_set (latest_undo_chgset);
 }
@@ -4037,6 +4046,36 @@ gfc_restore_last_undo_checkpoint (void)
   latest_undo_chgset->syms.truncate (0);
   latest_undo_chgset->tbps.truncate (0);
 
+  /* Remove charlens added during this failed parse attempt.  These are
+     zombie charlens whose length expressions may reference symtrees that
+     have just been freed above via delete_symbol_from_ns.  */
+  {
+    gfc_charlen *cl;
+    unsigned i;
+
+    FOR_EACH_VEC_ELT_REVERSE (latest_undo_chgset->cls, i, cl)
+      {
+	gfc_namespace *ns = cl->cl_ns;
+	if (ns != NULL)
+	  {
+	    if (ns->cl_list == cl)
+	      ns->cl_list = cl->next;
+	    else
+	      {
+		gfc_charlen *prev;
+		for (prev = ns->cl_list; prev && prev->next != cl;
+		     prev = prev->next)
+		  ;
+		if (prev)
+		  prev->next = cl->next;
+	      }
+	  }
+	gfc_free_expr (cl->length);
+	free (cl);
+      }
+    latest_undo_chgset->cls.truncate (0);
+  }
+
   if (!single_undo_checkpoint_p ())
     pop_undo_change_set (latest_undo_chgset);
 }
@@ -4117,6 +4156,9 @@ gfc_commit_symbols (void)
   FOR_EACH_VEC_ELT (latest_undo_chgset->tbps, i, tbp)
     tbp->error = 0;
   latest_undo_chgset->tbps.truncate (0);
+
+  /* Charlens are committed to the namespace; just clear the tracking vector.  */
+  latest_undo_chgset->cls.truncate (0);
 }
 
 
@@ -4318,8 +4360,28 @@ gfc_new_charlen (gfc_namespace *ns, gfc_charlen *old_cl)
   /* Put into namespace.  */
   cl->next = ns->cl_list;
   ns->cl_list = cl;
+  cl->cl_ns = ns;
+
+  /* Track in undo mechanism so reject_statement can remove zombie charlens.  */
+  latest_undo_chgset->cls.safe_push (cl);
 
   return cl;
+}
+
+
+/* Remove the charlen without freeing it.  */
+
+void
+gfc_remove_saved_charlen (gfc_charlen *cl)
+{
+  gfc_charlen *tracked;
+  unsigned j;
+  FOR_EACH_VEC_ELT (latest_undo_chgset->cls, j, tracked)
+    if (tracked == cl)
+      {
+	latest_undo_chgset->cls.unordered_remove (j);
+	return;
+      }
 }
 
 
@@ -4390,6 +4452,16 @@ gfc_free_namespace (gfc_namespace *&ns)
   gfc_free_finalizer_list (ns->finalizers);
   gfc_free_omp_declare_simd_list (ns->omp_declare_simd);
   gfc_free_omp_declare_variant_list (ns->omp_declare_variant);
+
+  /* Remove charlen before freeing.  */
+  {
+    gfc_charlen *cl;
+    unsigned j;
+    FOR_EACH_VEC_ELT (latest_undo_chgset->cls, j, cl)
+      if (cl->cl_ns == ns)
+	latest_undo_chgset->cls.unordered_remove (j--);
+  }
+
   gfc_free_charlen (ns->cl_list, NULL);
   free_st_labels (ns->st_labels);
 
@@ -4627,6 +4699,10 @@ gfc_enforce_clean_symbol_state(void)
 {
   enforce_single_undo_checkpoint ();
   gcc_assert (latest_undo_chgset->syms.is_empty ());
+  /* Charlens may be accumulated by non-tentative contexts such as resolution
+     and translation.  Clear them here so tentative parsing in the next
+     statement starts with a clean slate.  */
+  latest_undo_chgset->cls.truncate (0);
 }
 
 
@@ -5628,6 +5704,39 @@ gfc_is_associate_pointer (gfc_symbol* sym)
 }
 
 
+/* Check if the actual argument of a dummy must be passed directly, rather
+   than through a copy-in/copy-out temporary.  A pointer associated with an
+   assumed shape or assumed rank TARGET dummy has to stay valid after the
+   call, so its actual argument is never copied and its elements can be
+   spaced by more than the element size.  CLASS and assumed type entities
+   already carry their element size and are excluded.  */
+
+bool
+gfc_dummy_requires_direct_arg (gfc_symbol *sym)
+{
+  return sym->attr.dummy
+	 && sym->attr.target
+	 && !sym->attr.value
+	 && !sym->attr.contiguous
+	 && !IS_POINTER (sym)
+	 && sym->ts.type != BT_ASSUMED
+	 && ((sym->ts.type == BT_CLASS
+	      && sym->ts.u.derived->attr.is_class
+	      && CLASS_DATA (sym)->attr.dimension
+	      && !CLASS_DATA (sym)->attr.allocatable
+	      && CLASS_DATA (sym)->as
+	      && (CLASS_DATA (sym)->as->type == AS_ASSUMED_SHAPE
+		  || CLASS_DATA (sym)->as->type == AS_ASSUMED_RANK))
+	     || (!(sym->ts.type == BT_CLASS
+		   && sym->ts.u.derived->attr.is_class)
+		 && sym->attr.dimension
+		 && !sym->attr.allocatable
+		 && sym->as
+		 && (sym->as->type == AS_ASSUMED_SHAPE
+		     || sym->as->type == AS_ASSUMED_RANK)));
+}
+
+
 gfc_symbol *
 gfc_find_dt_in_generic (gfc_symbol *sym)
 {
@@ -5857,8 +5966,7 @@ mark_vars_as_used (gfc_expr **e, int *walk_subtrees, void *data)
     return 0;
 
   sym->attr.value_used = how_used;
-  if (sym->other_loc.nextc == NULL)
-    sym->other_loc = expr->where;
+  sym->other_loc = expr->where;
 
   return 0;
 }
@@ -5894,7 +6002,7 @@ gfc_value_set_and_used (gfc_expr *expr, locus *loc, enum value_set how_set,
 /* ALLOCATE (A(N)) means that N is used, but A is not marked as such.  */
 
 void
-gfc_used_in_allocate_expr (gfc_expr *expr, locus *loc)
+gfc_used_in_allocate_expr (gfc_expr *expr, locus *loc, enum var_allocated how)
 {
   gfc_symbol *sym;
   enum value_used prev_used;
@@ -5909,13 +6017,17 @@ gfc_used_in_allocate_expr (gfc_expr *expr, locus *loc)
   gfc_value_used_expr (expr, VALUE_USED);
   sym->attr.value_used = prev_used;
   sym->other_loc = prev_loc;
-  sym->attr.allocated = 1;
+
+  if (how <= sym->attr.allocated)
+    return;
+
+  sym->attr.allocated = how;
 
   if (sym->extra_loc.nextc == NULL)
     sym->extra_loc = *loc;
 }
 
-/* Mark a symbol to allocated.  */
+/* Mark a symbol as allocated.  */
 
 bool
 gfc_lvalue_allocated_at (gfc_symbol *sym, locus *loc)
@@ -5923,7 +6035,7 @@ gfc_lvalue_allocated_at (gfc_symbol *sym, locus *loc)
   if (sym->other_loc.nextc == 0)
     sym->other_loc = *loc;
 
-  sym->attr.allocated = 1;
+  sym->attr.allocated = ALLOCATED_ASSIGNMENT;
   return true;
 }
 

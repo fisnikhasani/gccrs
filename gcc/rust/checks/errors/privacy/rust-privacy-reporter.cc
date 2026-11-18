@@ -97,7 +97,7 @@ void
 PrivacyReporter::check_violation_inner (NodeId ref_node_id,
 					const location_t locus)
 {
-  auto vis = mappings.lookup_visibility (ref_node_id);
+  auto vis = mappings.ast.module_visibility.lookup (ref_node_id);
 
   // FIXME: Can we really return here if the item has no visibility?
   if (!vis)
@@ -574,13 +574,6 @@ PrivacyReporter::visit (HIR::RangeToExpr &expr)
 void
 PrivacyReporter::visit (HIR::RangeFullExpr &)
 {}
-
-void
-PrivacyReporter::visit (HIR::RangeFromToInclExpr &expr)
-{
-  expr.get_from_expr ().accept_vis (*this);
-  expr.get_to_expr ().accept_vis (*this);
-}
 
 void
 PrivacyReporter::visit (HIR::RangeToInclExpr &)

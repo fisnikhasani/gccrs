@@ -26,7 +26,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple.h"
 #include "gimplify.h"
 #include "ssa.h"
-#include "tree-pretty-print.h"
 #include "fold-const.h"
 #include "gimple-range.h"
 #include "value-range-storage.h"
@@ -159,21 +158,18 @@ vrange_storage::alloc (vrange_internal_alloc &allocator, const vrange &r,
 void
 vrange_storage::set_vrange (const vrange &r)
 {
-  if (is_a <irange> (r))
+  if (irange_storage *s = dyn_irange ())
     {
-      irange_storage *s = static_cast <irange_storage *> (this);
       gcc_checking_assert (s->fits_p (as_a <irange> (r)));
       s->set_irange (as_a <irange> (r));
     }
-  else if (is_a <prange> (r))
+  else if (prange_storage *s = dyn_prange ())
     {
-      prange_storage *s = static_cast <prange_storage *> (this);
       gcc_checking_assert (s->fits_p (as_a <prange> (r)));
       s->set_prange (as_a <prange> (r));
     }
-  else if (is_a <frange> (r))
+  else if (frange_storage *s = dyn_frange ())
     {
-      frange_storage *s = static_cast <frange_storage *> (this);
       gcc_checking_assert (s->fits_p (as_a <frange> (r)));
       s->set_frange (as_a <frange> (r));
     }
@@ -199,21 +195,12 @@ vrange_storage::set_vrange (const vrange &r)
 void
 vrange_storage::get_vrange (vrange &r, tree type) const
 {
-  if (is_a <irange> (r))
-    {
-      const irange_storage *s = static_cast <const irange_storage *> (this);
-      s->get_irange (as_a <irange> (r), type);
-    }
-  else if (is_a <prange> (r))
-    {
-      const prange_storage *s = static_cast <const prange_storage *> (this);
-      s->get_prange (as_a <prange> (r), type);
-    }
-  else if (is_a <frange> (r))
-    {
-      const frange_storage *s = static_cast <const frange_storage *> (this);
-      s->get_frange (as_a <frange> (r), type);
-    }
+  if (const irange_storage *s = dyn_irange ())
+    s->get_irange (as_a <irange> (r), type);
+  else if (const prange_storage *s = dyn_prange ())
+    s->get_prange (as_a <prange> (r), type);
+  else if (const frange_storage *s = dyn_frange ())
+    s->get_frange (as_a <frange> (r), type);
   else
     gcc_unreachable ();
 }
@@ -223,23 +210,13 @@ vrange_storage::get_vrange (vrange &r, tree type) const
 bool
 vrange_storage::fits_p (const vrange &r) const
 {
-  if (is_a <irange> (r))
-    {
-      const irange_storage *s = static_cast <const irange_storage *> (this);
-      return s->fits_p (as_a <irange> (r));
-    }
-  if (is_a <prange> (r))
-    {
-      const prange_storage *s = static_cast <const prange_storage *> (this);
-      return s->fits_p (as_a <prange> (r));
-    }
-  if (is_a <frange> (r))
-    {
-      const frange_storage *s = static_cast <const frange_storage *> (this);
-      return s->fits_p (as_a <frange> (r));
-    }
+  if (const irange_storage *s = dyn_irange ())
+    return s->fits_p (as_a <irange> (r));
+  if (const prange_storage *s = dyn_prange ())
+    return s->fits_p (as_a <prange> (r));
+  if (const frange_storage *s = dyn_frange ())
+    return s->fits_p (as_a <frange> (r));
   gcc_unreachable ();
-  return false;
 }
 
 // Return TRUE if the range in storage is equal to R.  It is the
@@ -249,21 +226,12 @@ vrange_storage::fits_p (const vrange &r) const
 bool
 vrange_storage::equal_p (const vrange &r) const
 {
-  if (is_a <irange> (r))
-    {
-      const irange_storage *s = static_cast <const irange_storage *> (this);
-      return s->equal_p (as_a <irange> (r));
-    }
-  if (is_a <prange> (r))
-    {
-      const prange_storage *s = static_cast <const prange_storage *> (this);
-      return s->equal_p (as_a <prange> (r));
-    }
-  if (is_a <frange> (r))
-    {
-      const frange_storage *s = static_cast <const frange_storage *> (this);
-      return s->equal_p (as_a <frange> (r));
-    }
+  if (const irange_storage *s = dyn_irange ())
+    return s->equal_p (as_a <irange> (r));
+  if (const prange_storage *s = dyn_prange ())
+    return s->equal_p (as_a <prange> (r));
+  if (const frange_storage *s = dyn_frange ())
+    return s->equal_p (as_a <frange> (r));
   gcc_unreachable ();
 }
 
@@ -507,15 +475,29 @@ debug (const irange_storage &storage)
 // frange_storage implementation
 //============================================================================
 
+// Return the number of bytes to allocate for an frange_storage holding R.
+
+size_t
+frange_storage::size (const frange &r)
+{
+  return sizeof (frange_storage) + (r.num_pairs () - 1) * sizeof (frange_pair);
+}
+
 // Allocate a new frange_storage object initialized to R.
 
 frange_storage *
 frange_storage::alloc (vrange_internal_alloc &allocator, const frange &r)
 {
-  size_t size = sizeof (frange_storage);
-  frange_storage *p = static_cast <frange_storage *> (allocator.alloc (size));
+  frange_storage *p
+    = static_cast <frange_storage *> (allocator.alloc (size (r)));
   new (p) frange_storage (r);
   return p;
+}
+
+frange_storage::frange_storage (const frange &r)
+  : vrange_storage (VR_FRANGE), m_max_ranges (r.num_pairs ())
+{
+  set_frange (r);
 }
 
 void
@@ -524,8 +506,9 @@ frange_storage::set_frange (const frange &r)
   gcc_checking_assert (fits_p (r));
 
   m_kind = r.m_kind;
-  m_min = r.m_min;
-  m_max = r.m_max;
+  m_num_ranges = r.m_num_ranges;
+  for (unsigned i = 0; i < r.m_num_ranges; ++i)
+    m_pairs[i] = r.m_pairs[i];
   m_pos_nan = r.m_pos_nan;
   m_neg_nan = r.m_neg_nan;
 }
@@ -554,14 +537,19 @@ frange_storage::get_frange (frange &r, tree type) const
       r.set_undefined ();
       return;
     }
+  if (m_kind == VR_VARYING)
+    {
+      r.set_varying (type);
+      return;
+    }
 
-  // We use the constructor to create the new range instead of writing
-  // out the bits into the frange directly, because the global range
-  // being read may be being inlined into a function with different
-  // restrictions as when it was originally written.  We want to make
-  // sure the resulting range is canonicalized correctly for the new
-  // consumer.
-  r = frange (type, m_min, m_max, m_kind);
+  // Rebuild piecewise, like irange_storage::get_irange().
+  r.set_undefined ();
+  for (unsigned i = 0; i < m_num_ranges; ++i)
+    {
+      frange tmp (type, m_pairs[i].min, m_pairs[i].max, m_kind);
+      r.union_ (tmp);
+    }
 
   // The constructor will set the NAN bits for HONOR_NANS, but we must
   // make sure to set the NAN sign if known.
@@ -583,9 +571,9 @@ frange_storage::equal_p (const frange &r) const
 }
 
 bool
-frange_storage::fits_p (const frange &) const
+frange_storage::fits_p (const frange &r) const
 {
-  return true;
+  return m_max_ranges >= r.num_pairs ();
 }
 
 //============================================================================
@@ -609,8 +597,8 @@ prange_storage::alloc (vrange_internal_alloc &allocator, const prange &r,
   size_t size = sizeof (prange_storage) + extra_size;
   prange_storage *p = static_cast <prange_storage *> (allocator.alloc (size));
   new (p) prange_storage (r);
-  if (p->m_pt && !shared_p)
-    p->m_pt = unshare_expr_without_location (p->m_pt);
+  if (p->m_addr && !shared_p)
+    p->m_addr = unshare_expr_without_location (p->m_addr);
 
   return p;
 }
@@ -619,11 +607,33 @@ prange_storage::alloc (vrange_internal_alloc &allocator, const prange &r,
 
 prange_storage::prange_storage (const prange &r) : vrange_storage (VR_PRANGE)
 {
+  // None of these is part of the range, so none is ever copied from one.
+  // Only the accessors in tree-ssanames.cc ever make them non-zero, and
+  // range_info_set_range carries them across a reallocation.
+  pt = NULL;
+
   unsigned num_words;
   enum prange_kind kind = prange_format (r, num_words);
   unsigned short prec = (kind == PR_UNDEFINED) ? 0 : TYPE_PRECISION (r.type ());
   m_trailing_ints.set_precision (prec, num_words);
   set_prange (r);
+}
+
+// Return TRUE if R is exactly the nonzero set [1, MAX], which prange_storage
+// encodes compactly as PR_NONZERO.
+//
+// Compare the bounds against a fresh set_nonzero () rather than using
+// prange::operator==, because operator== also compares the bitmask and
+// address info, which are stored separately here, so a non-null pointer that
+// also carries e.g. an alignment bitmask still belongs in PR_NONZERO.
+
+static inline bool
+nonzero_range_p (const prange &r)
+{
+  prange nonzero (r.type ());
+  nonzero.set_nonzero (r.type ());
+  return (r.lower_bound () == nonzero.lower_bound ()
+	  && r.upper_bound () == nonzero.upper_bound ());
 }
 
 // Return the prange_kind for range R, and the number of words of storage
@@ -644,7 +654,7 @@ prange_storage::prange_format (const prange &r, unsigned &num_words)
 
   enum prange_kind kind = PR_NONZERO;
 
-  if (!r.nonzero_p ())
+  if (!nonzero_range_p (r))
     {
       prange tmp (r.type ());
       if (r.lower_bound () == tmp.lower_bound ()
@@ -662,9 +672,9 @@ prange_storage::prange_format (const prange &r, unsigned &num_words)
   if (!r.get_bitmask ().unknown_p ())
     num_words += 2;
 
-  // PR_FULL must have a bitmask or points to, or it should be PR_VARYING.
+  // PR_FULL must have a bitmask or an address, or it should be PR_VARYING.
   gcc_checking_assert (kind != PR_FULL || !r.get_bitmask ().unknown_p ()
-		       || r.m_pt != NULL_TREE);
+		       || r.m_addr != NULL_TREE);
   return kind;
 }
 
@@ -673,9 +683,9 @@ prange_storage::set_prange (const prange &r)
 {
   unsigned num_words;
   m_kind = prange_format (r, num_words);
-  m_has_bitmask = !r.get_bitmask ().unknown_p ();
-  m_pt = r.m_pt;
-  m_points_to_p = r.m_points_to_p;
+  m_has_bitmask = false;
+  m_known_p = false;
+  m_addr = r.m_addr;
 
   unsigned index = 0;
 
@@ -695,6 +705,9 @@ prange_storage::set_prange (const prange &r)
       default:
 	gcc_unreachable ();
     }
+
+  m_has_bitmask = !r.get_bitmask ().unknown_p ();
+  m_known_p = r.m_known_p;
 
   if (m_has_bitmask)
     {
@@ -760,8 +773,8 @@ prange_storage::get_prange (prange &r, tree type) const
   else
     r.m_bitmask.set_unknown (TYPE_PRECISION (type));
 
-  r.m_points_to_p = m_points_to_p;
-  r.m_pt = m_pt;
+  r.m_known_p = m_known_p;
+  r.m_addr = m_addr;
 
   if (flag_checking)
     r.verify_range ();
@@ -783,7 +796,7 @@ prange_storage::equal_p (const prange &r) const
 	return r.zero_p ();
 
       case PR_NONZERO:
-	if (!r.nonzero_p ())
+	if (!nonzero_range_p (r))
 	  return false;
 	break;
 
@@ -815,9 +828,10 @@ prange_storage::equal_p (const prange &r) const
     if (!r.m_bitmask.unknown_p ())
       return false;
 
-  if (m_pt != r.m_pt)
+  if (m_addr != r.m_addr)
     return false;
-  if (m_points_to_p != r.m_points_to_p)
+  // Storage objects are only equal If they point to the same memory.
+  if (m_known_p != r.m_known_p)
     return false;
 
   return true;
@@ -834,6 +848,88 @@ prange_storage::fits_p (const prange &r) const
   unsigned num_words;
   prange_format (r, num_words);
   return num_words <= m_trailing_ints.num_elements ();
+}
+
+// Ensure this range of type TYPE does not contain zero.
+
+void
+prange_storage::set_nonnull (tree type)
+{
+  gcc_checking_assert (m_kind != PR_UNDEFINED);
+  switch (m_kind)
+    {
+      case PR_VARYING:
+      case PR_FULL:
+	m_kind = PR_NONZERO;
+	return;
+
+      case PR_NONZERO:
+	return;
+
+      case PR_ZERO:
+	m_kind = PR_UNDEFINED;
+	return;
+
+      case PR_OTHER:
+	if (get_word (0, type) != 0)
+	  return;
+	// [0,1] -> [1,1] is a special case and requires adjustments.
+	// otherwise we can simply set the lower bound to 1.
+	if (get_word (1, type) != 1)
+	  set_word (0, wi::one (TYPE_PRECISION (type)), type);
+	else
+	  {
+	    // This is very uncoomon, and rather than trying to cover
+	    // the edge cases (ie, bitmask present, address present)
+	    // simply load the range, remove zero, and resave it.
+	    prange pr;
+	    this->get_vrange (pr, type);
+	    prange nz;
+	    nz.set_nonzero (type);
+	    if (pr.intersect (nz))
+	      this->set_prange (pr);
+	  }
+	return;
+
+      default:
+	gcc_unreachable ();
+    }
+}
+
+irange_bitmask
+prange_storage::get_bitmask (tree type) const
+{
+  gcc_checking_assert (m_kind != PR_UNDEFINED);
+  unsigned prec = TYPE_PRECISION (type);
+  unsigned index = 0;
+
+  switch (m_kind)
+    {
+      case PR_VARYING:
+	return irange_bitmask (prec);
+
+      case PR_ZERO:
+	return irange_bitmask (type, wi::zero (prec), wi::zero (prec));
+
+      case PR_NONZERO:
+      case PR_FULL:
+	break;
+
+      case PR_OTHER:
+	index = 2;
+	break;
+
+      default:
+	gcc_unreachable ();
+    }
+
+  if (m_has_bitmask)
+    {
+      wide_int value = get_word (index++, type);
+      wide_int mask = get_word (index++, type);
+      return irange_bitmask (value, mask);
+    }
+  return irange_bitmask (prec);
 }
 
 

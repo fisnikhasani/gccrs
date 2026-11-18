@@ -33,7 +33,7 @@
    that are part of the external ABI, and the lower case prefix "gomp"
    is used group items that are completely private to the library.  */
 
-#ifndef LIBGOMP_H 
+#ifndef LIBGOMP_H
 #define LIBGOMP_H 1
 
 #ifndef _LIBGOMP_CHECKING_
@@ -59,6 +59,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <limits.h>
 
 /* Needed for memset in priority_queue.c.  */
 #if _LIBGOMP_CHECKING_
@@ -200,9 +201,56 @@ extern void gomp_vfatal (const char *, va_list)
 extern void gomp_fatal (const char *, ...)
 	__attribute__ ((noreturn, format (printf, 1, 2)));
 
+#if _LIBGOMP_CHECKING_
+#define gomp_assert(EXPR, MSG, ...)					       \
+  do									       \
+    {									       \
+      if (!(EXPR))							       \
+	gomp_fatal ("%s:%d " MSG, __FILE__, __LINE__, ##__VA_ARGS__);	       \
+    }									       \
+  while (0)
+#else
+#define gomp_assert(...)						       \
+  do									       \
+    {									       \
+    }									       \
+  while (0)
+#endif
+
 struct gomp_task;
 struct gomp_taskgroup;
 struct htab;
+
+struct gomp_barrier_extra_alloc_needs
+{
+  size_t size;
+  size_t align;
+};
+
+enum gomp_barrier_type
+{
+  GOMP_TREE_BARRIER,
+  GOMP_FLAT_BARRIER,
+  GOMP_CENTRALIZED_BARRIER,
+  GOMP_BARRIER_BY_SPINCOUNT
+};
+extern enum gomp_barrier_type gomp_barrier_request;
+extern enum gomp_barrier_type gomp_forkjoin_barrier_request;
+
+extern unsigned long long gomp_spin_count_var, gomp_throttled_spin_count_var;
+extern unsigned long gomp_available_cpus, gomp_managed_threads;
+
+static inline unsigned long long
+spin_count ()
+{
+  unsigned long long count = gomp_spin_count_var;
+  if (__builtin_expect (__atomic_load_n (&gomp_managed_threads,
+					 MEMMODEL_RELAXED)
+			  > gomp_available_cpus,
+			0))
+    count = gomp_throttled_spin_count_var;
+  return count;
+}
 
 #include "priority_queue.h"
 #include "sem.h"
@@ -405,7 +453,7 @@ extern char gomp_workshare_struct_check1
 extern char gomp_workshare_struct_check2
   [offsetof (struct gomp_work_share, lock) == 64 ? 1 : -1];
 
-/* This structure contains all of the thread-local data associated with 
+/* This structure contains all of the thread-local data associated with
    a thread team.  This is the data that must be saved when a thread
    encounters a nested PARALLEL construct.  */
 
@@ -415,7 +463,7 @@ struct gomp_team_state
   struct gomp_team *team;
 
   /* This is the work share construct which this thread is currently
-     processing.  Recall that with NOWAIT, not all threads may be 
+     processing.  Recall that with NOWAIT, not all threads may be
      processing the same construct.  */
   struct gomp_work_share *work_share;
 
@@ -494,7 +542,7 @@ enum gomp_device_num
    section 2.3.1.  Those described as having one copy per task are
    stored within the structure; those described as having one copy
    for the whole program are (naturally) global variables.  */
-   
+
 struct gomp_task_icv
 {
   unsigned long nthreads_var;
@@ -590,17 +638,23 @@ enum gomp_target_offload_t
   GOMP_TARGET_OFFLOAD_DISABLED
 };
 
+enum gomp_runtime_usm_t
+{
+  GOMP_RUNTIME_USM_DISABLED,
+  GOMP_RUNTIME_USM_AUTO,
+  GOMP_RUNTIME_USM_ENABLED
+};
+
 #define gomp_supported_active_levels UCHAR_MAX
 
 extern struct gomp_task_icv gomp_global_icv;
 #ifndef HAVE_SYNC_BUILTINS
 extern gomp_mutex_t gomp_managed_threads_lock;
 #endif
+/* Included here for the variables.  */
 extern bool gomp_cancel_var;
 extern enum gomp_target_offload_t gomp_target_offload_var;
 extern int gomp_max_task_priority_var;
-extern unsigned long long gomp_spin_count_var, gomp_throttled_spin_count_var;
-extern unsigned long gomp_available_cpus, gomp_managed_threads;
 extern unsigned long *gomp_nthreads_var_list, gomp_nthreads_var_list_len;
 extern char *gomp_bind_var_list;
 extern unsigned long gomp_bind_var_list_len;
@@ -620,6 +674,7 @@ extern const size_t gomp_omp_allocator_data_size;
 extern const struct gomp_default_icv gomp_default_icv_values;
 extern struct gomp_icv_list *gomp_initial_icv_list;
 extern struct gomp_offload_icv_list *gomp_offload_icv_list;
+extern enum gomp_runtime_usm_t gomp_runtime_usm_var;
 extern int goacc_device_num;
 extern char *goacc_device_type;
 extern int goacc_default_dims[GOMP_DIM_MAX];
@@ -886,7 +941,28 @@ struct gomp_team
 #ifdef __AMDGCN__
   /* Used on AMD GCN to inform threads how to launch in a team.  */
   struct gomp_thread_start_data thr_start_data;
+#elif LIBGOMP_USE_PTHREADS
+  /* Cache to help initialise each secondary threads `task` when re-using a
+     team very many times.  This allows each secondary thread to perform the
+     re-initialisation instead of having the primary thread need to perform
+     that initialisation.  */
+  struct thread_init {
+    struct gomp_task_icv task_icv_init;
+    struct gomp_task *task_parent_init;
+    struct gomp_taskgroup *task_taskgroup;
+    uintptr_t def_allocator;
+    unsigned int num_teams;
+    unsigned int team_num;
+    void (*fn) (void *data);
+    void *data;
+  } ti;
+  struct prev_place_vars {
+    unsigned int place_partition_off;
+    unsigned int place_partition_len;
+    char bind;
+  } ppv;
 #endif
+  bool reused;
 
   /* This array contains structures for implicit tasks.  */
   struct gomp_task implicit_task[];
@@ -900,6 +976,7 @@ struct gomp_thread
   /* This is the function that the thread should run upon launch.  */
   void (*fn) (void *data);
   void *data;
+  bool exit;
 
 #ifdef __AMDGCN__
   /* And these are the parameters it should set.  */
@@ -962,6 +1039,7 @@ struct gomp_thread_pool
 
   /* This barrier holds and releases threads waiting in thread pools.  */
   gomp_simple_barrier_t threads_dock;
+  gomp_barrier_t *prev_barrier;
 };
 
 enum gomp_cancel_kind
@@ -1135,7 +1213,8 @@ extern unsigned gomp_dynamic_max_threads (void);
 extern void gomp_init_task (struct gomp_task *, struct gomp_task *,
 			    struct gomp_task_icv *);
 extern void gomp_end_task (void);
-extern void gomp_barrier_handle_tasks (gomp_barrier_state_t);
+extern void gomp_barrier_handle_tasks (gomp_barrier_state_t, gomp_barrier_t *,
+				       unsigned);
 extern void gomp_task_maybe_wait_for_dependencies (void **);
 extern bool gomp_create_target_task (struct gomp_device_descr *,
 				     void (*) (void *), size_t, void **,
@@ -1380,7 +1459,7 @@ typedef struct acc_dispatch_t
   __typeof (GOMP_OFFLOAD_openacc_create_thread_data) *create_thread_data_func;
   __typeof (GOMP_OFFLOAD_openacc_destroy_thread_data)
     *destroy_thread_data_func;
-  
+
   struct {
     /* Once created and put into the "active" list, asyncqueues are then never
        destructed and removed from the "active" list, other than if the TODO
@@ -1452,7 +1531,9 @@ struct gomp_device_descr
   __typeof (GOMP_OFFLOAD_get_numa_node) *get_numa_node_func;
   __typeof (GOMP_OFFLOAD_supported_teams_dim) *supported_teams_dim_func;
   __typeof (GOMP_OFFLOAD_supported_threads_dim) *supported_threads_dim_func;
+  __typeof (GOMP_OFFLOAD_get_gprivate_limit) *get_gprivate_limit_func;
   __typeof (GOMP_OFFLOAD_get_caps) *get_caps_func;
+  __typeof (GOMP_OFFLOAD_get_dev_caps) *get_dev_caps_func;
   __typeof (GOMP_OFFLOAD_get_type) *get_type_func;
   __typeof (GOMP_OFFLOAD_get_num_devices) *get_num_devices_func;
   __typeof (GOMP_OFFLOAD_init_device) *init_device_func;
@@ -1556,7 +1637,7 @@ extern struct target_mem_desc *goacc_map_vars (struct gomp_device_descr *,
 					       struct gomp_offload_session *);
 extern void goacc_unmap_vars (struct target_mem_desc *, bool,
 			      struct goacc_asyncqueue *);
-extern void gomp_init_device (struct gomp_device_descr *);
+extern void gomp_init_device (struct gomp_device_descr *, bool);
 extern bool gomp_fini_device (struct gomp_device_descr *);
 extern void gomp_unload_device (struct gomp_device_descr *);
 extern bool gomp_remove_var (struct gomp_device_descr *, splay_tree_key);

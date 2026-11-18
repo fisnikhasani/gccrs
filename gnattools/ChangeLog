@@ -1,3 +1,24 @@
+2026-11-10  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	* configure: Regenerate.
+
+2026-11-09  Alexandre Oliva  <oliva@adacore.com>
+
+	* Makefile.in (ADAC): New.
+	(TOOLS_FLAGS_TO_PASS_CROSS): Pass it down.
+	(TOOLS_FLAGS_TO_PASS_NATIVE, TOOLS_FLAGS_TO_PASS_RE): Pass
+	xgcc down instead.
+
+2026-10-21  Alexey Pavlov  <alexey.pawlow@gmail.com>
+
+	* Makefile.in: Enable EXTRA_GNATTOOLS for gnattools-native
+	target.
+
+2026-10-21  Zhongteng Gui  <dragon-archer@outlook.com>
+
+	* configure: Regenerate.
+	* configure.ac: Correct cygwin32 to cygwin.
+
 2026-06-29  Pietro Monteiro  <pietro@sociotechnical.xyz>
 
 	PR bootstrap/103459

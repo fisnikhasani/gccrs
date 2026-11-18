@@ -220,35 +220,13 @@ test -z "$INSTALL_DATA" && INSTALL_DATA='${INSTALL} -m 644'
 AC_SUBST(INSTALL_DATA)dnl
 ])
 
-dnl Determine if enumerated bitfields are unsigned.   ISO C says they can 
-dnl be either signed or unsigned.
-dnl
-AC_DEFUN([gcc_AC_C_ENUM_BF_UNSIGNED],
-[AC_CACHE_CHECK(for unsigned enumerated bitfields, gcc_cv_enum_bf_unsigned,
-[AC_RUN_IFELSE([AC_LANG_SOURCE([#include <stdlib.h>
-enum t { BLAH = 128 } ;
-struct s_t { enum t member : 8; } s ;
-int main(void)
-{            
-        s.member = BLAH;
-        if (s.member < 0) exit(1);
-        exit(0);
-
-}])], gcc_cv_enum_bf_unsigned=yes, gcc_cv_enum_bf_unsigned=no, gcc_cv_enum_bf_unsigned=yes)])
-if test $gcc_cv_enum_bf_unsigned = yes; then
-  AC_DEFINE(ENUM_BITFIELDS_ARE_UNSIGNED, 1,
-    [Define if enumerated bitfields are treated as unsigned values.])
-fi])
-
 dnl Probe number of bits in a byte.
 dnl Note C89 requires CHAR_BIT >= 8.
 dnl
 AC_DEFUN([gcc_AC_C_CHAR_BIT],
 [AC_CACHE_CHECK(for CHAR_BIT, gcc_cv_decl_char_bit,
 [AC_EGREP_CPP(found,
-[#ifdef HAVE_LIMITS_H
-#include <limits.h>
-#endif
+[#include <limits.h>
 #ifdef CHAR_BIT
 found
 #endif], gcc_cv_decl_char_bit=yes, gcc_cv_decl_char_bit=no)
@@ -308,8 +286,8 @@ int (*fp) (void) __attribute__ ((section (".init_array"))) = foo;
 	    gcc_cv_initfini_array=yes
 	  fi
 	elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x -a x"$gcc_cv_objdump" != x ; then
-	  case $target:$solaris_as in
-	    i?86-*-solaris2*:yes | x86_64-*-solaris2*:yes)
+	  case $target:$as_flavor in
+	    i?86-*-solaris2*:solaris | x86_64-*-solaris2*:solaris)
 	      sh_flags='"a"'
 	      sh_type='@progbits'
 	      ;;
@@ -323,7 +301,7 @@ int (*fp) (void) __attribute__ ((section (".init_array"))) = foo;
 	      sh_type='%progbits'
 	      ;;
 	  esac
-	  if test x$solaris_ld = xno; then
+	  if test x$ld_flavor = xgnu; then
 	    cat > conftest.s <<EOF
 .section .dtors,$sh_flags,$sh_type
 .balign 4
@@ -462,7 +440,7 @@ dnl # Used by gcc_GAS_CHECK_FEATURE
 dnl #
 AC_DEFUN([gcc_GAS_FLAGS],
 [AC_CACHE_CHECK([assembler flags], gcc_cv_as_flags,
-[ case "$target:$gas" in
+[ case "$target:$as_flavor" in
   *-*-darwin*:*)
     dnl Darwin with the native assembler uses -arch i386/x86_64/ppc/ppc64.
     dnl
@@ -490,7 +468,7 @@ AC_DEFUN([gcc_GAS_FLAGS],
 	;;
     esac
     ;;
-  *-*-solaris2*:no)
+  *-*-solaris2*:solaris)
     dnl Solaris with the native assembler uses -m32/-m64 consistently.
     case "$target" in
       i?86-*-* | sparc-*-*)

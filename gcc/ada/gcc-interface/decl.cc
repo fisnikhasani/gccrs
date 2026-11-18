@@ -215,7 +215,7 @@ static bool compile_time_known_address_p (Node_Id);
 static bool flb_cannot_be_superflat (Node_Id);
 static bool range_cannot_be_superflat (Node_Id);
 static bool constructor_address_p (tree);
-static bool allocatable_size_p (tree, bool);
+static bool allocatable_size_p (tree, bool, bool);
 static bool initial_value_needs_conversion (tree, tree);
 static tree update_n_elem (tree, tree, tree);
 static int compare_field_bitpos (const void *, const void *);
@@ -307,6 +307,7 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
   const bool artificial_p = is_artificial (gnat_entity);
   /* True if debug info is requested for this entity.  */
   const bool debug_info_p = Needs_Debug_Info (gnat_entity);
+  const bool exported_p = Is_Exported (gnat_entity);
   /* True if this entity is to be considered as imported.  */
   const bool imported_p
     = (Is_Imported (gnat_entity) && No (Address_Clause (gnat_entity)));
@@ -543,12 +544,16 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 	  esize = UI_To_Int (Esize (gnat_entity));
 
 	  if (IN (kind, Float_Kind))
-#ifdef WIDEST_HARDWARE_FP_SIZE
-	    max_esize = fp_prec_to_size (WIDEST_HARDWARE_FP_SIZE);
-#else
-	    max_esize
-	      = fp_prec_to_size (TYPE_PRECISION (long_double_type_node));
-#endif
+	    {
+	      /* This block is executed the first time to translate the GNAT
+		 node corresponding to Gigi's longest_float_type_node, so the
+		 tree is not yet saved at this time.  */
+	      if (longest_float_type_node)
+		max_esize
+		  = fp_prec_to_size (TYPE_PRECISION (longest_float_type_node));
+	      else
+		max_esize = esize;
+	    }
 	  else if (IN (kind, Access_Kind))
 	    max_esize = POINTER_SIZE * 2;
 	  else
@@ -744,7 +749,7 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 	   objects by making them volatile.  */
 	bool volatile_flag
 	  = (Treat_As_Volatile (gnat_entity)
-	     || (!const_flag && (Is_Exported (gnat_entity) || imported_p)));
+	     || (!const_flag && (exported_p || imported_p)));
 	bool mutable_p = false;
 	bool used_by_ref = false;
 	tree gnu_ext_name = NULL_TREE;
@@ -935,7 +940,7 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 		    && kind != E_Out_Parameter
 		    && Is_Composite_Type (gnat_type)
 		    && !Is_Constr_Array_Subt_With_Bounds (gnat_type)
-		    && !Is_Exported (gnat_entity)
+		    && !exported_p
 		    && !imported_p
 		    && No (gnat_renamed_obj)
 		    && No (Address_Clause (gnat_entity))))
@@ -1411,7 +1416,8 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 	if (!allocatable_size_p (TYPE_SIZE_UNIT (gnu_type),
 				 global_bindings_p ()
 				 || !definition
-				 || static_flag)
+				 || static_flag,
+				 exported_p || imported_p)
 	    || (gnu_size
 		&& !allocatable_size_p (convert (sizetype,
 						 size_binop
@@ -1419,29 +1425,20 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 						  bitsize_unit_node)),
 					global_bindings_p ()
 					|| !definition
-					|| static_flag)))
+					|| static_flag,
+					exported_p || imported_p)))
 	  {
 	    /* Give a warning if the size is constant.  */
 	    if ((TREE_CODE (TYPE_SIZE_UNIT (gnu_type)) == INTEGER_CST
 		 || (gnu_size && TREE_CODE (gnu_size) == INTEGER_CST))
-		&& definition)
+		&& definition
+		&& (global_bindings_p () || static_flag))
 	      {
-		if (imported_p)
-		  {
-		    post_error
-		      ("??too large object cannot be imported directly",
-		       gnat_entity);
-		    post_error ("\\??indirect import will be used instead",
+		post_error
+		  ("??too large object cannot be allocated statically",
+		   gnat_entity);
+		post_error ("\\??dynamic allocation will be used instead",
 				gnat_entity);
-		  }
-		else if (global_bindings_p () || static_flag)
-		  {
-		    post_error
-		      ("??too large object cannot be allocated statically",
-		       gnat_entity);
-		    post_error ("\\??dynamic allocation will be used instead",
-				gnat_entity);
-		  }
 	      }
 
 	    if (volatile_flag && !TYPE_VOLATILE (gnu_type))
@@ -3041,9 +3038,10 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 	      process_attributes (&gnu_type, &attr_list, false, gnat_entity);
 	      if (Treat_As_Volatile (gnat_entity))
 		{
-		  const int quals
+		  const auto quals
 		    = TYPE_QUAL_VOLATILE
-		      | (Is_Full_Access (gnat_entity) ? TYPE_QUAL_ATOMIC : 0);
+		      | (Is_Full_Access (gnat_entity)
+			 ? TYPE_QUAL_ATOMIC : TYPE_UNQUALIFIED);
 		  gnu_type = change_qualified_type (gnu_type, quals);
 		}
 	      /* Make it artificial only if the base type was artificial too.
@@ -4992,9 +4990,10 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
       if (Treat_As_Volatile (gnat_entity)
 	  && !Is_Packed_Array_Impl_Type (gnat_entity))
 	{
-	  const int quals
+	  const auto quals
 	    = TYPE_QUAL_VOLATILE
-	      | (Is_Full_Access (gnat_entity) ? TYPE_QUAL_ATOMIC : 0);
+	      | (Is_Full_Access (gnat_entity)
+		 ? TYPE_QUAL_ATOMIC : TYPE_UNQUALIFIED);
 	  /* This is required by free_lang_data_in_type to disable the ODR.  */
 	  if (TREE_CODE (gnu_type) == ENUMERAL_TYPE)
 	    TYPE_STUB_DECL (gnu_type)
@@ -5666,9 +5665,10 @@ gnat_to_gnu_component_type (Entity_Id gnat_array, bool definition,
 
   if (Has_Volatile_Components (gnat_array))
     {
-      const int quals
+      const auto quals
 	= TYPE_QUAL_VOLATILE
-	  | (Has_Atomic_Components (gnat_array) ? TYPE_QUAL_ATOMIC : 0);
+	  | (Has_Atomic_Components (gnat_array)
+	     ? TYPE_QUAL_ATOMIC : TYPE_UNQUALIFIED);
       gnu_type = change_qualified_type (gnu_type, quals);
     }
 
@@ -7106,17 +7106,20 @@ constructor_address_p (tree gnu_expr)
 
 /* Return true if the size in units represented by GNU_SIZE can be handled by
    an allocation.  If STATIC_P is true, consider only what can be done with a
-   static allocation.  */
+   static allocation.  If INTERFACE_P is true, the allocation is intended to
+   be part of an explicit interface to other units, possibly foreign.  */
 
 static bool
-allocatable_size_p (tree gnu_size, bool static_p)
+allocatable_size_p (tree gnu_size, bool static_p, bool interface_p)
 {
   /* We can allocate a fixed size if it is a valid for the middle-end but, for
      a static allocation, we do not allocate more than 2 GB because this would
-     very likely be unintended and problematic for usual code models.  */
-  if (TREE_CODE (gnu_size) == INTEGER_CST)
-    return valid_constant_size_p (gnu_size)
-	   && (!static_p || tree_to_uhwi (gnu_size) <= INT_MAX);
+     very likely be unintended and problematic for usual code models.  But we
+     do not try to fiddle with allocations that are part of an interface.  */
+   if (TREE_CODE (gnu_size) == INTEGER_CST)
+    return (interface_p
+	    || (valid_constant_size_p (gnu_size)
+		&& (!static_p || tree_to_uhwi (gnu_size) <= INT_MAX)));
 
   /* We can allocate a variable size if this isn't a static allocation.  */
   else

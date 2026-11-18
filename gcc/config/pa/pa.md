@@ -2630,7 +2630,7 @@
       /* If we're trying to load the address of a label that happens to be
 	 close, then we can use a shorter sequence.  */
       if (INSN_ADDRESSES_SET_P ()
-	  && abs (INSN_ADDRESSES (INSN_UID (XEXP (operands[1], 0)))
+	  && abs (INSN_ADDRESSES (INSN_UID (label_ref_label (operands[1])))
 		  - INSN_ADDRESSES (INSN_UID (insn))) < 8100)
 	output_asm_insn (\"ldo %1-%2(%0),%0\", xoperands);
       else
@@ -2681,7 +2681,7 @@
       /* If we're trying to load the address of a label that happens to be
 	 close, then we can use a shorter sequence.  */
       if (INSN_ADDRESSES_SET_P ()
-	  && abs (INSN_ADDRESSES (INSN_UID (XEXP (operands[1], 0)))
+	  && abs (INSN_ADDRESSES (INSN_UID (label_ref_label (operands[1])))
 		  - INSN_ADDRESSES (INSN_UID (insn))) < 8100)
 	output_asm_insn (\"ldo %1-%2(%0),%0\", xoperands);
       else
@@ -2701,6 +2701,9 @@
   [(set_attr "type" "multi")
    (set_attr "length" "16")])		; 12 or 16
 
+;; DLTIND relocs need to be converted to DPREL relocs when PIC code
+;; isn't used in a shared object.  Currently, GNU ld only supports
+;; converting addil instructions.
 (define_insn ""
   [(set (match_operand:SI 0 "register_operand" "=a")
 	(plus:SI (match_operand:SI 1 "register_operand" "r")
@@ -2794,7 +2797,7 @@
   "reload_completed && TARGET_64BIT"
   "@
    addil L'%G2,%1
-   ldil L'%G2,%0\;{addl|add,l} %0,%1,%0"
+   ldil L'%G2,%0\;add,l %0,%1,%0"
   [(set_attr "type" "binary,binary")
    (set_attr "length" "4,8")])
 
@@ -10026,7 +10029,7 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 {
   rtx start = gen_reg_rtx (Pmode);
   rtx line_size = gen_reg_rtx (Pmode);
-  rtx lab = gen_label_rtx ();
+  rtx_code_label *lab = gen_label_rtx ();
   rtx op0 = operands[0];
   rtx op1 = operands[1];
 
@@ -10185,6 +10188,15 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
   "!TARGET_PORTABLE_RUNTIME && !TARGET_64BIT"
   "
 {
+  /* If operand 1 is an address calculation of a variable, do not emit
+     a redundant libcall wrapper.  Copy the address directly.  */
+  if (GET_CODE (operands[1]) == SYMBOL_REF
+      && !SYMBOL_REF_FUNCTION_P (operands[1]))
+    {
+      emit_move_insn (operands[0], operands[1]);
+      DONE;
+    }
+
   if (TARGET_ELF32)
     {
       rtx canonicalize_funcptr_for_compare_libfunc

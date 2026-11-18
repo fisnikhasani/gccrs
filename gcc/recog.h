@@ -23,6 +23,15 @@ along with GCC; see the file COPYING3.  If not see
 /* For enum tree_code ERROR_MARK.  */
 #include "tree.h"
 
+/* An operand reference of the form %[N] or %[MODIFIER:N[,N...]].  */
+struct bracketed_operand
+{
+  string_slice modifier;
+  auto_vec<unsigned long, 2> opnums;
+};
+
+extern bool parse_bracketed_operand (const char **, bracketed_operand &);
+
 /* Random number that should be large enough for all purposes.  Also define
    a type that has at least MAX_RECOG_ALTERNATIVES + 1 bits, with the extra
    bit giving an invalid value that can be used to mean "uninitialized".  */
@@ -50,7 +59,7 @@ struct operand_alternative
   const char *constraint;
 
   /* The register class valid for this alternative (possibly NO_REGS).  */
-  ENUM_BITFIELD (reg_class) cl : 16;
+  enum reg_class cl : 16;
 
   /* "Badness" of this alternative, computed from number of '?' and '!'
      characters in the constraint string.  */
@@ -385,6 +394,10 @@ extern bool raw_constraint_p;
 
 struct recog_data_d
 {
+  recog_data_d () = default;
+  recog_data_d (const recog_data_d &) = delete;
+  recog_data_d (const recog_data_d &&) = delete;
+
   /* It is very tempting to make the 5 operand related arrays into a
      structure and index on that.  However, to be source compatible
      with all of the existing md file insn constraints and output
@@ -443,19 +456,37 @@ struct recog_data_d
   rtx_insn *insn;
 };
 
-extern struct recog_data_d recog_data;
-
-/* RAII class for saving/restoring recog_data.  */
-
-class recog_data_saver
-{
-  recog_data_d m_saved_data;
-public:
-  recog_data_saver () : m_saved_data (recog_data) {}
-  ~recog_data_saver () { recog_data = m_saved_data; }
-};
+extern struct recog_data_d *recog_data_ptr;
+#define recog_data (*recog_data_ptr)
 
 #ifndef GENERATOR_FILE
+/* RAII class for saving/restoring recog_data.  */
+
+class recog_state_saver
+{
+  recog_data_d m_tmp_recog_data;
+public:
+  recog_state_saver ();
+  ~recog_state_saver ();
+
+  recog_data_d *saved_recog_data_ptr;
+  int saved_alternative;
+};
+
+inline recog_state_saver::recog_state_saver ()
+  : saved_recog_data_ptr (recog_data_ptr),
+    saved_alternative (which_alternative)
+{
+  m_tmp_recog_data.insn = nullptr;
+  recog_data_ptr = &m_tmp_recog_data;
+}
+
+inline recog_state_saver::~recog_state_saver ()
+{
+  recog_data_ptr = saved_recog_data_ptr;
+  which_alternative = saved_alternative;
+}
+
 extern const operand_alternative *recog_op_alt;
 
 /* Return a pointer to an array in which index OP describes the constraints
@@ -505,7 +536,7 @@ struct insn_operand_data
 
   const char *const constraint;
 
-  ENUM_BITFIELD(machine_mode) const mode : 16;
+  machine_mode const mode : 16;
 
   const char strict_low;
 
@@ -526,19 +557,21 @@ struct insn_operand_data
 struct insn_data_d
 {
   const char *const name;
-#if HAVE_DESIGNATED_UNION_INITIALIZERS
-  union {
+
+  /* How to print the insn.  OUTPUT_FORMAT says which member is live.  The
+     constructors let genoutput write the member's value directly, and pick
+     the member from its type.  */
+  union insn_output_u
+  {
     const char *single;
     const char *const *multi;
     insn_output_fn function;
+
+    constexpr insn_output_u () : single (nullptr) {}
+    constexpr insn_output_u (const char *s) : single (s) {}
+    constexpr insn_output_u (const char *const *m) : multi (m) {}
+    constexpr insn_output_u (insn_output_fn f) : function (f) {}
   } output;
-#else
-  struct {
-    const char *single;
-    const char *const *multi;
-    insn_output_fn function;
-  } output;
-#endif
   const insn_gen_fn genfun;
   const struct insn_operand_data *const operand;
 

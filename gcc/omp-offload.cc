@@ -272,7 +272,10 @@ omp_discover_declare_target_tgt_fn_r (tree *tp, int *walk_subtrees, void *data)
   else if (TREE_CODE (*tp) == OMP_TARGET)
     {
       tree c = omp_find_clause (OMP_CLAUSES (*tp), OMP_CLAUSE_DEVICE);
-      if (c && OMP_CLAUSE_DEVICE_ANCESTOR (c))
+      tree c2 = omp_find_clause (OMP_CLAUSES (*tp), OMP_CLAUSE_DEVICE_TYPE);
+      if ((c && OMP_CLAUSE_DEVICE_ANCESTOR (c))
+	   || (c2 && (OMP_CLAUSE_DEVICE_TYPE_KIND (c2)
+		      == OMP_CLAUSE_DEVICE_TYPE_HOST)))
 	*walk_subtrees = 0;
     }
   return NULL_TREE;
@@ -286,7 +289,10 @@ omp_discover_declare_target_fn_r (tree *tp, int *walk_subtrees, void *data)
   if (TREE_CODE (*tp) == OMP_TARGET)
     {
       tree c = omp_find_clause (OMP_CLAUSES (*tp), OMP_CLAUSE_DEVICE);
-      if (!c || !OMP_CLAUSE_DEVICE_ANCESTOR (c))
+      tree c2 = omp_find_clause (OMP_CLAUSES (*tp), OMP_CLAUSE_DEVICE_TYPE);
+      if ((!c || !OMP_CLAUSE_DEVICE_ANCESTOR (c))
+	  && (!c2 || (OMP_CLAUSE_DEVICE_TYPE_KIND (c2)
+		      != OMP_CLAUSE_DEVICE_TYPE_HOST)))
 	walk_tree_without_duplicates (&OMP_TARGET_BODY (*tp),
 				      omp_discover_declare_target_tgt_fn_r,
 				      data);
@@ -388,6 +394,29 @@ omp_discover_implicit_declare_target (void)
 				      omp_discover_declare_target_fn_r,
 				      &worklist);
     }
+
+  if (omp_requires_mask
+      & (OMP_REQUIRES_SELF_MAPS | OMP_REQUIRES_UNIFIED_SHARED_MEMORY))
+    FOR_EACH_VARIABLE (vnode)
+      {
+	tree attr;
+	/* If 'self_maps' or 'unified_shared_memory' is enabled,
+	   remove 'enter/to' and add 'link'.
+	   Note that "declare target local" is preserved and not converted.  */
+	if ((attr = lookup_attribute ("omp declare target",
+				      DECL_ATTRIBUTES (vnode->decl)))
+	    && !value_member (get_identifier ("local"), TREE_VALUE (attr)))
+	  {
+	    DECL_ATTRIBUTES (vnode->decl)
+	      = remove_attribute ("omp declare target",
+				  DECL_ATTRIBUTES (vnode->decl));
+	    if (!lookup_attribute ("omp declare target link",
+				   DECL_ATTRIBUTES (vnode->decl)))
+	      DECL_ATTRIBUTES (vnode->decl)
+		= tree_cons (get_identifier ("omp declare target link"),
+			     NULL_TREE, DECL_ATTRIBUTES (vnode->decl));
+	  }
+      }
 
   lang_hooks.decls.omp_finish_decl_inits ();
 }
@@ -1891,26 +1920,31 @@ oacc_rewrite_var_decl (tree *tp, int *walk_subtrees, void *data)
       if (!new_decl)
 	return NULL;
 
-      int base_quals = TYPE_QUALS (TREE_TYPE (*new_decl));
+      auto base_quals = TYPE_QUALS (TREE_TYPE (*new_decl));
+      cv_qualifier base_cv;
+      addr_space_t base_as;
+      std::tie (base_cv, base_as) = base_quals.split ();
       tree field = TREE_OPERAND (*tp, 1);
 
       /* Adjust the type of the field.  */
-      int field_quals = TYPE_QUALS (TREE_TYPE (field));
+      auto field_quals = TYPE_QUALS (TREE_TYPE (field));
       if (TREE_CODE (field) == FIELD_DECL && field_quals != base_quals)
 	{
 	  tree *field_type = &TREE_TYPE (field);
 	  while (TREE_CODE (*field_type) == ARRAY_TYPE)
 	    field_type = &TREE_TYPE (*field_type);
-	  field_quals |= base_quals;
+	  field_quals |= base_cv;
+	  field_quals.set_as (base_as);
 	  *field_type = build_qualified_type (*field_type, field_quals);
 	}
 
       /* Adjust the type of the component ref itself.  */
       tree comp_type = TREE_TYPE (*tp);
-      int comp_quals = TYPE_QUALS (comp_type);
+      auto comp_quals = TYPE_QUALS (comp_type);
       if (TREE_CODE (*tp) == COMPONENT_REF && comp_quals != base_quals)
 	{
-	  comp_quals |= base_quals;
+	  comp_quals |= base_cv;
+	  comp_quals.set_as (base_as);
 	  TREE_TYPE (*tp)
 	    = build_qualified_type (comp_type, comp_quals);
 	}

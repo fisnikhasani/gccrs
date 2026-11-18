@@ -1,3 +1,25 @@
+2026-11-10  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* configure: Regenerate.
+	* configure.ac: Remove unneeded AC_SUBST(target_alias).
+
+2026-10-21  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	* configure: Regenerate.
+	* m4/libtool.m4 (_LT_LANG_D_CONFIG): Use AC_LANG_PUSH,
+	AC_LANG_POP instead of AC_LANG_SAVE, AC_LANG_RESTORE.
+
+2026-10-16  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* configure: Regenerate.
+
+2026-07-10  Rainer Orth  <ro@CeBiTec.Uni-Bielefeld.DE>
+
+	* libdruntime/config/common/threadasm.S: Don't emit
+	.note.GNU-stack on NetBSD.
+
 2026-06-29  Pietro Monteiro  <pietro@sociotechnical.xyz>
 
 	PR bootstrap/103459

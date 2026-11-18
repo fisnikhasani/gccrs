@@ -38,6 +38,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "rtl-iter.h"
 #include "hard-reg-set.h"
 #include "function-abi.h"
+#include "hash-map.h"
+#include "tree-pass.h"
 
 /* Forward declarations */
 static void set_of_1 (rtx, const_rtx, void *);
@@ -1233,8 +1235,12 @@ reg_set_between_p (const_rtx reg, const rtx_insn *from_insn,
 /* Return true if REG is set or clobbered inside INSN.  */
 
 bool
-reg_set_p (const_rtx reg, const_rtx insn)
+reg_set_p (const_rtx reg, const_rtx uncast_insn)
 {
+  const rtx_insn *insn = dyn_cast <const rtx_insn *> (uncast_insn);
+  if (!insn)
+    return set_of (reg, uncast_insn) != NULL_RTX;
+
   /* After delay slot handling, call and branch insns might be in a
      sequence.  Check all the elements there.  */
   if (INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
@@ -1253,7 +1259,7 @@ reg_set_p (const_rtx reg, const_rtx insn)
 	  || (CALL_P (insn)
 	      && ((REG_P (reg)
 		   && REGNO (reg) < FIRST_PSEUDO_REGISTER
-		   && (insn_callee_abi (as_a<const rtx_insn *> (insn))
+		   && (insn_callee_abi (insn)
 		       .clobbers_reg_p (GET_MODE (reg), REGNO (reg))))
 		  || MEM_P (reg)
 		  || find_reg_fusage (insn, CLOBBER, reg)))))
@@ -1365,8 +1371,9 @@ modified_in_p (const_rtx x, const_rtx insn)
 	return true;
       if (MEM_READONLY_P (x))
 	return false;
-      if (memory_modified_in_insn_p (x, insn))
-	return true;
+      if (const rtx_insn *mem_insn = dyn_cast<const rtx_insn *> (insn))
+	if (memory_modified_in_insn_p (x, mem_insn))
+	  return true;
       return false;
 
     case REG:
@@ -1590,7 +1597,7 @@ single_set_2 (const rtx_insn *insn, const_rtx pat)
    false.  */
 
 bool
-multiple_sets (const_rtx insn)
+multiple_sets (const rtx_insn *insn)
 {
   bool found;
   int i;
@@ -2516,7 +2523,7 @@ dead_or_set_regno_p (const rtx_insn *insn, unsigned int test_regno)
    If DATUM is nonzero, look for one whose datum is DATUM.  */
 
 rtx
-find_reg_note (const_rtx insn, enum reg_note kind, const_rtx datum)
+find_reg_note (const rtx_insn *insn, enum reg_note kind, const_rtx datum)
 {
   rtx link;
 
@@ -2545,7 +2552,7 @@ find_reg_note (const_rtx insn, enum reg_note kind, const_rtx datum)
    it might be the case that the note overlaps REGNO.  */
 
 rtx
-find_regno_note (const_rtx insn, enum reg_note kind, unsigned int regno)
+find_regno_note (const rtx_insn *insn, enum reg_note kind, unsigned int regno)
 {
   rtx link;
 
@@ -2568,7 +2575,7 @@ find_regno_note (const_rtx insn, enum reg_note kind, unsigned int regno)
    has such a note.  */
 
 rtx
-find_reg_equal_equiv_note (const_rtx insn)
+find_reg_equal_equiv_note (const rtx_insn *insn)
 {
   rtx link;
 
@@ -2585,7 +2592,8 @@ find_reg_equal_equiv_note (const_rtx insn)
 	   in the comment in set_unique_reg_note.
 
 	   This should be changed into an assert.  */
-	if (GET_CODE (PATTERN (insn)) == PARALLEL && multiple_sets (insn))
+	if (GET_CODE (PATTERN (insn)) == PARALLEL
+	    && multiple_sets (insn))
 	  return 0;
 	return link;
       }
@@ -2620,7 +2628,7 @@ find_constant_src (const rtx_insn *insn)
    in the CALL_INSN_FUNCTION_USAGE information of INSN.  */
 
 bool
-find_reg_fusage (const_rtx insn, enum rtx_code code, const_rtx datum)
+find_reg_fusage (const rtx_insn *insn, enum rtx_code code, const_rtx datum)
 {
   /* If it's not a CALL_INSN, it can't possibly have a
      CALL_INSN_FUNCTION_USAGE field, so don't bother checking.  */
@@ -2665,7 +2673,7 @@ find_reg_fusage (const_rtx insn, enum rtx_code code, const_rtx datum)
    in the CALL_INSN_FUNCTION_USAGE information of INSN.  */
 
 bool
-find_regno_fusage (const_rtx insn, enum rtx_code code, unsigned int regno)
+find_regno_fusage (const rtx_insn *insn, enum rtx_code code, unsigned int regno)
 {
   rtx link;
 
@@ -2731,7 +2739,7 @@ alloc_reg_note (enum reg_note kind, rtx datum, rtx list)
 /* Add register note with kind KIND and datum DATUM to INSN.  */
 
 void
-add_reg_note (rtx insn, enum reg_note kind, rtx datum)
+add_reg_note (rtx_insn *insn, enum reg_note kind, rtx datum)
 {
   REG_NOTES (insn) = alloc_reg_note (kind, datum, REG_NOTES (insn));
 }
@@ -3415,7 +3423,8 @@ replace_rtx (rtx x, rtx from, rtx to, bool all_regs)
    the change in LABEL_NUSES if UPDATE_LABEL_NUSES.  */
 
 void
-replace_label (rtx *loc, rtx old_label, rtx new_label, bool update_label_nuses)
+replace_label (rtx *loc, rtx_insn *old_label, rtx_insn *new_label,
+	       bool update_label_nuses)
 {
   /* Handle jump tables specially, since ADDR_{DIFF_,}VECs can be long.  */
   rtx x = *loc;
@@ -3545,6 +3554,150 @@ tablejump_p (const rtx_insn *insn, rtx_insn **labelp,
   if (tablep)
     *tablep = as_a <rtx_jump_table_data *> (table);
   return true;
+}
+
+/* Return true if INSN is a tablejump whose table is shared with other
+   jumps (JUMP_TABLE_SHARED_P).  Store the label and the table as
+   tablejump_p does.  */
+
+bool
+shared_tablejump_p (const rtx_insn *insn, rtx_insn **labelp,
+		    rtx_jump_table_data **tablep)
+{
+  rtx_jump_table_data *table;
+  if (!tablejump_p (insn, labelp, &table)
+      || !JUMP_TABLE_SHARED_P (PATTERN (table)))
+    return false;
+
+  if (tablep)
+    *tablep = table;
+  return true;
+}
+
+/* Check the tablejump links in the current function's linear RTL chain.
+   This also works after the CFG has been released.  */
+
+void
+verify_jump_tables (void)
+{
+  struct table_users
+  {
+    unsigned int total;
+    unsigned int repeatable;
+  };
+  hash_set<rtx_insn *> live;
+  hash_map<rtx_insn *, table_users> users;
+  auto_vec<rtx_jump_table_data *> tables;
+  auto_vec<rtx_insn *> jumps;
+
+  for (rtx_insn *insn = get_insns (); insn; insn = NEXT_INSN (insn))
+    {
+      if (LABEL_P (insn) || JUMP_TABLE_DATA_P (insn))
+	live.add (insn);
+      if (JUMP_TABLE_DATA_P (insn))
+	{
+	  tables.safe_push (as_a<rtx_jump_table_data *> (insn));
+	  users.put (insn, { 0, 0 });
+	}
+      else if (JUMP_P (insn))
+	jumps.safe_push (insn);
+      else if (NONDEBUG_INSN_P (insn) && GET_CODE (PATTERN (insn)) == SEQUENCE)
+	for (int i = 0; i < XVECLEN (PATTERN (insn), 0); ++i)
+	  {
+	    rtx_insn *part = as_a<rtx_insn *> (XVECEXP (PATTERN (insn), 0, i));
+	    if (JUMP_P (part))
+	      jumps.safe_push (part);
+	  }
+    }
+
+  for (rtx_jump_table_data *table : tables)
+    {
+      rtx_insn *label = PREV_INSN (table);
+      if (!label || !LABEL_P (label) || !live.contains (label)
+	  || NEXT_INSN (label) != table)
+	fatal_insn ("jump table has no adjacent live label", table);
+    }
+
+  for (rtx_insn *jump : jumps)
+    {
+      rtx_insn *label = NULL;
+      if (tablejump_p (jump, &label, NULL)
+	  && !reg_mentioned_p (label, PATTERN (jump)))
+	fatal_insn ("tablejump pattern does not reference its label", jump);
+
+      /* A USE of a label identifies a tablejump even if its JUMP_LABEL
+	 or table was lost.  Also find table references in casesi patterns.  */
+      bool indirect = (!any_uncondjump_p (jump) && !any_condjump_p (jump)
+		       && !returnjump_p (jump));
+      subrtx_iterator::array_type array;
+      FOR_EACH_SUBRTX (iter, array, PATTERN (jump), ALL)
+	{
+	  const_rtx x = *iter;
+	  bool table_use = (indirect && GET_CODE (x) == USE
+			    && GET_CODE (XEXP (x, 0)) == LABEL_REF);
+	  if (table_use)
+	    x = XEXP (x, 0);
+	  else if (GET_CODE (x) != LABEL_REF)
+	    continue;
+	  rtx_insn *ref = label_ref_label (x);
+	  if (!table_use
+	      && (!LABEL_P (ref) || !NEXT_INSN (ref)
+		  || !JUMP_TABLE_DATA_P (NEXT_INSN (ref))))
+	    continue;
+	  if (!LABEL_P (ref) || !live.contains (ref))
+	    fatal_insn ("tablejump references a label outside the RTL chain",
+			jump);
+	  if (JUMP_LABEL (jump) != ref)
+	    fatal_insn ("tablejump pattern and JUMP_LABEL disagree", jump);
+	  if (!NEXT_INSN (ref) || !JUMP_TABLE_DATA_P (NEXT_INSN (ref))
+	      || !live.contains (NEXT_INSN (ref)))
+	    fatal_insn ("tablejump references a missing jump table", jump);
+	  label = ref;
+	}
+      if (label)
+	{
+	  table_users &count = *users.get (NEXT_INSN (label));
+	  ++count.total;
+	  if (!targetm.cannot_copy_insn_p || !targetm.cannot_copy_insn_p (jump))
+	    ++count.repeatable;
+	}
+    }
+
+  for (rtx_jump_table_data *table : tables)
+    {
+      /* A dispatch with private labels can also have an out-of-line
+	 execution template that references the same table.  */
+      const table_users &count = *users.get (table);
+      if (count.repeatable > 1 && !JUMP_TABLE_SHARED_P (PATTERN (table)))
+	fatal_insn ("jump table with multiple users is not marked shared",
+		    table);
+      if (!count.total)
+	continue;
+
+      /* While the CFG exists, a shared table follows one of the jumps
+	 through it.  Machine reorganization can place other insns between
+	 them later.  */
+      if ((cfun->curr_properties & PROP_cfg)
+	  && JUMP_TABLE_SHARED_P (PATTERN (table)))
+	{
+	  rtx_insn *label = PREV_INSN (table);
+	  rtx_insn *prev = prev_nonnote_nondebug_insn (label);
+	  while (prev && BARRIER_P (prev))
+	    prev = prev_nonnote_nondebug_insn (prev);
+	  if (!prev || !JUMP_P (prev) || JUMP_LABEL (prev) != label)
+	    fatal_insn ("shared jump table does not follow a jump through it",
+			table);
+	}
+      subrtx_iterator::array_type array;
+      FOR_EACH_SUBRTX (iter, array, PATTERN (table), ALL)
+	if (GET_CODE (*iter) == LABEL_REF)
+	  {
+	    rtx_insn *label = label_ref_label (*iter);
+	    if (!LABEL_P (label) || !live.contains (label))
+	      fatal_insn ("jump table references a label outside the RTL chain",
+			  table);
+	  }
+    }
 }
 
 /* For INSN known to satisfy tablejump_p, determine if it actually is a
@@ -4395,7 +4548,7 @@ parms_set (rtx x, const_rtx pat ATTRIBUTE_UNUSED, void *data)
    to the outer function is passed down as a parameter).
    Do not skip BOUNDARY.  */
 rtx_insn *
-find_first_parameter_load (rtx_insn *call_insn, rtx_insn *boundary)
+find_first_parameter_load (rtx_call_insn *call_insn, rtx_insn *boundary)
 {
   struct parms_set_data parm;
   rtx p;
@@ -4504,7 +4657,7 @@ keep_with_call_p (const rtx_insn *insn)
    not apply to the fallthru case of a conditional jump.  */
 
 bool
-label_is_jump_target_p (const_rtx label, const rtx_insn *jump_insn)
+label_is_jump_target_p (const rtx_insn *label, const rtx_insn *jump_insn)
 {
   rtx tmp = JUMP_LABEL (jump_insn);
   rtx_jump_table_data *table;
@@ -4798,7 +4951,7 @@ nonzero_bits1 (const_rtx x, scalar_int_mode mode, const_rtx known_x,
   enum rtx_code code = GET_CODE (x);
   machine_mode inner_mode;
   unsigned int inner_width;
-  scalar_int_mode xmode;
+  scalar_int_mode xmode, op_imode;
 
   unsigned int mode_width = GET_MODE_PRECISION (mode);
 
@@ -5228,25 +5381,26 @@ nonzero_bits1 (const_rtx x, scalar_int_mode mode, const_rtx known_x,
 
     case CLZ:
       /* If CLZ has a known value at zero, then the nonzero bits are
-	 that value, plus the number of bits in the mode minus one.
-	 If we have a different operand mode, don't try to get nonzero
-	 bits as currently nonzero is not a poly_int.  */
-      if (op_mode == mode
-	  && CLZ_DEFINED_VALUE_AT_ZERO (mode, nonzero))
+	 that value, plus the number of bits in the operand minus one.
+	 The operand mode may differ from MODE, but if it is not a scalar
+	 integer mode, don't try to get nonzero bits as currently nonzero
+	 is not a poly_int.  */
+      if (is_a <scalar_int_mode> (GET_MODE (XEXP (x, 0)), &op_imode)
+	  && CLZ_DEFINED_VALUE_AT_ZERO (op_imode, nonzero))
 	nonzero
-	  |= (HOST_WIDE_INT_1U << (floor_log2 (mode_width))) - 1;
+	  |= (HOST_WIDE_INT_1U << (floor_log2 (op_mode_width))) - 1;
       else
 	nonzero = -1;
       break;
 
     case CTZ:
       /* If CTZ has a known value at zero, then the nonzero bits are
-	 that value, plus the number of bits in the mode minus one.
-	 See above for op_mode != mode.  */
-      if (op_mode == mode
-	  && CLZ_DEFINED_VALUE_AT_ZERO (mode, nonzero))
+	 that value, plus the number of bits in the operand minus one.
+	 See above for the operand mode.  */
+      if (is_a <scalar_int_mode> (GET_MODE (XEXP (x, 0)), &op_imode)
+	  && CTZ_DEFINED_VALUE_AT_ZERO (op_imode, nonzero))
 	nonzero
-	  |= (HOST_WIDE_INT_1U << (floor_log2 (mode_width))) - 1;
+	  |= (HOST_WIDE_INT_1U << (floor_log2 (op_mode_width))) - 1;
       else
 	nonzero = -1;
       break;
@@ -6295,7 +6449,7 @@ low_bitmask_len (machine_mode mode, unsigned HOST_WIDE_INT m)
 
 /* Return the mode of MEM's address.  */
 
-scalar_int_mode
+machine_mode
 get_address_mode (rtx mem)
 {
   machine_mode mode;
@@ -6303,7 +6457,7 @@ get_address_mode (rtx mem)
   gcc_assert (MEM_P (mem));
   mode = GET_MODE (XEXP (mem, 0));
   if (mode != VOIDmode)
-    return as_a <scalar_int_mode> (mode);
+    return mode;
   return targetm.addr_space.address_mode (MEM_ADDR_SPACE (mem));
 }
 
@@ -6886,6 +7040,7 @@ decompose_mem_address (struct address_info *info, rtx x)
   gcc_assert (MEM_P (x));
   decompose_address (info, &XEXP (x, 0), GET_MODE (x),
 		     MEM_ADDR_SPACE (x), MEM);
+  info->mem = x;
 }
 
 /* Update INFO after a change to the address it describes.  */
@@ -7057,14 +7212,12 @@ register_asm_p (const_rtx x)
 bool
 vec_series_highpart_p (machine_mode result_mode, machine_mode op_mode, rtx sel)
 {
-  int nunits;
-  if (GET_MODE_NUNITS (op_mode).is_constant (&nunits)
-      && targetm.can_change_mode_class (op_mode, result_mode, ALL_REGS))
-    {
-      int offset = BYTES_BIG_ENDIAN ? 0 : nunits - XVECLEN (sel, 0);
-      return rtvec_series_p (XVEC (sel, 0), offset);
-    }
-  return false;
+  if (!targetm.can_change_mode_class (op_mode, result_mode, ALL_REGS))
+    return false;
+  if (BYTES_BIG_ENDIAN)
+    return rtvec_series_p (XVEC (sel, 0), 0);
+  poly_int64 offset = GET_MODE_NUNITS (op_mode) - XVECLEN (sel, 0);
+  return rtvec_series_p (XVEC (sel, 0), offset);
 }
 
 /* Return true if, for all OP of mode OP_MODE:
@@ -7076,14 +7229,12 @@ vec_series_highpart_p (machine_mode result_mode, machine_mode op_mode, rtx sel)
 bool
 vec_series_lowpart_p (machine_mode result_mode, machine_mode op_mode, rtx sel)
 {
-  int nunits;
-  if (GET_MODE_NUNITS (op_mode).is_constant (&nunits)
-      && targetm.can_change_mode_class (op_mode, result_mode, ALL_REGS))
-    {
-      int offset = BYTES_BIG_ENDIAN ? nunits - XVECLEN (sel, 0) : 0;
-      return rtvec_series_p (XVEC (sel, 0), offset);
-    }
-  return false;
+  if (!targetm.can_change_mode_class (op_mode, result_mode, ALL_REGS))
+    return false;
+  if (!BYTES_BIG_ENDIAN)
+    return rtvec_series_p (XVEC (sel, 0), 0);
+  poly_int64 offset = GET_MODE_NUNITS (op_mode) - XVECLEN (sel, 0);
+  return rtvec_series_p (XVEC (sel, 0), offset);
 }
 
 /* Return true if X contains a paradoxical subreg.  */
@@ -7099,4 +7250,77 @@ contains_paradoxical_subreg_p (rtx x)
 	return true;
     }
   return false;
+}
+
+/* Analyze X as accessing a consecutive sequence of bytes in some base
+   rtx that is no smaller than X.  Return the base value and set *OFFSET_PTR
+   to the byte offset of X from the start of the base.  Like SUBREG_BYTE,
+   this byte offset follows memory order.  */
+
+rtx
+get_ref_base_and_offset (rtx x, poly_uint64 *offset_ptr)
+{
+  poly_uint64 outer_bytes = GET_MODE_SIZE (GET_MODE (x));
+  poly_uint64 offset = 0;
+  for (;;)
+    {
+      switch (GET_CODE (x))
+	{
+	case SUBREG:
+	  if (!paradoxical_subreg_p (x))
+	    {
+	      offset += SUBREG_BYTE (x);
+	      x = SUBREG_REG (x);
+	      continue;
+	    }
+	  break;
+
+	case ASHIFT:
+	case LSHIFTRT:
+	case ASHIFTRT:
+	  if (SCALAR_INT_MODE_P (GET_MODE (x))
+	      && CONST_INT_P (XEXP (x, 1))
+	      && UINTVAL (XEXP (x, 1)) % BITS_PER_UNIT == 0)
+	    {
+	      auto inner_bytes = GET_MODE_SIZE (GET_MODE (x));
+	      /* Reanalyze the current extraction as a shift right of X.  */
+	      poly_uint64 lsb = subreg_size_lsb (outer_bytes, inner_bytes,
+						 offset);
+	      /* Convert it to a shift right of XEXP (x, 0).  This might
+		 wrap.  */
+	      if (GET_CODE (x) == ASHIFT)
+		lsb -= UINTVAL (XEXP (x, 1));
+	      else
+		lsb += UINTVAL (XEXP (x, 1));
+	      if (known_le (lsb, (inner_bytes - outer_bytes) * BITS_PER_UNIT))
+		{
+		  x = XEXP (x, 0);
+		  offset = subreg_size_offset_from_lsb (outer_bytes,
+							inner_bytes, lsb);
+		  continue;
+		}
+	    }
+	  break;
+
+	case VEC_SELECT:
+	  {
+	    rtx sel = XEXP (x, 1);
+	    poly_int64 start;
+	    if (poly_int_rtx_p (XVECEXP (sel, 0, 0), &start)
+		&& rtvec_series_p (XVEC (sel, 0), start))
+	      {
+		x = XEXP (x, 0);
+		offset += start * GET_MODE_UNIT_SIZE (GET_MODE (x));
+		continue;
+	      }
+	    break;
+	  }
+
+	default:
+	  break;
+      }
+
+    *offset_ptr = offset;
+     return x;
+   }
 }

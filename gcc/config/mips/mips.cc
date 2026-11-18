@@ -211,6 +211,7 @@ enum mips_ucbranch_type
 };
 
 /* Macros to create an enumeration identifier for a function prototype.  */
+#define MIPS_FTYPE_NAME0(A) MIPS_##A##_FTYPE_VOID
 #define MIPS_FTYPE_NAME1(A, B) MIPS_##A##_FTYPE_##B
 #define MIPS_FTYPE_NAME2(A, B, C) MIPS_##A##_FTYPE_##B##_##C
 #define MIPS_FTYPE_NAME3(A, B, C, D) MIPS_##A##_FTYPE_##B##_##C##_##D
@@ -5026,7 +5027,8 @@ mips_split_move_p (rtx dest, rtx src, enum mips_split_type split_type)
    split, if we know it, NULL otherwise.  */
 
 void
-mips_split_move (rtx dest, rtx src, enum mips_split_type split_type, rtx insn_)
+mips_split_move (rtx dest, rtx src, enum mips_split_type split_type,
+		 rtx_insn *insn_)
 {
   rtx low_dest;
 
@@ -5117,7 +5119,7 @@ mips_split_move (rtx dest, rtx src, enum mips_split_type split_type, rtx insn_)
 /* Return the split type for instruction INSN.  */
 
 static enum mips_split_type
-mips_insn_split_type (rtx insn)
+mips_insn_split_type (rtx_insn *insn)
 {
   basic_block bb = BLOCK_FOR_INSN (insn);
   if (bb)
@@ -5328,7 +5330,7 @@ mips_split_msa_fill_d (rtx dest, rtx src)
 /* Return true if a move from SRC to DEST in INSN should be split.  */
 
 bool
-mips_split_move_insn_p (rtx dest, rtx src, rtx insn)
+mips_split_move_insn_p (rtx dest, rtx src, rtx_insn *insn)
 {
   return mips_split_move_p (dest, src, mips_insn_split_type (insn));
 }
@@ -5337,7 +5339,7 @@ mips_split_move_insn_p (rtx dest, rtx src, rtx insn)
    holds.  */
 
 void
-mips_split_move_insn (rtx dest, rtx src, rtx insn)
+mips_split_move_insn (rtx dest, rtx src, rtx_insn *insn)
 {
   mips_split_move (dest, src, mips_insn_split_type (insn), insn);
 }
@@ -7093,7 +7095,7 @@ mips_build_builtin_va_list (void)
 			   unsigned_char_type_node);
       /* Explicitly pad to the size of a pointer, so that -Wpadded won't
 	 warn on every user file.  */
-      index = build_int_cst (NULL_TREE, GET_MODE_SIZE (ptr_mode) - 2 - 1);
+      index = build_int_cst (integer_type_node, GET_MODE_SIZE (ptr_mode) - 2 - 1);
       array = build_array_type (unsigned_char_type_node,
 			        build_index_type (index));
       f_res = build_decl (BUILTINS_LOCATION,
@@ -7407,7 +7409,7 @@ mips_gimplify_va_arg_expr (tree valist, tree type, gimple_seq *pre_p,
 
       /* [5] Emit code for: off -= rsize.  We do this as a form of
 	 post-decrement not available to C.  */
-      t = fold_convert (TREE_TYPE (off), build_int_cst (NULL_TREE, rsize));
+      t = fold_convert (TREE_TYPE (off), build_int_cst (integer_type_node, rsize));
       t = build2 (POSTDECREMENT_EXPR, TREE_TYPE (off), off, t);
 
       /* [4] Emit code for:
@@ -7434,7 +7436,7 @@ mips_gimplify_va_arg_expr (tree valist, tree type, gimple_seq *pre_p,
       /* [10, 11] Emit code for:
 	 addr_rtx = ovfl + (BYTES_BIG_ENDIAN ? OSIZE - SIZE : 0)
 	 ovfl += osize.  */
-      u = fold_convert (TREE_TYPE (ovfl), build_int_cst (NULL_TREE, osize));
+      u = fold_convert (TREE_TYPE (ovfl), build_int_cst (integer_type_node, osize));
       t = build2 (POSTINCREMENT_EXPR, TREE_TYPE (ovfl), ovfl, u);
       if (BYTES_BIG_ENDIAN && osize > size)
 	t = fold_build_pointer_plus_hwi (t, osize - size);
@@ -7863,7 +7865,8 @@ mips16_build_function_stub (void)
 static void
 mips16_copy_fpr_return_value (void)
 {
-  rtx fn, insn, retval;
+  rtx fn, retval;
+  rtx_insn *insn;
   tree return_type;
   machine_mode return_mode;
   const char *name;
@@ -8307,7 +8310,7 @@ mips_expand_call (enum mips_call_type type, rtx result, rtx addr,
    CALL_PATTERN is the pattern of the new call.  */
 
 void
-mips_split_call (rtx insn, rtx call_pattern)
+mips_split_call (rtx_insn *insn, rtx call_pattern)
 {
   emit_call_insn (call_pattern);
   if (!find_reg_note (insn, REG_NORETURN, 0))
@@ -10034,7 +10037,7 @@ enum insn_code dspalu_bypass_table[][2] =
 };
 
 int
-mips_dspalu_bypass_p (rtx out_insn, rtx in_insn)
+mips_dspalu_bypass_p (rtx_insn *out_insn, rtx_insn *in_insn)
 {
   int i;
   int num_bypass = ARRAY_SIZE (dspalu_bypass_table);
@@ -12844,7 +12847,9 @@ mips_expand_prologue (void)
       offset = frame->hard_frame_pointer_offset;
       if (offset == 0)
 	{
-	  rtx insn = mips_emit_move (hard_frame_pointer_rtx, stack_pointer_rtx);
+	  rtx_insn *insn
+	    = mips_emit_move (hard_frame_pointer_rtx,
+			      stack_pointer_rtx);
 	  RTX_FRAME_RELATED_P (insn) = 1;
 	}
       else if (SMALL_OPERAND (offset))
@@ -17137,6 +17142,9 @@ mips_build_cvpointer_type (void)
 
 /* MIPS_FTYPE_ATYPESN takes N MIPS_FTYPES-like type codes and lists
    their associated MIPS_ATYPEs.  */
+#define MIPS_FTYPE_ATYPES0(A) \
+  MIPS_ATYPE_##A
+
 #define MIPS_FTYPE_ATYPES1(A, B) \
   MIPS_ATYPE_##A, MIPS_ATYPE_##B
 
@@ -18120,11 +18128,11 @@ mips16_lay_out_constants (bool split_p)
 	  if (barrier == 0 && pool.insn_address + 4 > pool.highest_address)
 	    {
 	      rtx_code_label *label;
-	      rtx_insn *jump;
 
 	      label = gen_label_rtx ();
 
-	      jump = emit_jump_insn_before (gen_jump (label), insn);
+	      rtx_jump_insn *jump
+		= emit_jump_insn_before (gen_jump (label), insn);
 	      JUMP_LABEL (jump) = label;
 	      LABEL_NUSES (label) = 1;
 	      barrier = emit_barrier_after (jump);
@@ -23129,6 +23137,16 @@ mips_case_values_threshold (void)
     return default_case_values_threshold ();
 }
 
+/* Implement TARGET_CAN_SHARE_JUMP_TABLE_P.  The MIPS16 casesi dispatch
+   loads the address of a table in the text section with a PC-relative
+   la, whose length assumes that the table follows the jump.  */
+
+static bool
+mips_can_share_jump_table_p (rtx_insn *)
+{
+  return !TARGET_MIPS16_SHORT_JUMP_TABLES;
+}
+
 /* Implement TARGET_ATOMIC_ASSIGN_EXPAND_FENV.  */
 
 static void
@@ -23625,6 +23643,9 @@ mips_print_patchable_function_entry (FILE *file ATTRIBUTE_UNUSED,
 
 #undef TARGET_CASE_VALUES_THRESHOLD
 #define TARGET_CASE_VALUES_THRESHOLD mips_case_values_threshold
+
+#undef TARGET_CAN_SHARE_JUMP_TABLE_P
+#define TARGET_CAN_SHARE_JUMP_TABLE_P mips_can_share_jump_table_p
 
 #undef TARGET_ATOMIC_ASSIGN_EXPAND_FENV
 #define TARGET_ATOMIC_ASSIGN_EXPAND_FENV mips_atomic_assign_expand_fenv

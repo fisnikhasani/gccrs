@@ -331,13 +331,6 @@ PatternChecker::visit (RangeFullExpr &)
 {}
 
 void
-PatternChecker::visit (RangeFromToInclExpr &expr)
-{
-  expr.get_from_expr ().accept_vis (*this);
-  expr.get_to_expr ().accept_vis (*this);
-}
-
-void
 PatternChecker::visit (RangeToInclExpr &expr)
 {
   expr.get_to_expr ().accept_vis (*this);
@@ -403,7 +396,11 @@ PatternChecker::visit (MatchExpr &expr)
   expr.get_scrutinee_expr ().accept_vis (*this);
 
   for (auto &match_arm : expr.get_match_cases ())
-    match_arm.get_expr ().accept_vis (*this);
+    {
+      if (match_arm.get_arm ().has_match_arm_guard ())
+	match_arm.get_arm ().get_guard_expr ().accept_vis (*this);
+      match_arm.get_expr ().accept_vis (*this);
+    }
 
   // match expressions are only an entrypoint
   TyTy::BaseType *scrutinee_ty;
@@ -930,8 +927,9 @@ PatStack::pop_head_constructor (const Constructor &other_ctor,
 		other_ctor.to_string ().c_str (), s.c_str ());
   }
   pop_head ();
-  for (auto &pat : v)
-    pats.push_back (pat);
+  // The sub-patterns replace the head, in order, in front of the remaining
+  // columns, matching the order Matrix::specialize gives their types.
+  pats.insert (pats.begin (), v.begin (), v.end ());
 }
 
 std::string
@@ -985,6 +983,8 @@ PlaceInfo::specialize (const Constructor &c) const
 	      // TODO: support unions
 	      rust_unreachable ();
 	    }
+	  case TyTy::ADTType::ADTKind::EXTERN:
+	    return {};
 	  }
       }
       break;
@@ -1384,11 +1384,29 @@ lower_pattern (Resolver::TypeCheckContext *ctx, HIR::Pattern &pattern,
       break;
     case HIR::Pattern::PatternType::PATH:
       {
-	// TODO: support constants, associated constants, enum variants and
-	// structs
+	// A unit variant of the scrutinee's enum is a variant constructor
+	// without fields. Anything else is still treated as a wildcard.
+	// TODO: support constants, associated constants and unit structs
 	// https://doc.rust-lang.org/reference/patterns.html#path-patterns
-	// unimplemented. Treat this pattern as wildcard for now.
-	return DeconstructedPat::make_wildcard (pattern.get_locus ());
+	// The type is not destructured on purpose: split_constructors sees the
+	// column's type as it is, and asserts that it is an ADT.
+	if (scrutinee_ty->get_kind () != TyTy::TypeKind::ADT)
+	  return DeconstructedPat::make_wildcard (pattern.get_locus ());
+
+	TyTy::ADTType *adt = static_cast<TyTy::ADTType *> (scrutinee_ty);
+	HirId variant_id = UNKNOWN_HIRID;
+	if (!adt->is_enum ()
+	    || !ctx->lookup_variant_definition (
+	      pattern.get_mappings ().get_hirid (), &variant_id))
+	  return DeconstructedPat::make_wildcard (pattern.get_locus ());
+
+	TyTy::VariantDef *variant;
+	int variant_idx;
+	if (!adt->lookup_variant_by_id (variant_id, &variant, &variant_idx))
+	  return DeconstructedPat::make_wildcard (pattern.get_locus ());
+
+	return DeconstructedPat (Constructor::make_variant (variant_idx), 0, {},
+				 pattern.get_locus ());
       }
       break;
     case HIR::Pattern::PatternType::REFERENCE:
@@ -1635,7 +1653,7 @@ emit_exhaustiveness_error (Resolver::TypeCheckContext *ctx,
 	  if (i != witness.get_stacks ().size () - 1)
 	    buf << " and ";
 	}
-      rust_error_at (expr.get_scrutinee_expr ().get_locus (),
+      rust_error_at (expr.get_scrutinee_expr ().get_locus (), ErrorCode::E0004,
 		     "non-exhaustive patterns: %s not covered",
 		     buf.str ().c_str ());
     }

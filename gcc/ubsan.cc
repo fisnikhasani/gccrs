@@ -31,7 +31,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "tm_p.h"
 #include "ssa.h"
 #include "cgraph.h"
-#include "tree-pretty-print.h"
+#include "pretty-print.h"
 #include "stor-layout.h"
 #include "cfganal.h"
 #include "gimple-iterator.h"
@@ -1775,8 +1775,8 @@ instrument_bool_enum_load (gimple_stmt_iterator *gsi)
 
   addr_space_t as = TYPE_ADDR_SPACE (TREE_TYPE (rhs));
   if (as != TYPE_ADDR_SPACE (utype))
-    utype = build_qualified_type (utype, TYPE_QUALS (utype)
-					 | ENCODE_QUAL_ADDR_SPACE (as));
+    utype = build_qualified_type (utype,
+				  TYPE_QUALS (utype).with_as (as));
   bool ends_bb = stmt_ends_bb_p (stmt);
   location_t loc = gimple_location (stmt);
   tree lhs = gimple_assign_lhs (stmt);

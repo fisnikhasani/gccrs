@@ -4,7 +4,7 @@
 
 AC_INIT(libssp, 1.0)
 AC_CONFIG_SRCDIR(ssp.c)
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 ACX_NONCANONICAL_TARGET
 
 AM_INIT_AUTOMAKE([no-dist])
@@ -27,7 +27,6 @@ GCC_NO_EXECUTABLES
 AM_ENABLE_MULTILIB(, ..)
 
 target_alias=${target_alias-$host_alias}
-AC_SUBST(target_alias)
 
 AC_CONFIG_HEADERS(config.h)
 
@@ -124,17 +123,10 @@ AM_CONDITIONAL(LIBSSP_USE_SYMVER, [test "x$ssp_use_symver" != xno])
 AM_CONDITIONAL(LIBSSP_USE_SYMVER_GNU, [test "x$ssp_use_symver" = xgnu])
 AM_CONDITIONAL(LIBSSP_USE_SYMVER_SUN, [test "x$ssp_use_symver" = xsun])
 
-AC_CHECK_HEADERS(alloca.h malloc.h paths.h syslog.h string.h unistd.h fcntl.h stdio.h limits.h)
+AC_CHECK_HEADERS(alloca.h malloc.h paths.h syslog.h unistd.h fcntl.h)
 
-if test x$gcc_no_link = xyes; then
-  # Presume the ISO C functions are available; add target-specific
-  # configuration here if required.
-  AC_DEFINE(HAVE_STRNCPY)
-  AC_DEFINE(HAVE_STRNCAT)
-else
-  AC_CHECK_FUNCS(memmove mempcpy strncpy strncat)
-fi
 AC_CHECK_DECLS([gets])
+AC_CHECK_FUNCS([mempcpy])
 
 AC_MSG_CHECKING([whether vsnprintf is usable])
 AC_RUN_IFELSE([AC_LANG_PROGRAM([

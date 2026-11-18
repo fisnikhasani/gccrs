@@ -74,7 +74,7 @@ TypeCheckPattern::visit (HIR::PathInExpression &pattern)
       rust_assert (definition_id.has_value ());
       HirId def_id = definition_id.value ();
 
-      tl::optional<HIR::Item *> hir_item = mappings.lookup_hir_item (def_id);
+      tl::optional<HIR::Item *> hir_item = mappings.hir.items.lookup (def_id);
       // If the path references an item, it must be constants or structs.
       if (hir_item.has_value ())
 	{
@@ -111,8 +111,14 @@ TypeCheckPattern::visit (HIR::PathInExpression &pattern)
 	}
     }
 
+  if (path_is_const_item)
+    {
+      infered = pattern_ty;
+      return;
+    }
+
   // If the path is a constructor, it must be a unit struct or unit variants.
-  if (!path_is_const_item && pattern_ty->get_kind () == TyTy::TypeKind::ADT)
+  if (pattern_ty->get_kind () == TyTy::TypeKind::ADT)
     {
       TyTy::ADTType *adt = static_cast<TyTy::ADTType *> (pattern_ty);
       rust_assert (adt->get_variants ().size () > 0);
@@ -942,6 +948,10 @@ TypeCheckPattern::visit (HIR::SlicePattern &pattern)
       {
 	auto &ref
 	  = static_cast<HIR::SlicePatternItemsHasRest &> (pattern.get_items ());
+
+	// TODO: support rest_bind (c in [a, b, c @ ..])
+	rust_assert (!ref.has_rest_bind ());
+
 	for (const auto &pattern_member : ref.get_lower_patterns ())
 	  {
 	    TypeCheckPattern::Resolve (*pattern_member, parent_element_ty);

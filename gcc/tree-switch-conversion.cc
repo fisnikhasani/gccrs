@@ -117,18 +117,16 @@ static gimple_seq
 gen_log2 (tree op, location_t loc, tree *result, tree type)
 {
   gimple_seq stmts = NULL;
-  gimple_stmt_iterator gsi = gsi_last (stmts);
 
   tree orig_type = TREE_TYPE (op);
   tree tmp1;
   if (type != orig_type)
-    tmp1 = gimple_convert (&gsi, false, GSI_NEW_STMT, loc, type, op);
+    tmp1 = gimple_convert (&stmts, loc, type, op);
   else
     tmp1 = op;
   /* Build FFS (op) - 1.  */
-  tree tmp2 = gimple_build (&gsi, false, GSI_NEW_STMT, loc, IFN_FFS, orig_type,
-			    tmp1);
-  tree tmp3 = gimple_build (&gsi, false, GSI_NEW_STMT, loc, MINUS_EXPR,
+  tree tmp2 = gimple_build (&stmts, loc, IFN_FFS, orig_type, tmp1);
+  tree tmp3 = gimple_build (&stmts, loc, MINUS_EXPR,
 			    orig_type, tmp2, build_one_cst (orig_type));
   *result = tmp3;
   return stmts;
@@ -143,7 +141,6 @@ static gimple_seq
 gen_pow2p (tree op, location_t loc, tree *result)
 {
   gimple_seq stmts = NULL;
-  gimple_stmt_iterator gsi = gsi_last (stmts);
 
   tree type = TREE_TYPE (op);
   tree utype = unsigned_type_for (type);
@@ -153,13 +150,11 @@ gen_pow2p (tree op, location_t loc, tree *result)
   if (types_compatible_p (type, utype))
     tmp1 = op;
   else
-    tmp1 = gimple_convert (&gsi, false, GSI_NEW_STMT, loc, utype, op);
-  tree tmp2 = gimple_build (&gsi, false, GSI_NEW_STMT, loc, MINUS_EXPR, utype,
+    tmp1 = gimple_convert (&stmts, loc, utype, op);
+  tree tmp2 = gimple_build (&stmts, loc, MINUS_EXPR, utype,
 			    tmp1, build_one_cst (utype));
-  tree tmp3 = gimple_build (&gsi, false, GSI_NEW_STMT, loc, BIT_XOR_EXPR,
-			    utype, tmp1, tmp2);
-  *result = gimple_build (&gsi, false, GSI_NEW_STMT, loc, GT_EXPR,
-			  boolean_type_node, tmp3, tmp2);
+  tree tmp3 = gimple_build (&stmts, loc, BIT_XOR_EXPR, utype, tmp1, tmp2);
+  *result = gimple_build (&stmts, loc, GT_EXPR, boolean_type_node, tmp3, tmp2);
 
   return stmts;
 }
@@ -1012,8 +1007,7 @@ switch_conversion::build_one_array (int num, tree arr_index_type,
 						    ARTIFICIAL_RODATA_CSWITCH);
       if (!ADDR_SPACE_GENERIC_P (as))
 	{
-	  int quals = (TYPE_QUALS_NO_ADDR_SPACE (value_type)
-		       | ENCODE_QUAL_ADDR_SPACE (as));
+	  qualifier_set quals {TYPE_QUALS_NO_ADDR_SPACE (value_type), as};
 	  value_type = build_qualified_type (value_type, quals);
 	  array_type = build_array_type (value_type, arr_index_type);
 	}
@@ -1555,7 +1549,7 @@ jump_table_cluster::emit (tree index_expr, tree,
       tree this_low = low, type;
       gimple *g;
       gimple_seq seq = NULL;
-      if (!TYPE_OVERFLOW_WRAPS (TREE_TYPE (index_expr)))
+      if (!TYPE_UNSIGNED (TREE_TYPE (index_expr)))
 	{
 	  type = unsigned_type_for (TREE_TYPE (index_expr));
 	  index_expr = gimple_convert (&seq, type, index_expr);
@@ -1808,8 +1802,9 @@ bit_test_cluster::find_bit_tests (vec<cluster *> &clusters, int max_c)
      Out: List of simple clusters and bit test clusters such that each bit test
      cluster can_be_handled() and is_beneficial()
 
-     Tries to merge consecutive clusters into bigger (bit test) ones.  Tries to
-     end up with as few clusters as possible.  */
+     Merges consecutive clusters into bigger (bit test) clusters.  Produces the
+     optimal solution -- the number of clusters in the output list is
+     minimal.  */
 
   unsigned l = clusters.length ();
 

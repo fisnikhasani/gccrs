@@ -162,6 +162,7 @@ extern void print_expr_for_user (pretty_printer *pp, tree t);
 extern bool printable_expr_p (const_tree expr);
 extern int readability_comparator (const void *p1, const void *p2);
 extern int tree_cmp (const void *p1, const void *p2);
+extern int cmp_types (const_tree a, const_tree b);
 extern tree fixup_tree_for_diagnostic (tree);
 extern tree get_diagnostic_tree_for_gassign (const gassign *);
 
@@ -544,6 +545,7 @@ extern bool is_named_call_p (const_tree fndecl, const char *funcname);
 extern bool is_named_call_p (const_tree fndecl, const char *funcname,
 			     const gcall &call, unsigned int num_args);
 extern bool is_std_function_p (const_tree fndecl);
+extern bool is_cxxabi_function_p (const_tree fndecl);
 extern bool is_std_named_call_p (const_tree fndecl, const char *funcname);
 extern bool is_std_named_call_p (const_tree fndecl, const char *funcname,
 				 const gcall &call, unsigned int num_args);
@@ -711,6 +713,15 @@ struct on_frame_popped
   ana::region_model_context *m_ctxt;
 };
 
+/* A message published by the analyzer when it has finished and is about
+   to clean up.  */
+
+struct on_ana_done
+{
+  const ana::engine &m_engine;
+  const ana::exploded_graph &m_eg;
+};
+
 struct subscriber {
 
   virtual ~subscriber () = default;
@@ -718,6 +729,7 @@ struct subscriber {
   virtual void on_message (const on_tu_finished &) {}
   virtual void on_message (const on_ana_init &) {}
   virtual void on_message (const on_frame_popped &) {}
+  virtual void on_message (const on_ana_done &) {}
 };
 
 } // namespace gcc::topics::analyzer_events

@@ -681,12 +681,12 @@
 #undef __glibcxx_want_boyer_moore_searcher
 
 #if !defined(__cpp_lib_chrono)
-# if (__cplusplus >  202302L) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_HOSTED
+# if (__cplusplus >  202302L) && _GLIBCXX_HOSTED && (_GLIBCXX_USE_CXX11_ABI || !_GLIBCXX_USE_DUAL_ABI)
 #  define __glibcxx_chrono 202306L
 #  if defined(__glibcxx_want_all) || defined(__glibcxx_want_chrono)
 #   define __cpp_lib_chrono 202306L
 #  endif
-# elif (__cplusplus >= 202002L) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_HOSTED
+# elif (__cplusplus >= 202002L) && _GLIBCXX_HOSTED && (_GLIBCXX_USE_CXX11_ABI || !_GLIBCXX_USE_DUAL_ABI)
 #  define __glibcxx_chrono 201907L
 #  if defined(__glibcxx_want_all) || defined(__glibcxx_want_chrono)
 #   define __cpp_lib_chrono 201907L
@@ -712,6 +712,23 @@
 # endif
 #endif /* !defined(__cpp_lib_chrono_cxx20) */
 #undef __glibcxx_want_chrono_cxx20
+
+#if !defined(__cpp_lib_freestanding_chrono)
+# if (__cplusplus >  202302L)
+#  define __glibcxx_freestanding_chrono 202306L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_freestanding_chrono)
+#  endif
+# elif (__cplusplus >= 202002L)
+#  define __glibcxx_freestanding_chrono 201907L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_freestanding_chrono)
+#  endif
+# elif (__cplusplus >= 201703L)
+#  define __glibcxx_freestanding_chrono 201611L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_freestanding_chrono)
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_freestanding_chrono) */
+#undef __glibcxx_want_freestanding_chrono
 
 #if !defined(__cpp_lib_execution)
 # if (__cplusplus >= 201703L) && _GLIBCXX_HOSTED
@@ -989,7 +1006,12 @@
 #undef __glibcxx_want_bit_cast
 
 #if !defined(__cpp_lib_bitops)
-# if (__cplusplus >= 202002L)
+# if (__cplusplus >  202603L)
+#  define __glibcxx_bitops 202607L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_bitops)
+#   define __cpp_lib_bitops 202607L
+#  endif
+# elif (__cplusplus >= 202002L)
 #  define __glibcxx_bitops 201907L
 #  if defined(__glibcxx_want_all) || defined(__glibcxx_want_bitops)
 #   define __cpp_lib_bitops 201907L
@@ -1595,6 +1617,36 @@
 # endif
 #endif /* !defined(__cpp_lib_constexpr_vector) */
 #undef __glibcxx_want_constexpr_vector
+
+#if !defined(__cpp_lib_constexpr_deque)
+# if (__cplusplus >  202302L) && _GLIBCXX_HOSTED
+#  define __glibcxx_constexpr_deque 202502L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_constexpr_deque)
+#   define __cpp_lib_constexpr_deque 202502L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_constexpr_deque) */
+#undef __glibcxx_want_constexpr_deque
+
+#if !defined(__cpp_lib_constexpr_queue)
+# if (__cplusplus >  202302L) && _GLIBCXX_HOSTED
+#  define __glibcxx_constexpr_queue 202502L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_constexpr_queue)
+#   define __cpp_lib_constexpr_queue 202502L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_constexpr_queue) */
+#undef __glibcxx_want_constexpr_queue
+
+#if !defined(__cpp_lib_constexpr_stack)
+# if (__cplusplus >  202302L) && _GLIBCXX_HOSTED
+#  define __glibcxx_constexpr_stack 202502L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_constexpr_stack)
+#   define __cpp_lib_constexpr_stack 202502L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_constexpr_stack) */
+#undef __glibcxx_want_constexpr_stack
 
 #if !defined(__cpp_lib_constrained_equality)
 # if (__cplusplus >  202002L) && (__glibcxx_three_way_comparison)
@@ -2526,6 +2578,16 @@
 #endif /* !defined(__cpp_lib_modules) */
 #undef __glibcxx_want_modules
 
+#if !defined(__cpp_lib_start_lifetime)
+# if (__cplusplus >  202302L) && (__has_builtin(__builtin_start_lifetime))
+#  define __glibcxx_start_lifetime 202603L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_start_lifetime)
+#   define __cpp_lib_start_lifetime 202603L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_start_lifetime) */
+#undef __glibcxx_want_start_lifetime
+
 #if !defined(__cpp_lib_inplace_vector)
 # if (__cplusplus >  202302L)
 #  define __glibcxx_inplace_vector 202603L
@@ -2535,6 +2597,16 @@
 # endif
 #endif /* !defined(__cpp_lib_inplace_vector) */
 #undef __glibcxx_want_inplace_vector
+
+#if !defined(__cpp_lib_constexpr_inplace_vector)
+# if (__cplusplus >  202302L) && (__glibcxx_start_lifetime)
+#  define __glibcxx_constexpr_inplace_vector 202502L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_constexpr_inplace_vector)
+#   define __cpp_lib_constexpr_inplace_vector 202502L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_constexpr_inplace_vector) */
+#undef __glibcxx_want_constexpr_inplace_vector
 
 #if !defined(__cpp_lib_indirect)
 # if (__cplusplus >  202302L) && _GLIBCXX_HOSTED
@@ -2588,9 +2660,9 @@
 
 #if !defined(__cpp_lib_exception_ptr_cast)
 # if (__cplusplus >  202302L)
-#  define __glibcxx_exception_ptr_cast 202506L
+#  define __glibcxx_exception_ptr_cast 202603L
 #  if defined(__glibcxx_want_all) || defined(__glibcxx_want_exception_ptr_cast)
-#   define __cpp_lib_exception_ptr_cast 202506L
+#   define __cpp_lib_exception_ptr_cast 202603L
 #  endif
 # endif
 #endif /* !defined(__cpp_lib_exception_ptr_cast) */
@@ -2680,6 +2752,15 @@
 #endif /* !defined(__cpp_lib_simd) */
 #undef __glibcxx_want_simd
 
+#if !defined(__cpp_lib_simd_complex)
+# if (__cplusplus >  202302L) && _GLIBCXX_HOSTED && (defined __glibcxx_simd)
+#  define __glibcxx_simd_complex 202502L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_simd_complex)
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_simd_complex) */
+#undef __glibcxx_want_simd_complex
+
 #if !defined(__cpp_lib_is_structural)
 # if (__cplusplus >  202302L) && (__has_builtin(__builtin_is_structural))
 #  define __glibcxx_is_structural 202603L
@@ -2709,6 +2790,16 @@
 # endif
 #endif /* !defined(__cpp_lib_valarray) */
 #undef __glibcxx_want_valarray
+
+#if !defined(__cpp_lib_within_lifetime)
+# if (__cplusplus >  202302L) && (__has_builtin(__builtin_is_within_lifetime))
+#  define __glibcxx_within_lifetime 202603L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_within_lifetime)
+#   define __cpp_lib_within_lifetime 202603L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_within_lifetime) */
+#undef __glibcxx_want_within_lifetime
 
 #if !defined(__cpp_lib_hardened_array)
 # if (__cplusplus >= 201103L) && (defined(_GLIBCXX_ASSERTIONS))
@@ -2899,5 +2990,15 @@
 # endif
 #endif /* !defined(__cpp_lib_hardened_view_interface) */
 #undef __glibcxx_want_hardened_view_interface
+
+#if !defined(__cpp_lib_clmul)
+# if (__cplusplus >  202603L)
+#  define __glibcxx_clmul 202610L
+#  if defined(__glibcxx_want_all) || defined(__glibcxx_want_clmul)
+#   define __cpp_lib_clmul 202610L
+#  endif
+# endif
+#endif /* !defined(__cpp_lib_clmul) */
+#undef __glibcxx_want_clmul
 
 #undef __glibcxx_want_all

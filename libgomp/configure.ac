@@ -2,7 +2,7 @@
 # aclocal -I ../config && autoconf && autoheader && automake
 
 AC_INIT([GNU Offloading and Multi Processing Runtime Library], 1.0,,[libgomp])
-AC_CONFIG_HEADER(config.h)
+AC_CONFIG_HEADERS([config.h])
 
 # -------
 # Options
@@ -43,13 +43,10 @@ AM_CONDITIONAL(GENINSRC, test "$enable_generated_files_in_srcdir" = yes)
 #
 # Also, if this library is being configured as part of a cross compiler, the
 # top-level configure script will pass the "real" host as $with_cross_host.
-#
-# Do not delete or change the following two lines.  For why, see
-# http://gcc.gnu.org/ml/libstdc++/2003-07/msg00451.html
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 target_alias=${target_alias-$host_alias}
 
-# Sets up automake.  Must come after AC_CANONICAL_SYSTEM.  Each of the
+# Sets up automake.  Must come after AC_CANONICAL_TARGET.  Each of the
 # following is magically included in AUTOMAKE_OPTIONS in each Makefile.am.
 #  1.9.0:  minimum required version
 #  no-define:  PACKAGE and VERSION will not be #define'd in config.h (a bunch
@@ -159,26 +156,27 @@ FCFLAGS="$FCFLAGS -L."
 # We need gfortran to compile parts of the library
 # We can't use AC_PROG_FC because it expects a fully working gfortran.
 #AC_PROG_FC(gfortran)
-case `echo $GFORTRAN` in
-  -* | no* )
-    FC=no ;;
-  *)
-    set dummy $GFORTRAN; ac_word=$2
-    if test -x "$ac_word"; then
-      FC="$GFORTRAN"
-    else
-      FC=no
-    fi ;;
+# If '--enable-languages=fortran' isn't in effect, the 'GFORTRAN' passed by
+# the top-level build system isn't functional (executable doesn't exist).
+# Catch this case here, and set 'FC=no', so that we don't confuse libtool.
+case ,${enable_languages}, in
+  *,fortran,* )
+    FC=$GFORTRAN
+    ;;
+  * )
+    FC=no
+    ;;
 esac
 AC_PROG_FC(gfortran)
 FCFLAGS="$FCFLAGS -Wall -L../libgfortran"
+
+AM_CONDITIONAL([USE_FORTRAN], [test "$ac_cv_fc_compiler_gnu" = yes])
 
 # For libtool versioning info, format is CURRENT:REVISION:AGE
 libtool_VERSION=1:0:0
 AC_SUBST(libtool_VERSION)
 
 # Check header files.
-AC_HEADER_STDC
 AC_HEADER_TIME
 ACX_HEADER_STRING
 AC_CHECK_HEADERS(pthread.h unistd.h semaphore.h sys/loadavg.h sys/sysctl.h sys/time.h)
@@ -259,6 +257,45 @@ case "$host" in
 esac
 
 GCC_LINUX_FUTEX(:)
+
+LIBGOMP_ENABLE(linux-futex-waitv, default, ,
+  [use the Linux futex_waitv system call],
+  permit yes|no|default)
+
+case "$target" in
+  *-linux* | *-uclinux*)
+    if test x$enable_linux_futex != xyes; then
+      if test x$enable_linux_futex_waitv = xyes; then
+	AC_MSG_ERROR([--enable-linux-futex-waitv requires --enable-linux-futex])
+      fi
+      enable_linux_futex_waitv=no
+    else
+      case "$enable_linux_futex_waitv" in
+	default)
+	  enable_linux_futex_waitv=no
+	  AC_LINK_IFELSE(
+	   [AC_LANG_PROGRAM(
+	    [#include <sys/syscall.h>
+	     #include <unistd.h>],
+	    [syscall (SYS_futex_waitv, 0, 0, 0, 0, 0);])],
+	    [enable_linux_futex_waitv=yes],
+	    [enable_linux_futex_waitv=no])
+	  ;;
+	yes)
+	  AC_LINK_IFELSE(
+	   [AC_LANG_PROGRAM(
+	    [#include <sys/syscall.h>
+	     #include <unistd.h>],
+	    [syscall (SYS_futex_waitv, 0, 0, 0, 0, 0);])],[],
+	    [AC_MSG_ERROR([SYS_futex_waitv required for --enable-linux-futex-waitv])])
+	  ;;
+      esac
+    fi
+    ;;
+  *)
+    enable_linux_futex_waitv=no
+    ;;
+esac
 
 # Check for pthread_{,attr_}[sg]etaffinity_np.
 AC_LINK_IFELSE(
@@ -426,8 +463,6 @@ else
   link_gomp="-lgomp $LIBS${DL_LIBS:+ $DL_LIBS}"
 fi
 AC_SUBST(link_gomp)
-
-AM_CONDITIONAL([USE_FORTRAN], [test "$ac_cv_fc_compiler_gnu" = yes])
 
 # ??? 2006-01-24: Paulo committed to asking autoconf folk to document
 # and export AC_COMPUTE_INT.  If that happens, then we'll need to remove

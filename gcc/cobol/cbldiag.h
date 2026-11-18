@@ -52,7 +52,7 @@ const char * cobol_filename();
 #endif
 
 /*
- * Enumerations do not depend on anything else. 
+ * Enumerations do not depend on anything else.
  */
 
 enum cbl_gcobol_feature_t {
@@ -74,20 +74,18 @@ cbl_call_convention_t current_call_convention();
 
 
 /*
- * CDF state does not require types that would be defined in another file. 
+ * CDF state does not require types that would be defined in another file.
  */
 void cdf_push();
 void cdf_push_call_convention();
 void cdf_push_current_tokens();
 void cdf_push_dictionary();
 void cdf_push_enabled_exceptions();
-void cdf_push_source_format();
 
 void cdf_pop();
 void cdf_pop_call_convention();
 void cdf_pop_current_tokens();
 void cdf_pop_dictionary();
-void cdf_pop_source_format();
 void cdf_pop_enabled_exceptions();
 
 size_t current_program_index();
@@ -107,47 +105,76 @@ struct cbl_loc_base_t {
 };
 struct cbl_loc_t : public cbl_loc_base_t {
 
-  cbl_loc_t() : cbl_loc_base_t{}
-  {}
+  cbl_loc_t() = default; // cppcheck-suppress uninitDerivedMemberVar
+
   cbl_loc_t(   int first_line, int first_column,
-               int last_line,  int last_column ) 
+               int last_line,  int last_column )
     : cbl_loc_base_t {
         first_line , first_column,
         last_line, last_column
       }
   {}
-  cbl_loc_t( const cbl_loc_base_t& base ) : cbl_loc_base_t(base)   // cppcheck-suppress noExplicitConstructor
+  // cppcheck-suppress noExplicitConstructor
+  cbl_loc_t( const cbl_loc_base_t& base )
+    : cbl_loc_base_t(base)
   {}
-#if 0
-  cbl_loc_t(   int first_line, int first_column,
-               int last_line,  int last_column ) 
-    : first_line(first_line)
-    , first_column(first_column)
-    , last_line(last_line)
-    , last_column(last_column)
+
+  explicit cbl_loc_t(   int line )
+    : cbl_loc_base_t {
+        line, 1, line, 1
+      }
   {}
-#endif
+
+  cbl_loc_t& operator=( int lineno ) {
+    first_line = last_line = lineno;
+    first_column = last_column = 1;
+    return *this;
+  }
+  cbl_loc_t& operator++() {
+    if( first_column + 1 < last_column ) first_column++;
+    return *this;
+  }
+  cbl_loc_t operator++(int) {
+    auto out(*this);
+    if( first_column + 1 < last_column ) first_column++;
+    return out;
+  }
+  cbl_loc_t& operator+=(int n) {
+    if( first_column + n < last_column ) first_column += n;
+    return *this;
+  }
+  cbl_loc_t& operator+(int n) const {
+    auto out(*this);
+    return out += n;
+  }
+
+  // Represent a multi-line location as the first line, so "included from"
+  // reflects where the COPY statement appears, not where it ends.
+  cbl_loc_t as_first_line() const {
+    cbl_loc_t loc(*this);
+    loc.last_line = first_line;
+    loc.last_column = first_column;
+    return loc;
+  }
 };
+
+std::pair<uint32_t, int> repeat_count(const char picture[]);
+std::pair<uint32_t, int> repeat_count(const cbl_loc_t& loc, const char picture[]);
+
+size_t parse_error_count();
+
+#include <type_traits>
+/* allow relocate stack */
+static_assert(std::is_trivially_copyable<cbl_loc_t>::value,
+             "cbl_loc_t must be trivially copyable for parser stack growth");
 
 const cbl_loc_t& cobol_location();
 
-/*
- * Naming Convention: Names end with a letter that indicates 
- * their kind:
- * F  fatal, "fatal error: "
- * I  ice, "internal compiler error: "
- * E  error, "error: "
- * S  sorry, "sorry, unimplemented: "
- * W  warning, "warning: "
- * A  anachronism, "anachronism: "
- * N  note, "note: "
- * D  debug, "debug: "
- */
 enum cbl_diag_id_t : uint64_t {
-  CdfNotFoundW, 
+  CdfNotFoundW,
   CdfParameterW,
-  
-  EcUnknownW, 
+
+  EcUnknownW,
 
   LexIncludeE,
   LexIncludeOkN,
@@ -158,44 +185,57 @@ enum cbl_diag_id_t : uint64_t {
   LexReplaceE,
   LexSeparatorE,
 
+  IbmCallFd,
   IbmCdf,
+  IbmContentExpr,
   IbmEjectE,
   IbmEqualAssignE,
-  IbmLengthOf, 
+  IbmLengthOf,
   IbmProcedurePointer,
   IbmSectionNegE,
   IbmSectionRangeE,
   IbmSectionSegmentW,
   IbmStopNumber,
-  IbmVolatileE,  
+  IbmVolatileE,
   IbmVolatileW,  // dialect warning for ignored syntax
 
+  IsoAssignFile,
+  IsoRedefinesGrow,
   IsoResume,
 
+  MfAnyLength,
+  MfAssignExternal,
   MfBinaryLongLong,
   MfCallGiving,
   MfCallLiteral,
-  MfCdfDollar, 
+  MfCdfDollar,
   MfComp6,
   MfCompX,
-  MfLevel_1_Occurs, 
+  MfDisplayScreen,
+  MfHexNumeric,
   MfLevel78,
-  MfAnyLength, 
-  MfMoveIndex, 
-  MfMovePointer, 
+  MfLevel_1_Occurs,
+  MfMoveIndex,
+  MfMovePointer,
+  MfRedefinesFirst,
+  MfRedefinesTable,
   MfReturningNum,
-  MfUsageTypename,
+  MfSetNumeric,
   MfTrailing,
-  
+  MfUsageTypename,
+  MfValueClause,
+
   Par78CdfDefinedW,
-  ParIconvE, 
+  ParDynamicCall,
+  ParErrno,
+  ParIconvE,
   ParInfoI,
   ParLangInfoW,
-  ParLiteral2W, 
+  ParLiteral2W,
   ParLocaleW,
   ParNoCorrespondingW,
-  ParNumstrW, 
-  ParUnresolvedProcE, 
+  ParNumstrW,
+  ParUnresolvedProcE,
 
   SynApplyCommit,
   SynFileCodeSet,
@@ -226,6 +266,8 @@ static inline bool
 dialect_not_ok( const cbl_loc_t& loc, cbl_diag_id_t id, const char term[] ) {
   return dialect_ok(loc, id, term, false);
 }
+
+bool cbl_diagnostic_ignored( cbl_diag_id_t id );
 
 // Diagnostic format specifiers are documented in gcc/pretty-print.cc
 // an error at a location, called from the parser for semantic errors
@@ -266,22 +308,7 @@ void gcc_location_set( const cbl_loc_t& loc );
 
 void gcc_location_dump();
 
-// tree.h defines yy_flex_debug as a macro because options.h
-#if ! defined(yy_flex_debug)
-template <typename LOC>
-static void
-location_dump( const char func[], int line, const char tag[], const LOC& loc) {
-  extern int yy_flex_debug; // cppcheck-suppress shadowVariable
-  if( yy_flex_debug ) {
-    const char *detail = gcobol_getenv("update_location");
-    if( detail ) { // cppcheck-suppress knownConditionTrueFalse
-      fprintf(stderr, "%s:%d: %s location (%d,%d) to (%d,%d)\n",
-              func, line, tag,
-              loc.first_line, loc.first_column, loc.last_line, loc.last_column);
-      if( *detail == '2' ) gcc_location_dump();
-    }
-  }
-}
-#endif // defined(yy_flex_debug)
-
+void
+location_dump( const char func[], int line, const char tag[],
+               const cbl_loc_t& loc, bool force = false);
 #endif

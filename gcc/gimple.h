@@ -26,6 +26,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-expr.h"
 #include "bitmap.h"
 #include "value-range.h"
+#include "value-range-storage.h"
 #include "value-query.h"
 
 typedef gimple *gimple_seq_node;
@@ -226,7 +227,7 @@ struct GTY((desc ("gimple_statement_structure (&%h)"), tag ("GSS_BASE"),
 {
   /* [ WORD 1 ]
      Main identifying code for a tuple.  */
-  ENUM_BITFIELD(gimple_code) code : 8;
+  enum gimple_code code : 8;
 
   /* Nonzero if a warning should not be emitted on this tuple.  */
   unsigned int no_warning	: 1;
@@ -1660,7 +1661,6 @@ extern bool gimple_compare_field_offset (tree, tree);
 extern tree gimple_unsigned_type (tree);
 extern tree gimple_signed_type (tree);
 extern alias_set_type gimple_get_alias_set (tree);
-extern bool gimple_ior_addresses_taken (bitmap, gimple *);
 extern bool gimple_builtin_call_types_compatible_p (const gimple *, tree);
 extern combined_fn gimple_call_combined_fn (const gimple *);
 extern bool gimple_call_operator_delete_p (const gcall *);

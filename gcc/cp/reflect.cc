@@ -33,10 +33,12 @@ along with GCC; see the file COPYING3.  If not see
 #include "metafns.h"
 
 static tree eval_is_function_type (tree);
-static tree eval_is_object_type (location_t, tree);
+static tree eval_is_object_type (location_t, const constexpr_ctx *, tree,
+				 bool *, tree);
 static tree eval_reflect_constant (location_t, const constexpr_ctx *, tree,
 				   tree, bool *, tree *, tree);
-static tree eval_is_array_type (location_t, tree);
+static tree eval_is_array_type (location_t, const constexpr_ctx *, tree,
+				bool *, tree);
 static tree eval_reflect_constant_array (location_t, const constexpr_ctx *,
 					 tree, bool *, bool *, tree *, tree);
 static tree eval_reflect_function (location_t, const constexpr_ctx *, tree,
@@ -59,10 +61,14 @@ init_reflection ()
   /* The type std::meta::info is a scalar type for which equality and
      inequality are meaningful, but for which no ordering relation is
      defined.  */
-  meta_info_type_node = make_node (META_TYPE);
+  meta_info_type_node = make_node (OPAQUE_TYPE);
   /* Make it a complete type.  */
   TYPE_SIZE (meta_info_type_node) = bitsize_int (GET_MODE_BITSIZE (ptr_mode));
   TYPE_SIZE_UNIT (meta_info_type_node) = size_int (GET_MODE_SIZE (ptr_mode));
+  TYPE_UNSIGNED (meta_info_type_node) = 1;
+  TYPE_PRECISION (meta_info_type_node) = GET_MODE_BITSIZE (ptr_mode);
+  SET_TYPE_MODE (meta_info_type_node, ptr_mode);
+  SET_TYPE_ALIGN (meta_info_type_node, GET_MODE_ALIGNMENT (ptr_mode));
   /* Name it.  */
   record_builtin_type (RID_MAX, "decltype(^^int)", meta_info_type_node);
 
@@ -139,7 +145,7 @@ get_reflection (location_t loc, tree t, reflect_kind kind/*=REFLECT_UNDEF*/)
 
   /* Constant template parameters and pack-index-expressions cannot
      appear as operands of the reflection operator.  */
-  if (PACK_INDEX_P (t))
+  if (TREE_CODE (t) == PACK_INDEX_EXPR)
     {
       error_at (loc, "%<^^%> cannot be applied to a pack index");
       return error_mark_node;
@@ -177,7 +183,7 @@ get_reflection (location_t loc, tree t, reflect_kind kind/*=REFLECT_UNDEF*/)
 	       || parsing_lambda_declarator ()))
     {
       auto_diagnostic_group d;
-      error_at (loc, "%<^^%> cannot be applied a local entity for which "
+      error_at (loc, "%<^^%> cannot be applied to a local entity for which "
 		"there is an intervening lambda expression");
       inform (DECL_SOURCE_LOCATION (t), "%qD declared here", t);
       return error_mark_node;
@@ -285,8 +291,36 @@ get_null_reflection ()
 bool
 null_reflection_p (const_tree t)
 {
-  return (t && TREE_CODE (t) == REFLECT_EXPR
-	  && REFLECT_EXPR_HANDLE (t) == unknown_type_node);
+  if (!t)
+    return false;
+
+  if (REFLECT_EXPR_P (t) && REFLECT_EXPR_HANDLE (t) == unknown_type_node)
+    return true;
+
+  /* This is the rewritten form.  */
+  return integer_zerop (t) && REFLECTION_TYPE_P (TREE_TYPE (t));
+}
+
+/* If R represents a null reflection, rewrite it with something the ME
+   can process; that is, something that doesn't use REFLECT_EXPR.  */
+
+void
+rewrite_null_reflection (tree &r)
+{
+  /* A tree walk mostly only so that we recurse through CONSTRUCTORs.  */
+  auto walker = [](tree *tp, int *walk_subtrees, void *) -> tree
+    {
+      if (TYPE_P (*tp))
+	*walk_subtrees = 0;
+      else if (null_reflection_p (*tp))
+	{
+	  *tp = build_int_cst (meta_info_type_node, 0);
+	  *walk_subtrees = 0;
+	}
+      return NULL_TREE;
+    };
+
+  cp_walk_tree (&r, walker, nullptr, nullptr);
 }
 
 /* Do strip_typedefs on T, but only for types.  */
@@ -698,6 +732,12 @@ get_range_elts (location_t loc, const constexpr_ctx *ctx, tree call, int n,
       }
     if (kind == REFLECT_CONSTANT_ARRAY && sz == 0)
       {
+	/* Don't call finish_compound_literal in a template.  */
+	if (processing_template_decl)
+	  {
+	    *non_constant_p = true;
+	    return NULL_TREE;
+	  }
 	/* Return std::array <valuet, 0> {}.  */
 	tree args = make_tree_vec (2);
 	TREE_VEC_ELT (args, 0) = valuet;
@@ -2611,7 +2651,7 @@ type_of (tree r, reflect_kind kind)
       r = TREE_TYPE (TREE_VALUE (TREE_VALUE (r)));
       if (CLASS_TYPE_P (r))
 	{
-	  int quals = cp_type_quals (r);
+	  auto quals = cp_type_quals (r);
 	  quals |= TYPE_QUAL_CONST;
 	  r = cp_build_qualified_type (r, quals);
 	}
@@ -2675,6 +2715,8 @@ eval_source_location_of (location_t loc, tree r, reflect_kind kind,
        for now use location_t of the base parent (i.e. the derived
        class).  */
     r = direct_base_derived (r);
+  else
+    r = maybe_get_first_fn (r);
   if (OVERLOAD_TYPE_P (r) || (TYPE_P (r) && typedef_variant_p (r)))
     rloc = DECL_SOURCE_LOCATION (TYPE_NAME (r));
   else if (DECL_P (r) && r != global_namespace)
@@ -2805,7 +2847,8 @@ eval_constant_of (location_t loc, const constexpr_ctx *ctx, tree r,
 
   if (eval_is_annotation (r, kind) == boolean_true_node)
     r = tree_strip_any_location_wrapper (TREE_VALUE (TREE_VALUE (r)));
-  else if (eval_is_array_type (loc, type) == boolean_true_node)
+  else if (eval_is_array_type (loc, ctx, type, non_constant_p, fun)
+	   == boolean_true_node)
     {
       const tsubst_flags_t complain = complain_flags (ctx);
       /* Create a call to reflect_constant_array so that we can simply
@@ -4087,7 +4130,8 @@ eval_reflect_object (location_t loc, const constexpr_ctx *ctx, tree type,
 		     tree expr, bool *non_constant_p, tree *jump_target,
 		     tree fun)
 {
-  if (eval_is_object_type (loc, type) != boolean_true_node)
+  if (eval_is_object_type (loc, ctx, type, non_constant_p, fun)
+      != boolean_true_node)
     {
       error_at (loc, "%qT must be an object type", TREE_TYPE (type));
       return error_mark_node;
@@ -4143,10 +4187,47 @@ eval_reflect_function (location_t loc, const constexpr_ctx *ctx, tree type,
    arguments to the trait.  */
 
 static tree
-eval_type_trait (location_t loc, tree type1, tree type2, cp_trait_kind kind)
+eval_type_trait (location_t loc, const constexpr_ctx *ctx, tree type1,
+		 tree type2, cp_trait_kind kind, bool *non_constant_p,
+		 tree fun)
 {
-  tree r = finish_trait_expr (loc, kind, type1, type2);
-  gcc_checking_assert (r != error_mark_node);
+  tree r = finish_trait_expr (loc, kind, type1, type2, tf_none);
+  if (r == error_mark_node)
+    {
+      /* [meta.reflection.traits]/3.2: Otherwise, if the instantiation of S
+	 would result in undefined behavior due to dependence on an incomplete
+	 type, then the call is not a constant subexpression.  */
+      if (!cxx_constexpr_quiet_p (ctx))
+	{
+	  auto_diagnostic_group d;
+	  error_at (loc, "type trait %qE preconditions not satisfied", fun);
+	  /* See if we can figure out which argument was incomplete.  */
+	  tree inc = NULL_TREE;
+	  if (!COMPLETE_OR_VOID_TYPE_P (type1)
+	      && !array_of_unknown_bound_p (type1))
+	    inc = type1;
+	  else if (type2)
+	    {
+	      if (TYPE_P (type2)
+		  && !COMPLETE_OR_VOID_TYPE_P (type2)
+		  && !array_of_unknown_bound_p (type2))
+		inc = type2;
+	      else if (TREE_CODE (type2) == TREE_VEC)
+		for (tree t : tree_vec_range (type2))
+		  if (!COMPLETE_OR_VOID_TYPE_P (t)
+		      && !array_of_unknown_bound_p (t))
+		    {
+		      inc = t;
+		      break;
+		    }
+	    }
+	  if (inc)
+	    cxx_incomplete_type_diagnostic (loc, NULL_TREE, inc,
+					    diagnostics::kind::note);
+	}
+      *non_constant_p = true;
+      return NULL_TREE;
+    }
   STRIP_ANY_LOCATION_WRAPPER (r);
   return r;
 }
@@ -4154,9 +4235,11 @@ eval_type_trait (location_t loc, tree type1, tree type2, cp_trait_kind kind)
 /* Like above, but for type traits that take only one type.  */
 
 static tree
-eval_type_trait (location_t loc, tree type, cp_trait_kind kind)
+eval_type_trait (location_t loc, const constexpr_ctx *ctx, tree type,
+		 cp_trait_kind kind, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, NULL_TREE, kind);
+  return eval_type_trait (loc, ctx, type, NULL_TREE, kind, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_function_type.  */
@@ -4217,17 +4300,21 @@ eval_is_floating_point_type (tree type)
 /* Process std::meta::is_array_type.  */
 
 static tree
-eval_is_array_type (location_t loc, tree type)
+eval_is_array_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		    bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_ARRAY);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_ARRAY, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_pointer_type.  */
 
 static tree
-eval_is_pointer_type (location_t loc, tree type)
+eval_is_pointer_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		      bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_POINTER);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_POINTER, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_lvalue_reference_type.  */
@@ -4255,41 +4342,51 @@ eval_is_rvalue_reference_type (tree type)
 /* Process std::meta::is_member_object_pointer_type.  */
 
 static tree
-eval_is_member_object_pointer_type (location_t loc, tree type)
+eval_is_member_object_pointer_type (location_t loc, const constexpr_ctx *ctx,
+				    tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_MEMBER_OBJECT_POINTER);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_MEMBER_OBJECT_POINTER,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_member_function_pointer_type.  */
 
 static tree
-eval_is_member_function_pointer_type (location_t loc, tree type)
+eval_is_member_function_pointer_type (location_t loc, const constexpr_ctx *ctx,
+				      tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_MEMBER_FUNCTION_POINTER);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_MEMBER_FUNCTION_POINTER,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_enum_type.  */
 
 static tree
-eval_is_enum_type (location_t loc, tree type)
+eval_is_enum_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		   bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_ENUM);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_ENUM, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_union_type.  */
 
 static tree
-eval_is_union_type (location_t loc, tree type)
+eval_is_union_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		    bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_UNION);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_UNION, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_class_type.  */
 
 static tree
-eval_is_class_type (location_t loc, tree type)
+eval_is_class_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		    bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_CLASS);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_CLASS, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_reflection_type.  */
@@ -4306,9 +4403,11 @@ eval_is_reflection_type (tree type)
 /* Process std::meta::is_reference_type.  */
 
 static tree
-eval_is_reference_type (location_t loc, tree type)
+eval_is_reference_type (location_t loc, const constexpr_ctx *ctx, tree type,
+			bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_REFERENCE);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_REFERENCE, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_arithmetic_type.  */
@@ -4325,9 +4424,11 @@ eval_is_arithmetic_type (tree type)
 /* Process std::meta::is_object_type.  */
 
 static tree
-eval_is_object_type (location_t loc, tree type)
+eval_is_object_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		     bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_OBJECT);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_OBJECT, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_scalar_type.  */
@@ -4369,9 +4470,11 @@ eval_is_compound_type (tree type)
 /* Process std::meta::is_member_pointer_type.  */
 
 static tree
-eval_is_member_pointer_type (location_t loc, tree type)
+eval_is_member_pointer_type (location_t loc, const constexpr_ctx *ctx,
+			     tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_MEMBER_POINTER);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_MEMBER_POINTER,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_const_type.  */
@@ -4399,58 +4502,60 @@ eval_is_volatile_type (tree type)
 /* Process std::meta::is_trivially_copyable_type.  */
 
 static tree
-eval_is_trivially_copyable_type (tree type)
+eval_is_trivially_copyable_type (location_t loc, const constexpr_ctx *ctx,
+				 tree type, bool *non_constant_p, tree fun)
 {
-  if (trivially_copyable_p (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_IS_TRIVIALLY_COPYABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_standard_layout_type.  */
 
 static tree
-eval_is_standard_layout_type (tree type)
+eval_is_standard_layout_type (location_t loc, const constexpr_ctx *ctx,
+			      tree type, bool *non_constant_p, tree fun)
 {
-  if (std_layout_type_p (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_IS_STD_LAYOUT, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_empty_type.  */
 
 static tree
-eval_is_empty_type (location_t loc, tree type)
+eval_is_empty_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		    bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_EMPTY);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_EMPTY, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_polymorphic_type.  */
 
 static tree
-eval_is_polymorphic_type (location_t loc, tree type)
+eval_is_polymorphic_type (location_t loc, const constexpr_ctx *ctx,
+			  tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_POLYMORPHIC);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_POLYMORPHIC, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_abstract_type.  */
 
 static tree
-eval_is_abstract_type (tree type)
+eval_is_abstract_type (location_t loc, const constexpr_ctx *ctx,
+		       tree type, bool *non_constant_p, tree fun)
 {
-  if (ABSTRACT_CLASS_TYPE_P (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_IS_ABSTRACT, non_constant_p,
+			  fun);
 }
 
 /* Process std::meta::is_final_type.  */
 
 static tree
-eval_is_final_type (location_t loc, tree type)
+eval_is_final_type (location_t loc, const constexpr_ctx *ctx, tree type,
+		    bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_FINAL);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_FINAL, non_constant_p, fun);
 }
 
 /* Process std::meta::is_final.
@@ -4480,20 +4585,21 @@ eval_is_final (tree r)
 /* Process std::meta::is_aggregate_type.  */
 
 static tree
-eval_is_aggregate_type (tree type)
+eval_is_aggregate_type (location_t loc, const constexpr_ctx *ctx,
+			tree type, bool *non_constant_p, tree fun)
 {
-  if (CP_AGGREGATE_TYPE_P (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_IS_AGGREGATE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_structural_type.  */
 
 static tree
-eval_is_structural_type (location_t loc, tree type)
+eval_is_structural_type (location_t loc, const constexpr_ctx *ctx,
+			 tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_STRUCTURAL);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_STRUCTURAL,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_signed_type.  */
@@ -4521,9 +4627,11 @@ eval_is_unsigned_type (tree type)
 /* Process std::meta::is_bounded_array_type.  */
 
 static tree
-eval_is_bounded_array_type (location_t loc, tree type)
+eval_is_bounded_array_type (location_t loc, const constexpr_ctx *ctx,
+			    tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_BOUNDED_ARRAY);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_BOUNDED_ARRAY,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_unbounded_array_type.  */
@@ -4551,320 +4659,355 @@ eval_is_scoped_enum_type (tree type)
 /* Process std::meta::is_constructible_type.  */
 
 static tree
-eval_is_constructible_type (tree type, tree tvec)
+eval_is_constructible_type (location_t loc, const constexpr_ctx *ctx,
+			    tree type, tree tvec, bool *non_constant_p,
+			    tree fun)
 {
-  if (is_xible (INIT_EXPR, type, tvec))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, tvec, CPTK_IS_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_default_constructible_type.  */
 
 static tree
-eval_is_default_constructible_type (tree type)
+eval_is_default_constructible_type (location_t loc, const constexpr_ctx *ctx,
+				    tree type, bool *non_constant_p, tree fun)
 {
-  if (is_xible (INIT_EXPR, type, make_tree_vec (0)))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, make_tree_vec (0),
+			  CPTK_IS_CONSTRUCTIBLE, non_constant_p, fun);
 }
 
 /* Process std::meta::is_copy_constructible_type.  */
 
 static tree
-eval_is_copy_constructible_type (tree type)
+eval_is_copy_constructible_type (location_t loc, const constexpr_ctx *ctx,
+				 tree type, bool *non_constant_p, tree fun)
 {
   tree arg = make_tree_vec (1);
   TREE_VEC_ELT (arg, 0) = build_const_lref (type);
-  if (is_xible (INIT_EXPR, type, arg))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, arg, CPTK_IS_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_move_constructible_type.  */
 
 static tree
-eval_is_move_constructible_type (tree type)
+eval_is_move_constructible_type (location_t loc, const constexpr_ctx *ctx,
+				 tree type, bool *non_constant_p, tree fun)
 {
   tree arg = make_tree_vec (1);
   TREE_VEC_ELT (arg, 0) = cp_build_reference_type (type, /*rval=*/true);
-  if (is_xible (INIT_EXPR, type, arg))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, arg, CPTK_IS_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_assignable_type.  */
 
 static tree
-eval_is_assignable_type (location_t loc, tree type1, tree type2)
+eval_is_assignable_type (location_t loc, const constexpr_ctx *ctx,
+			 tree type1, tree type2, bool *non_constant_p,
+			 tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_ASSIGNABLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_copy_assignable_type.  */
 
 static tree
-eval_is_copy_assignable_type (tree type)
+eval_is_copy_assignable_type (location_t loc, const constexpr_ctx *ctx,
+			      tree type, bool *non_constant_p, tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = build_const_lref (type);
-  if (is_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_move_assignable_type.  */
 
 static tree
-eval_is_move_assignable_type (tree type)
+eval_is_move_assignable_type (location_t loc, const constexpr_ctx *ctx,
+			      tree type, bool *non_constant_p, tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = cp_build_reference_type (type, /*rval=*/true);
-  if (is_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_destructible_type.  */
 
 static tree
-eval_is_destructible_type (location_t loc, tree type)
+eval_is_destructible_type (location_t loc, const constexpr_ctx *ctx,
+			   tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_DESTRUCTIBLE);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_DESTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_constructible_type.  */
 
 static tree
-eval_is_trivially_constructible_type (tree type, tree tvec)
+eval_is_trivially_constructible_type (location_t loc, const constexpr_ctx *ctx,
+				      tree type, tree tvec,
+				      bool *non_constant_p, tree fun)
 {
-  if (is_trivially_xible (INIT_EXPR, type, tvec))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, tvec,
+			  CPTK_IS_TRIVIALLY_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_default_constructible_type.  */
 
 static tree
-eval_is_trivially_default_constructible_type (tree type)
+eval_is_trivially_default_constructible_type (location_t loc,
+					      const constexpr_ctx *ctx,
+					      tree type, bool *non_constant_p,
+					      tree fun)
 {
-  if (is_trivially_xible (INIT_EXPR, type, make_tree_vec (0)))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, make_tree_vec (0),
+			  CPTK_IS_TRIVIALLY_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_copy_constructible_type.  */
 
 static tree
-eval_is_trivially_copy_constructible_type (tree type)
+eval_is_trivially_copy_constructible_type (location_t loc,
+					   const constexpr_ctx *ctx,
+					   tree type, bool *non_constant_p,
+					   tree fun)
 {
-  if (trivially_copy_constructible_p (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  tree arg = make_tree_vec (1);
+  TREE_VEC_ELT (arg, 0) = build_const_lref (type);
+  return eval_type_trait (loc, ctx, type, arg,
+			  CPTK_IS_TRIVIALLY_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_move_constructible_type.  */
 
 static tree
-eval_is_trivially_move_constructible_type (tree type)
+eval_is_trivially_move_constructible_type (location_t loc,
+					   const constexpr_ctx *ctx,
+					   tree type, bool *non_constant_p,
+					   tree fun)
 {
   tree arg = make_tree_vec (1);
   TREE_VEC_ELT (arg, 0) = cp_build_reference_type (type, /*rval=*/true);
-  if (is_trivially_xible (INIT_EXPR, type, arg))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, arg,
+			  CPTK_IS_TRIVIALLY_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_assignable_type.  */
 
 static tree
-eval_is_trivially_assignable_type (location_t loc, tree type1, tree type2)
+eval_is_trivially_assignable_type (location_t loc, const constexpr_ctx *ctx,
+				   tree type1, tree type2,
+				   bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_TRIVIALLY_ASSIGNABLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_TRIVIALLY_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_copy_assignable_type.  */
 
 static tree
-eval_is_trivially_copy_assignable_type (tree type)
+eval_is_trivially_copy_assignable_type (location_t loc,
+					const constexpr_ctx *ctx,
+					tree type, bool *non_constant_p,
+					tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = build_const_lref (type);
-  if (is_trivially_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_TRIVIALLY_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_move_assignable_type.  */
 
 static tree
-eval_is_trivially_move_assignable_type (tree type)
+eval_is_trivially_move_assignable_type (location_t loc,
+					const constexpr_ctx *ctx,
+					tree type, bool *non_constant_p,
+					tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = cp_build_reference_type (type, /*rval=*/true);
-  if (is_trivially_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_TRIVIALLY_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_trivially_destructible_type.  */
 
 static tree
-eval_is_trivially_destructible_type (location_t loc, tree type)
+eval_is_trivially_destructible_type (location_t loc, const constexpr_ctx *ctx,
+				     tree type, bool *non_constant_p,
+				     tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_TRIVIALLY_DESTRUCTIBLE);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_TRIVIALLY_DESTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_constructible_type.  */
 
 static tree
-eval_is_nothrow_constructible_type (tree type, tree tvec)
+eval_is_nothrow_constructible_type (location_t loc, const constexpr_ctx *ctx,
+				    tree type, tree tvec, bool *non_constant_p,
+				    tree fun)
 {
-  if (is_nothrow_xible (INIT_EXPR, type, tvec))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, tvec, CPTK_IS_NOTHROW_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_default_constructible_type.  */
 
 static tree
-eval_is_nothrow_default_constructible_type (tree type)
+eval_is_nothrow_default_constructible_type (location_t loc,
+					    const constexpr_ctx *ctx,
+					    tree type, bool *non_constant_p,
+					    tree fun)
 {
-  if (is_nothrow_xible (INIT_EXPR, type, make_tree_vec (0)))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, make_tree_vec (0),
+			  CPTK_IS_NOTHROW_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_copy_constructible_type.  */
 
 static tree
-eval_is_nothrow_copy_constructible_type (tree type)
+eval_is_nothrow_copy_constructible_type (location_t loc,
+					 const constexpr_ctx *ctx,
+					 tree type, bool *non_constant_p,
+					 tree fun)
 {
   tree arg = make_tree_vec (1);
   TREE_VEC_ELT (arg, 0) = build_const_lref (type);
-  if (is_nothrow_xible (INIT_EXPR, type, arg))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, arg,
+			  CPTK_IS_NOTHROW_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_move_constructible_type.  */
 
 static tree
-eval_is_nothrow_move_constructible_type (tree type)
+eval_is_nothrow_move_constructible_type (location_t loc,
+					 const constexpr_ctx *ctx,
+					 tree type, bool *non_constant_p,
+					 tree fun)
 {
   tree arg = make_tree_vec (1);
   TREE_VEC_ELT (arg, 0) = cp_build_reference_type (type, /*rval=*/true);
-  if (is_nothrow_xible (INIT_EXPR, type, arg))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, arg,
+			  CPTK_IS_NOTHROW_CONSTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_assignable_type.  */
 
 static tree
-eval_is_nothrow_assignable_type (location_t loc, tree type1, tree type2)
+eval_is_nothrow_assignable_type (location_t loc, const constexpr_ctx *ctx,
+				 tree type1, tree type2, bool *non_constant_p,
+				 tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_NOTHROW_ASSIGNABLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_NOTHROW_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_copy_assignable_type.  */
 
 static tree
-eval_is_nothrow_copy_assignable_type (tree type)
+eval_is_nothrow_copy_assignable_type (location_t loc, const constexpr_ctx *ctx,
+				      tree type, bool *non_constant_p, tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = build_const_lref (type);
-  if (is_nothrow_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_NOTHROW_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_move_assignable_type.  */
 
 static tree
-eval_is_nothrow_move_assignable_type (tree type)
+eval_is_nothrow_move_assignable_type (location_t loc, const constexpr_ctx *ctx,
+				      tree type, bool *non_constant_p, tree fun)
 {
   tree type1 = cp_build_reference_type (type, /*rval=*/false);
   tree type2 = cp_build_reference_type (type, /*rval=*/true);
-  if (is_nothrow_xible (MODIFY_EXPR, type1, type2))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_NOTHROW_ASSIGNABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_destructible_type.  */
 
 static tree
-eval_is_nothrow_destructible_type (location_t loc, tree type)
+eval_is_nothrow_destructible_type (location_t loc, const constexpr_ctx *ctx,
+				   tree type, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type, CPTK_IS_NOTHROW_DESTRUCTIBLE);
+  return eval_type_trait (loc, ctx, type, CPTK_IS_NOTHROW_DESTRUCTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_implicit_lifetime_type.  */
 
 static tree
-eval_is_implicit_lifetime_type (tree type)
+eval_is_implicit_lifetime_type (location_t loc, const constexpr_ctx *ctx,
+				tree type, bool *non_constant_p, tree fun)
 {
-  if (implicit_lifetime_type_p (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_IS_IMPLICIT_LIFETIME,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::has_virtual_destructor.  */
 
 static tree
-eval_has_virtual_destructor (tree type)
+eval_has_virtual_destructor (location_t loc, const constexpr_ctx *ctx,
+			     tree type, bool *non_constant_p, tree fun)
 {
-  if (type_has_virtual_destructor (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_HAS_VIRTUAL_DESTRUCTOR,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::has_unique_object_representations.  */
 
 static tree
-eval_has_unique_object_representations (tree type)
+eval_has_unique_object_representations (location_t loc,
+					const constexpr_ctx *ctx,
+					tree type, bool *non_constant_p,
+					tree fun)
 {
-  if (type_has_unique_obj_representations (type))
-    return boolean_true_node;
-  else
-    return boolean_false_node;
+  return eval_type_trait (loc, ctx, type, CPTK_HAS_UNIQUE_OBJ_REPRESENTATIONS,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::reference_constructs_from_temporary.  */
 
 static tree
-eval_reference_constructs_from_temporary (location_t loc, tree type1,
-					  tree type2)
+eval_reference_constructs_from_temporary (location_t loc,
+					  const constexpr_ctx *ctx,
+					  tree type1, tree type2,
+					  bool *non_constant_p,
+					  tree fun)
 {
-  return eval_type_trait (loc, type1, type2,
-			  CPTK_REF_CONSTRUCTS_FROM_TEMPORARY);
+  return eval_type_trait (loc, ctx, type1, type2,
+			  CPTK_REF_CONSTRUCTS_FROM_TEMPORARY,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::reference_converts_from_temporary.  */
 
 static tree
-eval_reference_converts_from_temporary (location_t loc, tree type1, tree type2)
+eval_reference_converts_from_temporary (location_t loc,
+					const constexpr_ctx *ctx,
+					tree type1, tree type2,
+					bool *non_constant_p,
+					tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_REF_CONVERTS_FROM_TEMPORARY);
+  return eval_type_trait (loc, ctx, type1, type2,
+			  CPTK_REF_CONVERTS_FROM_TEMPORARY,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::rank.  */
@@ -4881,7 +5024,8 @@ eval_rank (tree type)
 /* Process std::meta::extent.  */
 
 static tree
-eval_extent (location_t loc, tree type, tree i)
+eval_extent (location_t loc, const constexpr_ctx *ctx, tree type, tree i,
+	     bool *non_constant_p, tree fun)
 {
   size_t rank = tree_to_uhwi (i);
   while (rank && TREE_CODE (type) == ARRAY_TYPE)
@@ -4892,7 +5036,8 @@ eval_extent (location_t loc, tree type, tree i)
   tree r;
   if (rank
       || TREE_CODE (type) != ARRAY_TYPE
-      || eval_is_bounded_array_type (loc, type) == boolean_false_node)
+      || eval_is_bounded_array_type (loc, ctx, type, non_constant_p,
+				     fun) != boolean_true_node)
     r = size_zero_node;
   else
     r = size_binop (PLUS_EXPR, TYPE_MAX_VALUE (TYPE_DOMAIN (type)),
@@ -4904,69 +5049,90 @@ eval_extent (location_t loc, tree type, tree i)
 /* Process std::meta::is_same_type.  */
 
 static tree
-eval_is_same_type (location_t loc, tree type1, tree type2)
+eval_is_same_type (location_t loc, const constexpr_ctx *ctx, tree type1,
+		   tree type2, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_SAME);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_SAME,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_base_of_type.  */
 
 static tree
-eval_is_base_of_type (location_t loc, tree type1, tree type2)
+eval_is_base_of_type (location_t loc, const constexpr_ctx *ctx,
+		      tree type1, tree type2, bool *non_constant_p, tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_BASE_OF);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_BASE_OF,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_virtual_base_of_type.  */
 
 static tree
-eval_is_virtual_base_of_type (location_t loc, tree type1, tree type2)
+eval_is_virtual_base_of_type (location_t loc, const constexpr_ctx *ctx,
+			      tree type1, tree type2, bool *non_constant_p,
+			      tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_VIRTUAL_BASE_OF);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_VIRTUAL_BASE_OF,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_convertible_type.  */
 
 static tree
-eval_is_convertible_type (location_t loc, tree type1, tree type2)
+eval_is_convertible_type (location_t loc, const constexpr_ctx *ctx,
+			  tree type1, tree type2, bool *non_constant_p,
+			  tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_CONVERTIBLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_CONVERTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_nothrow_convertible_type.  */
 
 static tree
-eval_is_nothrow_convertible_type (location_t loc, tree type1, tree type2)
+eval_is_nothrow_convertible_type (location_t loc, const constexpr_ctx *ctx,
+				  tree type1, tree type2, bool *non_constant_p,
+				  tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_NOTHROW_CONVERTIBLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_NOTHROW_CONVERTIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_layout_compatible_type.  */
 
 static tree
-eval_is_layout_compatible_type (location_t loc, tree type1, tree type2)
+eval_is_layout_compatible_type (location_t loc, const constexpr_ctx *ctx,
+				tree type1, tree type2, bool *non_constant_p,
+				tree fun)
 {
-  return eval_type_trait (loc, type1, type2, CPTK_IS_LAYOUT_COMPATIBLE);
+  return eval_type_trait (loc, ctx, type1, type2, CPTK_IS_LAYOUT_COMPATIBLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_pointer_interconvertible_base_of_type.  */
 
 static tree
 eval_is_pointer_interconvertible_base_of_type (location_t loc,
-					       tree type1, tree type2)
+					       const constexpr_ctx *ctx,
+					       tree type1, tree type2,
+					       bool *non_constant_p,
+					       tree fun)
 {
-  return eval_type_trait (loc, type1, type2,
-			  CPTK_IS_POINTER_INTERCONVERTIBLE_BASE_OF);
+  return eval_type_trait (loc, ctx, type1, type2,
+			  CPTK_IS_POINTER_INTERCONVERTIBLE_BASE_OF,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_invocable_type.  */
 
 static tree
-eval_is_invocable_type (location_t loc, tree type, tree tvec)
+eval_is_invocable_type (location_t loc, const constexpr_ctx *ctx,
+			tree type, tree tvec, bool *non_constant_p,
+			tree fun)
 {
-  tree r = finish_trait_expr (loc, CPTK_IS_INVOCABLE, type, tvec);
-  STRIP_ANY_LOCATION_WRAPPER (r);
-  return r;
+  return eval_type_trait (loc, ctx, type, tvec, CPTK_IS_INVOCABLE,
+			  non_constant_p, fun);
 }
 
 /* Helper for various eval_* type trait functions which can't use builtin
@@ -5039,11 +5205,12 @@ eval_is_invocable_r_type (location_t loc, const constexpr_ctx *ctx,
 /* Process std::meta::is_nothrow_invocable_type.  */
 
 static tree
-eval_is_nothrow_invocable_type (location_t loc, tree type, tree tvec)
+eval_is_nothrow_invocable_type (location_t loc, const constexpr_ctx *ctx,
+				tree type, tree tvec, bool *non_constant_p,
+				tree fun)
 {
-  tree r = finish_trait_expr (loc, CPTK_IS_NOTHROW_INVOCABLE, type, tvec);
-  STRIP_ANY_LOCATION_WRAPPER (r);
-  return r;
+  return eval_type_trait (loc, ctx, type, tvec, CPTK_IS_NOTHROW_INVOCABLE,
+			  non_constant_p, fun);
 }
 
 /* Process std::meta::is_{,nothrow_}swappable_with_type.  */
@@ -5234,7 +5401,7 @@ static tree
 eval_remove_volatile (location_t loc, tree type)
 {
   type = strip_typedefs (type);
-  int quals = cp_type_quals (type);
+  auto quals = cp_type_quals (type);
   quals &= ~TYPE_QUAL_VOLATILE;
   type = cp_build_qualified_type (type, quals);
   return get_reflection_raw (loc, type);
@@ -5264,7 +5431,7 @@ eval_add_const (location_t loc, tree type)
   type = strip_typedefs (type);
   if (!TYPE_REF_P (type) && !FUNC_OR_METHOD_TYPE_P (type))
     {
-      int quals = cp_type_quals (type);
+      auto quals = cp_type_quals (type);
       quals |= TYPE_QUAL_CONST;
       type = cp_build_qualified_type (type, quals);
     }
@@ -5282,7 +5449,7 @@ eval_add_volatile (location_t loc, tree type)
   type = strip_typedefs (type);
   if (!TYPE_REF_P (type) && !FUNC_OR_METHOD_TYPE_P (type))
     {
-      int quals = cp_type_quals (type);
+      auto quals = cp_type_quals (type);
       quals |= TYPE_QUAL_VOLATILE;
       type = cp_build_qualified_type (type, quals);
     }
@@ -5300,7 +5467,7 @@ eval_add_cv (location_t loc, tree type)
   type = strip_typedefs (type);
   if (!TYPE_REF_P (type) && !FUNC_OR_METHOD_TYPE_P (type))
     {
-      int quals = cp_type_quals (type);
+      auto quals = cp_type_quals (type);
       quals |= (TYPE_QUAL_CONST | TYPE_QUAL_VOLATILE);
       type = cp_build_qualified_type (type, quals);
     }
@@ -5391,7 +5558,7 @@ eval_make_signed (location_t loc, const constexpr_ctx *ctx, tree type,
     ret = c_common_signed_or_unsigned_type (unsignedp, type);
   if (ret != type)
     {
-      int quals = cp_type_quals (type);
+      auto quals = cp_type_quals (type);
       quals &= (TYPE_QUAL_CONST | TYPE_QUAL_VOLATILE);
       ret = cp_build_qualified_type (ret, quals);
     }
@@ -6087,8 +6254,10 @@ eval_data_member_spec (location_t loc, const constexpr_ctx *ctx,
 	return throw_exception (loc, ctx, "reflection does not have a type",
 				fun, non_constant_p, jump_target);
       tree type = type_of (r, kind);
-      if (eval_is_array_type (loc, type) == boolean_true_node
-	  || eval_is_object_type (loc, type) == boolean_false_node)
+      if ((eval_is_array_type (loc, ctx, type, non_constant_p, fun)
+	   == boolean_true_node)
+	  || (eval_is_object_type (loc, ctx, type, non_constant_p, fun)
+	      != boolean_true_node))
 	return throw_exception (loc, ctx, "reflection does not have "
 					  "non-array object type",
 				fun, non_constant_p, jump_target);
@@ -6902,6 +7071,10 @@ namespace_members_of (location_t loc, tree ns)
 	  return;
 	}
 
+      /* Skip GCC built-ins.  */
+      if (DECL_P (b) && DECL_IS_UNDECLARED_BUILTIN (b))
+	return;
+
       /* eval_is_accessible should be always true for namespace members,
 	 so don't bother calling it here.  */
       CONSTRUCTOR_APPEND_ELT (data->elts, NULL_TREE,
@@ -6960,16 +7133,17 @@ class_members_of (location_t loc, const constexpr_ctx *ctx, tree r,
     {
       tree m = field;
       if (TREE_CODE (field) == FIELD_DECL && DECL_ARTIFICIAL (field))
-	continue; /* Ignore bases and the vptr.  */
+	/* Ignore bases and the vptr.  */
+	continue;
+      else if (DECL_CLONED_FUNCTION_P (field))
+	/* Ignore cloned cdtors.  */
+	continue;
       else if (DECL_SELF_REFERENCE_P (field))
 	continue;
       else if (TREE_CODE (field) == TYPE_DECL)
 	m = TREE_TYPE (field);
       else if (TREE_CODE (field) == FUNCTION_DECL)
 	{
-	  /* Ignore cloned cdtors.  */
-	  if (DECL_CLONED_FUNCTION_P (field))
-	    continue;
 	  /* Ignore functions with unsatisfied constraints.  */
 	  if (!constraints_satisfied_p (field))
 	    continue;
@@ -7512,18 +7686,25 @@ extract_ref (location_t loc, const constexpr_ctx *ctx, tree T, tree r,
       if (adju != error_mark_node
 	  && adjt != error_mark_node
 	  && is_convertible (adju, adjt)
-	  && (!var_p || is_constant_expression (r)))
+	  && (!var_p
+	      || decl_constant_var_p (r)
+	      || cxx_constexpr_in_eval_lifetime_p (ctx, r)))
 	{
 	  if (TYPE_REF_P (TREE_TYPE (r)))
 	    {
-	      r = DECL_INITIAL (r);
-	      r = maybe_get_reference_referent (r);
-	      gcc_checking_assert (!TYPE_REF_P (TREE_TYPE (r)));
+	      bool nc = false, ovf = false;
+	      tree jt = NULL_TREE;
+	      r = cxx_eval_constant_expression (ctx, convert_from_reference (r),
+						vc_glvalue, &nc, &ovf, &jt);
+	      if (nc || jt)
+		goto throw_;
+	      gcc_checking_assert (!TYPE_P (r));
 	    }
-	  return build_address (r);
+	  return build_nop (T, build_address (r));
 	}
     }
 
+throw_:
   return throw_exception (loc, ctx, "value cannot be extracted", fun,
 			  non_constant_p, jump_target);
 }
@@ -7697,7 +7878,8 @@ eval_extract (location_t loc, const constexpr_ctx *ctx, tree type, tree r,
 	      reflect_kind kind, bool *non_constant_p, bool *overflow_p,
 	      tree *jump_target, tree fun)
 {
-  if (eval_is_reference_type (loc, type) == boolean_true_node)
+  if (eval_is_reference_type (loc, ctx, type, non_constant_p, fun)
+      == boolean_true_node)
     return extract_ref (loc, ctx, type, r, kind, non_constant_p, jump_target,
 			fun);
   type = cv_unqualified (type);
@@ -7887,6 +8069,14 @@ process_metafunction (const constexpr_ctx *ctx, tree fun, tree call,
   if (check_metafn_return_type (loc, METAFN_KIND_RET (minfo), rettype,
 				non_constant_p))
     return NULL_TREE;
+  /* Don't call get_vector_of_info_elts (for any metafn which returns
+     vector<info>) in a template.  */
+  if (processing_template_decl
+      && METAFN_KIND_RET (minfo) == METAFN_KIND_RET_VECTOR_INFO)
+    {
+      *non_constant_p = true;
+      return NULL_TREE;
+    }
   for (int argno = 0; argno < 3; ++argno)
     switch (METAFN_KIND_ARG (minfo, argno))
       {
@@ -7968,6 +8158,12 @@ process_metafunction (const constexpr_ctx *ctx, tree fun, tree call,
       default:
 	gcc_unreachable ();
       }
+
+  /* Some of the eval_ functions build new trees and in a template
+     that could produce template trees.  The subsequent evaluation
+     cannot process such trees, though, so force a non-template
+     context.  This assumes that the call is not instantiation-dependent.  */
+  processing_template_decl_sentinel ptds;
 
   switch (minfo->code)
     {
@@ -8271,85 +8467,90 @@ process_metafunction (const constexpr_ctx *ctx, tree fun, tree call,
     case METAFN_IS_FLOATING_POINT_TYPE:
       return eval_is_floating_point_type (h);
     case METAFN_IS_ARRAY_TYPE:
-      return eval_is_array_type (loc, h);
+      return eval_is_array_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_POINTER_TYPE:
-      return eval_is_pointer_type (loc, h);
+      return eval_is_pointer_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_LVALUE_REFERENCE_TYPE:
       return eval_is_lvalue_reference_type (h);
     case METAFN_IS_RVALUE_REFERENCE_TYPE:
       return eval_is_rvalue_reference_type (h);
     case METAFN_IS_MEMBER_OBJECT_POINTER_TYPE:
-      return eval_is_member_object_pointer_type (loc, h);
+      return eval_is_member_object_pointer_type (loc, ctx, h, non_constant_p,
+						 fun);
     case METAFN_IS_MEMBER_FUNCTION_POINTER_TYPE:
-      return eval_is_member_function_pointer_type (loc, h);
+      return eval_is_member_function_pointer_type (loc, ctx, h, non_constant_p,
+						   fun);
     case METAFN_IS_ENUM_TYPE:
-      return eval_is_enum_type (loc, h);
+      return eval_is_enum_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_UNION_TYPE:
-      return eval_is_union_type (loc, h);
+      return eval_is_union_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_CLASS_TYPE:
-      return eval_is_class_type (loc, h);
+      return eval_is_class_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_FUNCTION_TYPE:
       return eval_is_function_type (h);
     case METAFN_IS_REFLECTION_TYPE:
       return eval_is_reflection_type (h);
     case METAFN_IS_REFERENCE_TYPE:
-      return eval_is_reference_type (loc, h);
+      return eval_is_reference_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_ARITHMETIC_TYPE:
       return eval_is_arithmetic_type (h);
     case METAFN_IS_FUNDAMENTAL_TYPE:
       return eval_is_fundamental_type (h);
     case METAFN_IS_OBJECT_TYPE:
-      return eval_is_object_type (loc, h);
+      return eval_is_object_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_SCALAR_TYPE:
       return eval_is_scalar_type (h);
     case METAFN_IS_COMPOUND_TYPE:
       return eval_is_compound_type (h);
     case METAFN_IS_MEMBER_POINTER_TYPE:
-      return eval_is_member_pointer_type (loc, h);
+      return eval_is_member_pointer_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_CONST_TYPE:
       return eval_is_const_type (h);
     case METAFN_IS_VOLATILE_TYPE:
       return eval_is_volatile_type (h);
     case METAFN_IS_TRIVIALLY_COPYABLE_TYPE:
-      return eval_is_trivially_copyable_type (h);
+      return eval_is_trivially_copyable_type (loc, ctx, h, non_constant_p,
+					      fun);
     case METAFN_IS_STANDARD_LAYOUT_TYPE:
-      return eval_is_standard_layout_type (h);
+      return eval_is_standard_layout_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_EMPTY_TYPE:
-      return eval_is_empty_type (loc, h);
+      return eval_is_empty_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_POLYMORPHIC_TYPE:
-      return eval_is_polymorphic_type (loc, h);
+      return eval_is_polymorphic_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_ABSTRACT_TYPE:
-      return eval_is_abstract_type (h);
+      return eval_is_abstract_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_FINAL_TYPE:
-      return eval_is_final_type (loc, h);
+      return eval_is_final_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_AGGREGATE_TYPE:
-      return eval_is_aggregate_type (h);
+      return eval_is_aggregate_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_STRUCTURAL_TYPE:
-      return eval_is_structural_type (loc, h);
+      return eval_is_structural_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_SIGNED_TYPE:
       return eval_is_signed_type (h);
     case METAFN_IS_UNSIGNED_TYPE:
       return eval_is_unsigned_type (h);
     case METAFN_IS_BOUNDED_ARRAY_TYPE:
-      return eval_is_bounded_array_type (loc, h);
+      return eval_is_bounded_array_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_UNBOUNDED_ARRAY_TYPE:
       return eval_is_unbounded_array_type (h);
     case METAFN_IS_SCOPED_ENUM_TYPE:
       return eval_is_scoped_enum_type (h);
     case METAFN_IS_CONSTRUCTIBLE_TYPE:
-      return eval_is_constructible_type (h, hvec);
+      return eval_is_constructible_type (loc, ctx, h, hvec, non_constant_p,
+					 fun);
     case METAFN_IS_DEFAULT_CONSTRUCTIBLE_TYPE:
-      return eval_is_default_constructible_type (h);
+      return eval_is_default_constructible_type (loc, ctx, h, non_constant_p,
+						 fun);
     case METAFN_IS_COPY_CONSTRUCTIBLE_TYPE:
-      return eval_is_copy_constructible_type (h);
+      return eval_is_copy_constructible_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_MOVE_CONSTRUCTIBLE_TYPE:
-      return eval_is_move_constructible_type (h);
+      return eval_is_move_constructible_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_ASSIGNABLE_TYPE:
-      return eval_is_assignable_type (loc, h, h1);
+      return eval_is_assignable_type (loc, ctx, h, h1, non_constant_p, fun);
     case METAFN_IS_COPY_ASSIGNABLE_TYPE:
-      return eval_is_copy_assignable_type (h);
+      return eval_is_copy_assignable_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_MOVE_ASSIGNABLE_TYPE:
-      return eval_is_move_assignable_type (h);
+      return eval_is_move_assignable_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_SWAPPABLE_WITH_TYPE:
       return eval_is_swappable_with_type (loc, ctx, h, h1, call,
 					  non_constant_p, jump_target, fun,
@@ -8358,37 +8559,53 @@ process_metafunction (const constexpr_ctx *ctx, tree fun, tree call,
       return eval_is_swappable_type (loc, ctx, h, call, non_constant_p,
 				     jump_target, fun, "is_swappable");
     case METAFN_IS_DESTRUCTIBLE_TYPE:
-      return eval_is_destructible_type (loc, h);
+      return eval_is_destructible_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_CONSTRUCTIBLE_TYPE:
-      return eval_is_trivially_constructible_type (h, hvec);
+      return eval_is_trivially_constructible_type (loc, ctx, h, hvec,
+						   non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_DEFAULT_CONSTRUCTIBLE_TYPE:
-      return eval_is_trivially_default_constructible_type (h);
+      return eval_is_trivially_default_constructible_type (loc, ctx, h,
+							   non_constant_p,
+							   fun);
     case METAFN_IS_TRIVIALLY_COPY_CONSTRUCTIBLE_TYPE:
-      return eval_is_trivially_copy_constructible_type (h);
+      return eval_is_trivially_copy_constructible_type (loc, ctx, h,
+							non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_MOVE_CONSTRUCTIBLE_TYPE:
-      return eval_is_trivially_move_constructible_type (h);
+      return eval_is_trivially_move_constructible_type (loc, ctx, h,
+							non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_ASSIGNABLE_TYPE:
-      return eval_is_trivially_assignable_type (loc, h, h1);
+      return eval_is_trivially_assignable_type (loc, ctx, h, h1,
+						non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_COPY_ASSIGNABLE_TYPE:
-      return eval_is_trivially_copy_assignable_type (h);
+      return eval_is_trivially_copy_assignable_type (loc, ctx, h,
+						     non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_MOVE_ASSIGNABLE_TYPE:
-      return eval_is_trivially_move_assignable_type (h);
+      return eval_is_trivially_move_assignable_type (loc, ctx, h,
+						     non_constant_p, fun);
     case METAFN_IS_TRIVIALLY_DESTRUCTIBLE_TYPE:
-      return eval_is_trivially_destructible_type (loc, h);
+      return eval_is_trivially_destructible_type (loc, ctx, h, non_constant_p,
+						  fun);
     case METAFN_IS_NOTHROW_CONSTRUCTIBLE_TYPE:
-      return eval_is_nothrow_constructible_type (h, hvec);
+      return eval_is_nothrow_constructible_type (loc, ctx, h, hvec,
+						 non_constant_p, fun);
     case METAFN_IS_NOTHROW_DEFAULT_CONSTRUCTIBLE_TYPE:
-      return eval_is_nothrow_default_constructible_type (h);
+      return eval_is_nothrow_default_constructible_type (loc, ctx, h,
+							 non_constant_p, fun);
     case METAFN_IS_NOTHROW_COPY_CONSTRUCTIBLE_TYPE:
-      return eval_is_nothrow_copy_constructible_type (h);
+      return eval_is_nothrow_copy_constructible_type (loc, ctx, h,
+						      non_constant_p, fun);
     case METAFN_IS_NOTHROW_MOVE_CONSTRUCTIBLE_TYPE:
-      return eval_is_nothrow_move_constructible_type (h);
+      return eval_is_nothrow_move_constructible_type (loc, ctx, h,
+						      non_constant_p, fun);
     case METAFN_IS_NOTHROW_ASSIGNABLE_TYPE:
-      return eval_is_nothrow_assignable_type (loc, h, h1);
+      return eval_is_nothrow_assignable_type (loc, ctx, h, h1, non_constant_p,
+					      fun);
     case METAFN_IS_NOTHROW_COPY_ASSIGNABLE_TYPE:
-      return eval_is_nothrow_copy_assignable_type (h);
+      return eval_is_nothrow_copy_assignable_type (loc, ctx, h, non_constant_p,
+						   fun);
     case METAFN_IS_NOTHROW_MOVE_ASSIGNABLE_TYPE:
-      return eval_is_nothrow_move_assignable_type (h);
+      return eval_is_nothrow_move_assignable_type (loc, ctx, h, non_constant_p,
+						   fun);
     case METAFN_IS_NOTHROW_SWAPPABLE_WITH_TYPE:
       return eval_is_swappable_with_type (loc, ctx, h, h1, call,
 					  non_constant_p, jump_target, fun,
@@ -8397,43 +8614,53 @@ process_metafunction (const constexpr_ctx *ctx, tree fun, tree call,
       return eval_is_swappable_type (loc, ctx, h, call, non_constant_p,
 				     jump_target, fun, "is_nothrow_swappable");
     case METAFN_IS_NOTHROW_DESTRUCTIBLE_TYPE:
-      return eval_is_nothrow_destructible_type (loc, h);
+      return eval_is_nothrow_destructible_type (loc, ctx, h, non_constant_p,
+						fun);
     case METAFN_IS_IMPLICIT_LIFETIME_TYPE:
-      return eval_is_implicit_lifetime_type (h);
+      return eval_is_implicit_lifetime_type (loc, ctx, h, non_constant_p, fun);
     case METAFN_HAS_VIRTUAL_DESTRUCTOR:
-      return eval_has_virtual_destructor (h);
+      return eval_has_virtual_destructor (loc, ctx, h, non_constant_p, fun);
     case METAFN_HAS_UNIQUE_OBJECT_REPRESENTATIONS:
-      return eval_has_unique_object_representations (h);
+      return eval_has_unique_object_representations (loc, ctx, h,
+						     non_constant_p, fun);
     case METAFN_REFERENCE_CONSTRUCTS_FROM_TEMPORARY:
-      return eval_reference_constructs_from_temporary (loc, h, h1);
+      return eval_reference_constructs_from_temporary (loc, ctx, h, h1,
+						       non_constant_p, fun);
     case METAFN_REFERENCE_CONVERTS_FROM_TEMPORARY:
-      return eval_reference_converts_from_temporary (loc, h, h1);
+      return eval_reference_converts_from_temporary (loc, ctx, h, h1,
+						     non_constant_p, fun);
     case METAFN_RANK:
       return eval_rank (h);
     case METAFN_EXTENT:
-      return eval_extent (loc, h, expr);
+      return eval_extent (loc, ctx, h, expr, non_constant_p, fun);
     case METAFN_IS_SAME_TYPE:
-      return eval_is_same_type (loc, h, h1);
+      return eval_is_same_type (loc, ctx, h, h1, non_constant_p, fun);
     case METAFN_IS_BASE_OF_TYPE:
-      return eval_is_base_of_type (loc, h, h1);
+      return eval_is_base_of_type (loc, ctx, h, h1, non_constant_p, fun);
     case METAFN_IS_VIRTUAL_BASE_OF_TYPE:
-      return eval_is_virtual_base_of_type (loc, h, h1);
+      return eval_is_virtual_base_of_type (loc, ctx, h, h1, non_constant_p,
+					   fun);
     case METAFN_IS_CONVERTIBLE_TYPE:
-      return eval_is_convertible_type (loc, h, h1);
+      return eval_is_convertible_type (loc, ctx, h, h1, non_constant_p, fun);
     case METAFN_IS_NOTHROW_CONVERTIBLE_TYPE:
-      return eval_is_nothrow_convertible_type (loc, h, h1);
+      return eval_is_nothrow_convertible_type (loc, ctx, h, h1, non_constant_p,
+					       fun);
     case METAFN_IS_LAYOUT_COMPATIBLE_TYPE:
-      return eval_is_layout_compatible_type (loc, h, h1);
+      return eval_is_layout_compatible_type (loc, ctx, h, h1, non_constant_p,
+					     fun);
     case METAFN_IS_POINTER_INTERCONVERTIBLE_BASE_OF_TYPE:
-      return eval_is_pointer_interconvertible_base_of_type (loc, h, h1);
+      return eval_is_pointer_interconvertible_base_of_type (loc, ctx, h, h1,
+							    non_constant_p,
+							    fun);
     case METAFN_IS_INVOCABLE_TYPE:
-      return eval_is_invocable_type (loc, h, hvec);
+      return eval_is_invocable_type (loc, ctx, h, hvec, non_constant_p, fun);
     case METAFN_IS_INVOCABLE_R_TYPE:
       return eval_is_invocable_r_type (loc, ctx, h, h1, hvec, call,
 				       non_constant_p, jump_target, fun,
 				       "is_invocable_r");
     case METAFN_IS_NOTHROW_INVOCABLE_TYPE:
-      return eval_is_nothrow_invocable_type (loc, h, hvec);
+      return eval_is_nothrow_invocable_type (loc, ctx, h, hvec, non_constant_p,
+					     fun);
     case METAFN_IS_NOTHROW_INVOCABLE_R_TYPE:
       return eval_is_invocable_r_type (loc, ctx, h, h1, hvec, call,
 				       non_constant_p, jump_target, fun,
@@ -8599,169 +8826,143 @@ splice (tree refl)
       return error_mark_node;
     }
 
+  reflect_kind kind = REFLECT_EXPR_KIND (refl);
+  refl = REFLECT_EXPR_HANDLE (refl);
+
   /* We are bringing some entity from the unevaluated expressions world
      to possibly outside of that, mark it used.  */
-  if (!mark_used (REFLECT_EXPR_HANDLE (refl)))
+  if (!mark_used (refl))
     return error_mark_node;
 
-  refl = REFLECT_EXPR_HANDLE (refl);
   /* Function templates are wrapped in OVERLOAD from name lookup
      and a lot of places assume that.  Furthermore, if reflection comes
      from ^^fntmpl, it is wrapped with OVERLOAD already, only when
      it comes from e.g. members_of it is not.  */
   if (DECL_FUNCTION_TEMPLATE_P (refl))
     refl = ovl_make (refl, NULL_TREE);
+  /* Also add a BASELINK so that we handle &[:R:].  Since R was already
+     resolved (e.g. via members_of), we don't want to consider the enclosing
+     class for the access path.  */
+  if (is_overloaded_fn (refl))
+    refl = baselink_for_fns (refl, /*ignore_current_class_p=*/true);
+  /* For [:reflect_object(var):] wrap var into a VCE, so that it is an lvalue,
+     but not the var itself.  */
+  if (kind == REFLECT_OBJECT && DECL_P (refl))
+    refl = build1_loc (loc, VIEW_CONVERT_EXPR, TREE_TYPE (refl), refl);
 
   return refl;
 }
 
-/* A cache of the known boolean result of consteval_only_p_walker::walk
-   for class types.  */
+static bool consteval_only_p (tree, hash_set<tree> &);
 
-static GTY((cache)) type_tree_cache_map *consteval_only_class_cache;
+/* True if T is a consteval-only value as per [expr.const.const]/1:
+   A consteval-only value is either
+   -- a reflection value that is not the null reflection value or
+   -- a pointer or pointer-to-member that points to an immediate function
+      or to or past the end of an immediate object.
 
-struct consteval_only_p_walker
+   This function doesn't look for an immediate function; for that, see
+   find_immediate_fndecl.  */
+
+static bool
+consteval_only_value_p (tree t, hash_set<tree> &seen)
 {
-  /* The set of class types we've seen.  */
-  hash_set<tree> class_seen;
-  /* The number of class types we're recursively inside.  */
-  int class_depth = 0;
-  /* True if we've optimistically assumed an already-seen
-     consteval-unknown class type is not consteval.  */
-  bool optimistic_p = false;
+  STRIP_NOPS (t);
 
-  tristate walk (tree);
-};
+  if (REFLECT_EXPR_P (t) && !null_reflection_p (t))
+    return true;
 
-/* True if T is a consteval-only type as per [basic.types.general]/12,
-   or is a declaration with such a type, or a TREE_VEC thereof.  */
+  switch (TREE_CODE (t))
+    {
+    case ADDR_EXPR:
+    case POINTER_PLUS_EXPR:
+    case ARRAY_REF:
+    case COMPONENT_REF:
+      return consteval_only_p (TREE_OPERAND (t, 0), seen);
+    default:
+      break;
+    }
+  return false;
+}
 
-bool
-consteval_only_p (tree t)
+/* Return true if T is an immediate object as per [expr.const.const]/2:
+   An object is an immediate object if its complete object has
+   -- a constituent value that is consteval-only or
+   -- a constituent reference that refers to an immediate object or
+   immediate function.
+
+   Also return true for consteval-only values.  This doesn't check for
+   immediate functions.  */
+
+static bool
+consteval_only_p (tree t, hash_set<tree> &seen)
 {
-  if (!flag_reflection)
+  if (!flag_reflection || !t || t == error_mark_node)
     return false;
 
-  if (!TYPE_P (t))
-    t = TREE_TYPE (t);
+  /* Say that the wrapper itself is consteval-only so that
+     check_out_of_consteval_use_r returns the tree carrying the location.  */
+  STRIP_ANY_LOCATION_WRAPPER (t);
 
-  if (!t || t == error_mark_node)
+  /* Walking COMPONENT_REFs can walk back into a CONSTRUCTOR that's still
+     under construction and we'd loop.  */
+  if (seen.add (t))
     return false;
 
   if (TREE_CODE (t) == TREE_VEC)
     {
       for (tree arg : tree_vec_range (t))
-	if (arg && consteval_only_p (arg))
+	if (arg && consteval_only_p (arg, seen))
 	  return true;
       return false;
     }
 
-  /* For dependent types we can't be sure if this type is consteval-only.  */
-  if (dependent_type_p (t))
-    return false;
+  /* Pull out the initializer.  Don't call fold_non_dependent_expr and
+     similar here because that could prematurely instantiate things.  */
+  if (VAR_P (t))
+    t = DECL_INITIAL (t);
 
-  consteval_only_p_walker walker;
-  return walker.walk (t).is_true ();
+  if (t && TREE_CODE (t) == TARGET_EXPR)
+    t = TARGET_EXPR_INITIAL (t);
+
+  if (t && TREE_CODE (t) == CONSTRUCTOR)
+    {
+      for (constructor_elt &elt : CONSTRUCTOR_ELTS (t))
+	if (consteval_only_p (elt.value, seen))
+	  return true;
+      return false;
+    }
+
+  return t && consteval_only_value_p (t, seen);
 }
 
-/* Recursive workhorse of consteval_only_p.  Returns true if T is definitely
-   consteval-only, false if it's definitely not, and unknown if we saw an
-   incomplete type and therefore don't know.  */
+/* Wrapper for consteval_only_p that sets up a hash set.  */
 
-tristate
-consteval_only_p_walker::walk (tree t)
+bool
+consteval_only_p (tree t)
 {
-  if (t == error_mark_node)
-    return false;
-
-  t = TYPE_MAIN_VARIANT (t);
-
-  if (REFLECTION_TYPE_P (t))
-    return true;
-  else if (INDIRECT_TYPE_P (t))
-    return walk (TREE_TYPE (t));
-  else if (TREE_CODE (t) == ARRAY_TYPE)
-    return walk (TREE_TYPE (t));
-  else if (FUNC_OR_METHOD_TYPE_P (t))
-    {
-      tristate r = walk (TREE_TYPE (t));
-      for (tree parm = TYPE_ARG_TYPES (t);
-	   parm != NULL_TREE && parm != void_list_node;
-	   parm = TREE_CHAIN (parm))
-	{
-	  if (r.is_true ())
-	    break;
-	  r = r || walk (TREE_VALUE (parm));
-	}
-      return r;
-    }
-  else if (RECORD_OR_UNION_TYPE_P (t))
-    {
-      if (tree *slot = hash_map_safe_get (consteval_only_class_cache, t))
-	return *slot == boolean_true_node;
-
-      if (!COMPLETE_TYPE_P (t) && LAMBDA_TYPE_P (t))
-	/* Defer until we've definitely gone through prune_lambda_captures.  */
-	return tristate::unknown ();
-
-      if (class_seen.add (t))
-	{
-	  /* Optimistically assume this already seen consteval-unknown class is
-	     not consteval-only, for sake of mutually recursive classes.  */
-	  optimistic_p = true;
-	  return false;
-	}
-      ++class_depth;
-
-      tristate r = COMPLETE_TYPE_P (t) ? false : tristate::unknown ();
-      for (tree member = TYPE_FIELDS (t); member; member = DECL_CHAIN (member))
-	if (TREE_CODE (member) == FIELD_DECL)
-	  {
-	    r = r || walk (TREE_TYPE (member));
-	    if (r.is_true ())
-	      break;
-	  }
-
-      if (r.is_true ())
-	hash_map_safe_put<hm_ggc> (consteval_only_class_cache,
-				   t, boolean_true_node);
-      else if (r.is_false ()
-	       /* The optimistic assumption above is at odds with caching
-		  'false' results for a nested class type.  */
-	       && (class_depth == 1 || !optimistic_p))
-	hash_map_safe_put<hm_ggc> (consteval_only_class_cache,
-				   t, boolean_false_node);
-
-      --class_depth;
-      return r;
-    }
-  else if (TYPE_PTRMEM_P (t))
-    return (walk (TYPE_PTRMEM_CLASS_TYPE (t))
-	    || walk (TYPE_PTRMEM_POINTED_TO_TYPE (t)));
-  else
-    return false;
+  hash_set<tree> seen;
+  return consteval_only_p (t, seen);
 }
 
 /* A walker for check_out_of_consteval_use_r.  It cannot be a lambda, because
    we have to call this recursively.  */
 
 static tree
-check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
+check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset_)
 {
   tree t = *tp;
+  auto pset = static_cast<hash_set<tree> *>(pset_);
 
   /* No need to look into types or unevaluated operands.  */
   if (TYPE_P (t)
       || (unevaluated_p (TREE_CODE (t)) && !REFLECT_EXPR_P (t))
-      /* Don't walk INIT_EXPRs, because we'd emit bogus errors about
-	 member initializers.  */
-      || TREE_CODE (t) == INIT_EXPR
-      /* And don't recurse on DECL_EXPRs.  */
+      /* Don't recurse on DECL_EXPRs.  */
       || TREE_CODE (t) == DECL_EXPR
       /* Neither into USING_STMT.  */
       || TREE_CODE (t) == USING_STMT
       /* The operand of a splice is a constant-expression, thus
-	 manifestly constant-evaluated, so consteval-only types are permitted
+	 manifestly constant-evaluated, so consteval-only values are permitted
 	 here.  */
       || TREE_CODE (t) == SPLICE_EXPR
       /* Blocks can appear in the TREE_VEC operand of OpenMP
@@ -8786,19 +8987,33 @@ check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
 	return NULL_TREE;
       }
 
+  if (TREE_CODE (t) == EXPR_STMT)
+    {
+      if (tree r = cp_walk_tree (&EXPR_STMT_EXPR (t),
+				 check_out_of_consteval_use_r, pset, pset))
+	{
+	  /* If we can't give a precise location of the expression,
+	     use the location of the whole statement.  */
+	  if (cp_expr_location (r) == UNKNOWN_LOCATION)
+	    return t;
+	  return r;
+	}
+      *walk_subtrees = false;
+      return NULL_TREE;
+    }
+
   if (VAR_P (t) && DECL_HAS_VALUE_EXPR_P (t))
     {
       tree vexpr = DECL_VALUE_EXPR (t);
       if (tree ret = cp_walk_tree (&vexpr, check_out_of_consteval_use_r, pset,
-				   (hash_set<tree> *) pset))
+				   pset))
 	return ret;
     }
 
   if (TREE_CODE (t) == BIND_EXPR)
     {
       if (tree r = cp_walk_tree (&BIND_EXPR_BODY (t),
-				 check_out_of_consteval_use_r, pset,
-				 static_cast<hash_set<tree> *>(pset)))
+				 check_out_of_consteval_use_r, pset, pset))
 	return r;
       /* Don't walk BIND_EXPR_VARS.  */
       *walk_subtrees = false;
@@ -8810,8 +9025,7 @@ check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
       if (IF_STMT_CONSTEVAL_P (t))
 	{
 	  if (tree r = cp_walk_tree (&ELSE_CLAUSE (t),
-				     check_out_of_consteval_use_r, pset,
-				     static_cast<hash_set<tree> *>(pset)))
+				     check_out_of_consteval_use_r, pset, pset))
 	    return r;
 	  /* Don't walk the consteval branch.  */
 	  *walk_subtrees = false;
@@ -8820,12 +9034,10 @@ check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
       else if (IF_STMT_CONSTEXPR_P (t))
 	{
 	  if (tree r = cp_walk_tree (&THEN_CLAUSE (t),
-				     check_out_of_consteval_use_r, pset,
-				     static_cast<hash_set<tree> *>(pset)))
+				     check_out_of_consteval_use_r, pset, pset))
 	    return r;
 	  if (tree r = cp_walk_tree (&ELSE_CLAUSE (t),
-				     check_out_of_consteval_use_r, pset,
-				     static_cast<hash_set<tree> *>(pset)))
+				     check_out_of_consteval_use_r, pset, pset))
 	    return r;
 	  /* Don't walk the condition -- it's a manifestly constant-evaluated
 	     context.  */
@@ -8845,8 +9057,7 @@ check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
       return NULL_TREE;
     }
 
-  /* Now check the type to see if we are dealing with a consteval-only
-     expression.  */
+  /* If we don't find an immediate object, there's nothing to do.  */
   if (!consteval_only_p (t))
     return NULL_TREE;
 
@@ -8873,7 +9084,15 @@ check_out_of_consteval_use_r (tree *tp, int *walk_subtrees, void *pset)
 
 /* Detect if a consteval-only expression EXPR or a consteval-only
    variable EXPR not declared constexpr is used outside
-   a manifestly constant-evaluated context.  E.g.:
+   a manifestly constant-evaluated context.
+
+   [expr.const.const]/3: Every immediate object shall be
+   -- the object associated with a constexpr variable or a subobject thereof,
+   -- a template parameter object ([temp.param]) or a subject thereof, or
+   -- an object whose lifetime begins and ends during the evaluation of
+      a core constant expression.
+
+   E.g.:
 
      void f() {
        constexpr auto r = ^^int;  // OK
@@ -8904,20 +9123,9 @@ check_out_of_consteval_use (tree expr, bool complain/*=true*/)
   if (tree t = cp_walk_tree (&expr, check_out_of_consteval_use_r, &pset, &pset))
     {
       if (complain)
-	{
-	  if (VAR_P (t) && !DECL_DECLARED_CONSTEXPR_P (t))
-	    {
-	      auto_diagnostic_group d;
-	      error_at (cp_expr_loc_or_input_loc (t),
-			"consteval-only variable %qD not declared %<constexpr%> "
-			"used outside a constant-evaluated context", t);
-	      inform (DECL_SOURCE_LOCATION (t), "add %<constexpr%>");
-	    }
-	  else
-	    error_at (cp_expr_loc_or_input_loc (t),
-		      "consteval-only expressions are only allowed in "
-		      "a constant-evaluated context");
-	}
+	error_at (cp_expr_loc_or_loc (t, cp_expr_loc_or_input_loc (expr)),
+		  "consteval-only value outside an immediate function "
+		  "context");
       return true;
     }
 
@@ -8929,6 +9137,9 @@ check_out_of_consteval_use (tree expr, bool complain/*=true*/)
 bool
 compare_reflections (tree lhs, tree rhs)
 {
+  if (null_reflection_p (lhs) || null_reflection_p (rhs))
+    return null_reflection_p (lhs) == null_reflection_p (rhs);
+
   reflect_kind lkind;
   do
     {
@@ -9050,27 +9261,12 @@ valid_splice_for_member_access_p (const_tree t, bool decls_only_p/*=true*/)
 	  || TREE_CODE (t) == TREE_BINFO);
 }
 
-/* Check a function DECL for CWG 3115: Every function of consteval-only
-   type shall be an immediate function.  */
-
-void
-check_consteval_only_fn (tree decl)
-{
-  if (!DECL_IMMEDIATE_FUNCTION_P (decl)
-      && consteval_only_p (decl)
-      /* But if the function can be escalated, merrily we roll along.  */
-      && !immediate_escalating_function_p (decl))
-    error_at (DECL_SOURCE_LOCATION (decl),
-	      "function of consteval-only type must be declared %qs",
-	      "consteval");
-}
-
 /* Check if T is a valid result of splice-expression.  ADDRESS_P is true if
    we are taking the address of the splice.  MEMBER_ACCESS_P is true if this
    splice is used in foo.[: bar :] or foo->[: bar :] context.  TEMPLATE_P is
    true if the splice-expression was preceded by 'template'.  TARGS_P is true
    if there were template arguments.  COMPLAIN_P is true if any errors should
-   be emitted.  Returns true is no problems are found, false otherwise.  */
+   be emitted.  Returns true if no problems are found, false otherwise.  */
 
 bool
 check_splice_expr (location_t loc, location_t start_loc, tree t,
@@ -9179,6 +9375,33 @@ check_splice_expr (location_t loc, location_t start_loc, tree t,
       return false;
     }
 
+  /* [expr.prim.splice]/2 doesn't allow for the splice-expression of the form
+     splice-specifier to designate a template.  But we accept a function
+     template here as an extension, because it would be valid if the 'template'
+     keyword were present.  */
+  if (!template_p
+      && !targs_p
+      && TREE_CODE (t) == TEMPLATE_DECL
+      && !DECL_FUNCTION_TEMPLATE_P (t))
+    {
+      if (complain_p)
+	error_at (loc, "cannot use template %qE in a splice expression", t);
+      return false;
+    }
+
+  /* [expr.prim.splice]/4 allows only function and variable templates in the
+     template splice-specialization-specifier form.  */
+  if (targs_p
+      && TREE_CODE (t) == TEMPLATE_DECL
+      && !DECL_FUNCTION_TEMPLATE_P (t)
+      && !variable_template_p (t))
+    {
+      if (complain_p)
+	error_at (loc, "expected a reflection of a function or variable "
+		  "template");
+      return false;
+    }
+
   /* [expr.prim.splice]/2: "The expression is ill-formed if S [the construct
      designated by splice-specifier] is
      -- a local entity such that there is a lambda scope that intervenes
@@ -9217,6 +9440,16 @@ check_splice_expr (location_t loc, location_t start_loc, tree t,
       if (complain_p)
 	error_at (loc, "cannot use a data member specification in a "
 		  "splice expression");
+      return false;
+    }
+
+  /* Like with NSDMs, a bare [:X:] designating a direct base class
+     relationship is ill-formed.  */
+  if (!member_access_p && TREE_CODE (t) == TREE_BINFO)
+    {
+      if (complain_p)
+	error_at (loc, "cannot use a base class in a splice expression "
+		  "without an object");
       return false;
     }
 
@@ -9261,6 +9494,17 @@ check_splice_expr (location_t loc, location_t start_loc, tree t,
 			   || dependent_splice_p (t));
     }
 
+  if (complain_p
+      && !template_p
+      /* No 'template' but there were template arguments?  */
+      && (targs_p
+	  /* No 'template' but the splice-specifier designates a function
+	     template?  */
+	  || reflection_function_template_p (t))
+      && warning_enabled_at (loc, OPT_Wmissing_template_keyword))
+    /* Were 'template' present, this would be valid code, so keep going.  */
+    missing_template_diag (loc, diagnostics::kind::pedwarn);
+
   return true;
 }
 
@@ -9285,6 +9529,29 @@ dependent_splice_p (const_tree t)
   return (TREE_CODE (t) == SPLICE_EXPR
 	  || (TREE_CODE (t) == TEMPLATE_ID_EXPR
 	      && TREE_CODE (TREE_OPERAND (t, 0)) == SPLICE_EXPR));
+}
+
+/* Check if SPLICE is a valid namespace splice.  Returns true if no problems
+   are found, false otherwise.  */
+
+bool
+check_namespace_splice (cp_expr splice)
+{
+  if (TREE_CODE (splice) != NAMESPACE_DECL && !dependent_namespace_p (splice))
+    {
+      auto_diagnostic_group d;
+      error_at (splice.get_location (), "expected a reflection of "
+		"a namespace");
+      inform_tree_category (splice);
+      return false;
+    }
+  else if (splice == global_namespace)
+    {
+      error_at (splice.get_location (), "splice of the global namespace "
+		"can only appear in a nested-name-specifier");
+      return false;
+    }
+  return true;
 }
 
 /* Annotation index for mangling.  */

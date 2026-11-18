@@ -62,7 +62,7 @@ TargetVariable
 int riscv_xthead_subext
 
 TargetVariable
-int riscv_xventana_subext
+int riscv_xxt_subext
 
 TargetVariable
 int riscv_za_subext
@@ -92,6 +92,9 @@ TargetVariable
 int riscv_zt_subext
 
 TargetVariable
+int riscv_zvabd_subext
+
+TargetVariable
 int riscv_zvb_subext
 
 TargetVariable
@@ -105,9 +108,6 @@ int riscv_zvk_subext
 
 TargetVariable
 int riscv_zvl_subext
-
-TargetVariable
-int riscv_zvabd_subext
 
 Mask(RVE) Var(riscv_base_subext)
 
@@ -138,6 +138,10 @@ Mask(ZICBOP) Var(riscv_zi_subext)
 Mask(ZICBOZ) Var(riscv_zi_subext)
 
 Mask(ZICCAMOA) Var(riscv_zi_subext)
+
+Mask(ZICCAMOC) Var(riscv_zi_subext)
+
+Mask(ZICCID) Var(riscv_zi_subext)
 
 Mask(ZICCIF) Var(riscv_zi_subext)
 
@@ -355,7 +359,11 @@ Mask(SHVSATPA) Var(riscv_sh_subext)
 
 Mask(SMAIA) Var(riscv_sm_subext)
 
+Mask(SMCDELEG) Var(riscv_sm_subext)
+
 Mask(SMCNTRPMF) Var(riscv_sm_subext)
+
+Mask(SMCTR) Var(riscv_sm_subext)
 
 Mask(SMCSRIND) Var(riscv_sm_subext)
 
@@ -373,17 +381,23 @@ Mask(SMDBLTRP) Var(riscv_sm_subext)
 
 Mask(SSAIA) Var(riscv_ss_subext)
 
+Mask(SSCCFG) Var(riscv_ss_subext)
+
 Mask(SSCCPTR) Var(riscv_ss_subext)
 
 Mask(SSCOFPMF) Var(riscv_ss_subext)
 
 Mask(SSCOUNTERENW) Var(riscv_ss_subext)
 
+Mask(SSCTR) Var(riscv_ss_subext)
+
 Mask(SSCSRIND) Var(riscv_ss_subext)
 
 Mask(SSNPM) Var(riscv_ss_subext)
 
 Mask(SSPM) Var(riscv_ss_subext)
+
+Mask(SSQOSID) Var(riscv_ss_subext)
 
 Mask(SSSTATEEN) Var(riscv_ss_subext)
 
@@ -406,6 +420,8 @@ Mask(SVINVAL) Var(riscv_sv_subext)
 Mask(SVNAPOT) Var(riscv_sv_subext)
 
 Mask(SVPBMT) Var(riscv_sv_subext)
+
+Mask(SVRSW60T59B) Var(riscv_sv_subext)
 
 Mask(SVVPTC) Var(riscv_sv_subext)
 
@@ -461,8 +477,6 @@ Mask(XTHEADSYNC) Var(riscv_xthead_subext)
 
 Mask(XTHEADVECTOR) Var(riscv_xthead_subext)
 
-Mask(XVENTANACONDOPS) Var(riscv_xventana_subext)
-
 Mask(XMIPSCMOV) Var(riscv_xmips_subext)
 
 Mask(XMIPSCBOP) Var(riscv_xmips_subext)
@@ -482,4 +496,6 @@ Mask(XANDESVDOT) Var(riscv_xandes_subext)
 Mask(XSMTVDOT) Var(riscv_xsmt_subext)
 
 Mask(XSMTVDOTII) Var(riscv_xsmt_subext)
+
+Mask(XXTVARITH) Var(riscv_xxt_subext)
 

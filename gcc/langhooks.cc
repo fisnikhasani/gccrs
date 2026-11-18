@@ -35,7 +35,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "langhooks.h"
 #include "tree-diagnostic.h"
 #include "output.h"
-#include "timevar.h"
 #include "stor-layout.h"
 #include "cgraph.h"
 #include "debug.h"
@@ -262,7 +261,7 @@ lhd_tree_dump_dump_tree (void *di ATTRIBUTE_UNUSED, tree t ATTRIBUTE_UNUSED)
 /* lang_hooks.tree_dump.type_qual:  Determine type qualifiers in a
    language-specific way.  */
 
-int
+qualifier_set
 lhd_tree_dump_type_quals (const_tree t)
 {
   return TYPE_QUALS (t);

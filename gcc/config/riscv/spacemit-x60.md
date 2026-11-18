@@ -42,7 +42,7 @@
 (define_cpu_unit "spacemit_x60_fdivsqrt" "spacemit_x60")
 
 (define_reservation "spacemit_x60_lsu" "spacemit_x60_lsu0, spacemit_x60_lsu1")
-(define_reservation "spacemit_x60_alu" "spacemit_x60_alu0, spacemit_x60_alu1")
+(define_reservation "spacemit_x60_alu" "(spacemit_x60_alu0|spacemit_x60_alu1)")
 
 ;; ----------------------------------------------------
 ;; Memory (load/store)
@@ -116,7 +116,7 @@
   (and (eq_attr "tune" "spacemit_x60")
        (eq_attr "type" "unknown,const,arith,shift,slt,multi,auipc,nop,logical,\
 			move,bitmanip,min,max,minu,maxu,clz,ctz,rotate,\
-			condmove,crypto,mvpair,zicond,cpop"))
+			condmove,crypto,mvpair,zicond"))
   "spacemit_x60_alu")
 
 (define_insn_reservation "spacemit_x60_alu2c" 2
@@ -405,5 +405,6 @@
       vsha2cl,vsha2ch,vaesz,vclmulh,vghsh,vaeskf1,vaesdm,vgmul,
       vaesem,vaesdf,ghost,vsm3me,sf_vc_se,vsm3c,
       vaeskf2,vsha2ms,vector,wrvxrm,
-      vclmul,rdfrm,wrfrm,sf_vc,vsm4k,vsm4r"))
+      vclmul,rdfrm,wrfrm,sf_vc,vsm4k,vsm4r,
+      xt_vgmulxor,xt_vcrcfold,xt_vile,xt_vilo"))
   "nothing")

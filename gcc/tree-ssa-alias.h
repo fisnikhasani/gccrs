@@ -43,10 +43,6 @@ struct GTY(()) pt_solution
      reference.  */
   unsigned int ipa_escaped : 1;
 
-  /* Nonzero if the points-to set includes 'nothing', the points-to set
-     includes memory at address NULL.  */
-  unsigned int null : 1;
-
   /* Nonzero if the points-to set includes a readonly object like a
      STRING_CST that does not have an underlying declaration but will
      end up in the constant pool.  */
@@ -152,7 +148,7 @@ extern bool ref_can_have_store_data_races (tree);
 enum translate_flags
   { TR_TRANSLATE, TR_VALUEIZE_AND_DISAMBIGUATE, TR_DISAMBIGUATE };
 extern tree get_continuation_for_phi (gphi *, ao_ref *, bool,
-				      unsigned int &, bitmap *, bool,
+				      unsigned int &, bitmap *,
 				      void *(*)(ao_ref *, tree, void *,
 						translate_flags *),
 				      void *,
@@ -172,7 +168,7 @@ extern int walk_aliased_vdefs (ao_ref *, tree,
 			       unsigned int limit = 0);
 extern void dump_alias_info (FILE *);
 extern void debug_alias_info (void);
-extern void dump_points_to_solution (FILE *, struct pt_solution *);
+extern void dump_points_to_solution (FILE *, const pt_solution *);
 extern void debug (pt_solution &ref);
 extern void debug (pt_solution *ptr);
 extern void dump_points_to_info_for (FILE *, tree);
@@ -183,12 +179,12 @@ extern void dump_alias_stats (FILE *);
 /* In tree-ssa-structalias.cc  */
 extern unsigned int compute_may_aliases (void);
 extern bool pt_solution_empty_p (const pt_solution *);
-extern bool pt_solution_singleton_or_null_p (struct pt_solution *, unsigned *);
-extern bool pt_solution_includes_global (struct pt_solution *, bool);
-extern bool pt_solution_includes_auto (struct pt_solution *);
-extern bool pt_solution_includes (struct pt_solution *, const_tree);
-extern bool pt_solution_includes_const_pool (struct pt_solution *);
-extern bool pt_solutions_intersect (struct pt_solution *, struct pt_solution *);
+extern bool pt_solution_singleton_or_null_p (const pt_solution *, unsigned *);
+extern bool pt_solution_includes_global (const pt_solution *, bool);
+extern bool pt_solution_includes_auto (const pt_solution *);
+extern bool pt_solution_includes (const pt_solution *, const_tree);
+extern bool pt_solution_includes_const_pool (const pt_solution *);
+extern bool pt_solutions_intersect (const pt_solution *, const pt_solution *);
 extern void pt_solution_reset (struct pt_solution *);
 extern void pt_solution_set (struct pt_solution *, bitmap, bool);
 extern void pt_solution_set_var (struct pt_solution *, tree);

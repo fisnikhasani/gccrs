@@ -1398,7 +1398,7 @@ gfc_check_dummy_characteristics (gfc_symbol *s1, gfc_symbol *s2,
 				 int err_len)
 {
   if (s1 == NULL || s2 == NULL)
-    return s1 == s2 ? true : false;
+    return s1 == s2;
 
   if (s1->attr.proc == PROC_ST_FUNCTION || s2->attr.proc == PROC_ST_FUNCTION)
     {
@@ -2838,11 +2838,19 @@ compare_parameter (gfc_symbol *formal, gfc_expr *actual,
       && (actual->symtree->n.sym->attr.asynchronous
          || actual->symtree->n.sym->attr.volatile_)
       &&  (formal->attr.asynchronous || formal->attr.volatile_)
-      && actual->rank && formal->as
-      && !gfc_is_simply_contiguous (actual, true, false)
-      && ((formal->as->type != AS_ASSUMED_SHAPE
-	   && formal->as->type != AS_ASSUMED_RANK && !formal->attr.pointer)
-	  || formal->attr.contiguous))
+      && actual->rank
+      && ((formal->ts.type == BT_CLASS
+	   && formal->ts.u.derived->attr.is_class
+	   && CLASS_DATA (formal)->as
+	   && !(CLASS_DATA (formal)->as->type == AS_ASSUMED_SHAPE
+		|| CLASS_DATA (formal)->as->type == AS_ASSUMED_RANK)
+	   && !CLASS_DATA (formal)->attr.class_pointer)
+	  || (formal->as
+	      && !(formal->as->type == AS_ASSUMED_SHAPE
+		   || formal->as->type == AS_ASSUMED_RANK)
+	      && !formal->attr.pointer)
+	  || formal->attr.contiguous)
+      && !gfc_is_simply_contiguous (actual, true, false))
     {
       if (where)
 	gfc_error ("Dummy argument %qs has to be a pointer, assumed-shape or "
@@ -4269,21 +4277,24 @@ gfc_compare_actual_formal (gfc_actual_arglist **ap, gfc_formal_arglist *formal,
 	      {
 	      case INTENT_OUT:
 		{
-		  gfc_symbol *s = e->symtree->n.sym;
 		  gfc_expr_set_at (e, &e->where, VALUE_INTENT_OUT);
+		  if (f->sym->attr.allocatable)
+		    gfc_used_in_allocate_expr (e, &e->where, ALLOCATED_ARG);
 
-		  /* INTENT(OUT) allocates variables as far as we know.  */
-		  if (s->attr.allocatable)
-		    s->attr.allocated = 1;
 		}
 		break;
+
 	      case INTENT_IN:
 		gfc_value_used_expr (e, VALUE_INTENT_IN);
 		break;
+
 	      case INTENT_INOUT:
 	      case INTENT_UNKNOWN:
 		gfc_value_set_and_used (e, &e->where, VALUE_ARG,
 					VALUE_MAYBE_USED);
+
+		if (f->sym->attr.allocatable)
+		  gfc_used_in_allocate_expr (e, &e->where, ALLOCATED_ARG);
 		break;
 	      }
 	  }
@@ -4885,7 +4896,7 @@ find_symtree0 (gfc_symtree *root, gfc_symbol *sym)
 {
   gfc_symtree * st;
 
-  if (root->n.sym == sym)
+  if (root == NULL || root->n.sym == sym)
     return root;
 
   st = NULL;
@@ -4918,6 +4929,14 @@ gfc_find_sym_in_symtree (gfc_symbol *sym)
       st = find_symtree0 (ns->sym_root, sym);
       if (st)
 	return st;
+
+      /* Search user-defined operators.  */
+      if (ns->uop_root && sym->attr.function)
+	{
+	  st = find_symtree0 (ns->uop_root, sym);
+	  if (st)
+	    return st;
+	}
     }
   gfc_internal_error ("Unable to find symbol %qs", sym->name);
   /* Not reached.  */

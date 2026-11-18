@@ -1570,7 +1570,7 @@ expand_const_vector_single_step_npatterns (rtx target, rvv_builder *builder)
 	  rtx tmp2 = gen_reg_rtx (builder->mode ());
 	  rtx step
 	    = simplify_binary_operation (MINUS, builder->inner_mode (),
-					 builder->elt (v.npatterns()),
+					 builder->elt (builder->npatterns ()),
 					 builder->elt (0));
 	  expand_vec_series (tmp2, const0_rtx, step, tmp1);
 
@@ -1736,6 +1736,18 @@ expand_const_vector (rtx target, rtx src)
   if (const_vec_series_p (src, &base, &step))
     return expand_const_vec_series (target, base, step);
 
+  /* It's often better to just load a constant vector rather than
+     trying to synthesize is.  For now, do that when we know we're
+     dealing with a VLS mode.  */
+  machine_mode mode = GET_MODE (src);
+  if (GET_MODE_NUNITS (mode).is_constant ()
+      && !targetm.cannot_force_const_mem (mode, src))
+    {
+      src = force_const_mem (mode, src);
+      emit_move_insn (target, src);
+      return;
+    }
+
   /* Handle variable-length vector.  */
   unsigned int nelts_per_pattern = CONST_VECTOR_NELTS_PER_PATTERN (src);
   unsigned int npatterns = CONST_VECTOR_NPATTERNS (src);
@@ -1787,76 +1799,6 @@ get_frm_mode (rtx operand)
   gcc_unreachable ();
 }
 
-/* Expand vector extraction from a SUBREG source using slidedown.
-   Handles patterns like (subreg:V4DI (reg:V8DI) 32) by emitting
-   a slidedown instruction when extracting non-low parts.
-   Return true if the move was handled and emitted.  */
-static bool
-expand_vector_subreg_extract (rtx dest, rtx src)
-{
-  gcc_assert (SUBREG_P (src) && REG_P (SUBREG_REG (src)));
-
-  machine_mode mode = GET_MODE (dest);
-  machine_mode inner_mode = GET_MODE (SUBREG_REG (src));
-
-  gcc_assert (VECTOR_MODE_P (mode));
-  gcc_assert (VECTOR_MODE_P (inner_mode));
-
-  poly_uint16 outer_size = GET_MODE_BITSIZE (mode);
-  poly_uint16 inner_size = GET_MODE_BITSIZE (inner_mode);
-
-  poly_uint16 factor;
-  if (riscv_tuple_mode_p (inner_mode)
-      || !multiple_p (inner_size, outer_size, &factor)
-      || !factor.is_constant ()
-      || !pow2p_hwi (factor.to_constant ())
-      || factor.to_constant () <= 1)
-    return false;
-
-  enum vlmul_type lmul = get_vlmul (mode);
-  enum vlmul_type inner_lmul = get_vlmul (inner_mode);
-
-  /* These are just "renames".  */
-  if ((inner_lmul == LMUL_2 || inner_lmul == LMUL_4 || inner_lmul == LMUL_8)
-      && (lmul == LMUL_1 || lmul == LMUL_2 || lmul == LMUL_4))
-    return false;
-
-  poly_uint64 outer_nunits = GET_MODE_NUNITS (mode);
-  poly_uint64 subreg_byte = SUBREG_BYTE (src);
-
-  /* Calculate which part we're extracting (0 for low half, 1 for
-     higher half/quarter, etc.)  */
-  uint64_t part;
-  if (!exact_div (subreg_byte * BITS_PER_UNIT, outer_size).is_constant (&part))
-    return false;
-
-  rtx inner_reg = SUBREG_REG (src);
-  rtx tmp_out = gen_reg_rtx (mode);
-
-  if (part == 0)
-    {
-      /* Emit a direct reg-reg set here instead of emit_move_insn as that
-	 would trigger another legitimize_move.  */
-      emit_insn (gen_rtx_SET (tmp_out, gen_lowpart (mode, inner_reg)));
-    }
-  else
-    {
-      /* Extracting a non-zero part means we need to slide down.  */
-      poly_uint64 slide_count = part * outer_nunits;
-
-      rtx tmp = gen_reg_rtx (inner_mode);
-      rtx ops[] = {tmp, inner_reg, gen_int_mode (slide_count, Pmode)};
-      insn_code icode = code_for_pred_slide (UNSPEC_VSLIDEDOWN, inner_mode);
-      emit_vlmax_insn (icode, BINARY_OP, ops);
-
-      /* Extract the low part after sliding.  */
-      emit_insn (gen_rtx_SET (tmp_out, gen_lowpart (mode, tmp)));
-    }
-
-  emit_move_insn (dest, tmp_out);
-  return true;
-}
-
 /* Expand a pre-RA RVV data move from SRC to DEST.
    It expands move for RVV fractional vector modes.
    Return true if the move as already been emitted.  */
@@ -1869,24 +1811,6 @@ legitimize_move (rtx dest, rtx *srcp)
     {
       expand_const_vector (dest, src);
       return true;
-    }
-
-  /* The canonical way of extracting vectors from vectors is the vec_extract
-     optab with appropriate source and dest modes.  This is rather a VLS style
-     approach, though as we would need to enumerate all dest modes that are
-     half, quarter, etc. the size of the source.  It becomes particularly
-     cumbersome if we have a mix of VLA and VLS, i.e. extracting a smaller
-     VLS vector from a "VLA" vector.  Therefore we recognize patterns like
-       (set reg:V4DI
-	  (subreg:V4DI (reg:V8DI) offset))
-     and transform them into vector slidedowns.  */
-  if (SUBREG_P (src) && REG_P (SUBREG_REG (src))
-      && VECTOR_MODE_P (GET_MODE (SUBREG_REG (src)))
-      && VECTOR_MODE_P (mode)
-      && !lra_in_progress)
-    {
-      if (expand_vector_subreg_extract (dest, src))
-	return true;
     }
 
   if (riscv_vls_mode_p (mode))
@@ -2052,6 +1976,27 @@ get_vlmul (machine_mode mode)
 	}
     }
   return mode_vtype_infos.vlmul[mode];
+}
+
+bool
+is_frac_vlmul_p (machine_mode mode)
+{
+  switch (get_vlmul (mode))
+    {
+    case LMUL_1:
+    case LMUL_2:
+    case LMUL_4:
+    case LMUL_8:
+      return false;
+    case LMUL_F8:
+    case LMUL_F4:
+    case LMUL_F2:
+      return true;
+    default:
+      break;
+    }
+
+  gcc_unreachable ();
 }
 
 /* Return the VLMAX rtx of vector mode MODE.  */
@@ -3035,13 +2980,12 @@ autovectorize_vector_modes (vector_modes *modes, bool)
       ms.safe_splice (*modes);
       modes->truncate (0);
 
-      for (machine_mode mode : ms)
+      machine_mode mode;
+      if (parse_machine_mode (riscv_autovec_mode, &mode)
+	  && ms.contains (mode))
 	{
-	  if (!strcmp (GET_MODE_NAME (mode), riscv_autovec_mode))
-	    {
-	      modes->safe_push (mode);
-	      return 0;
-	    }
+	  modes->safe_push (mode);
+	  return 0;
 	}
 
       /* Nothing found, fall back to regular handling.  */
@@ -3617,6 +3561,42 @@ shuffle_consecutive_patterns (struct expand_vec_perm_d *d)
   return true;
 }
 
+/* Recognize the patterns of xt.vile and xt.vilo.  */
+
+static bool
+shuffle_interleave_even_odd_patterns (struct expand_vec_perm_d *d)
+{
+  machine_mode vmode = d->vmode;
+  poly_int64 vec_len = d->perm.length ();
+
+  if (!TARGET_XXTVARITH || d->one_vector_p || !known_ge (vec_len, 2))
+    return false;
+
+  bool even = false;
+  if (d->perm.series_p (0, 2, 0, 2)
+      && d->perm.series_p (1, 2, vec_len, 2))
+    even = true;
+  else if (d->perm.series_p (0, 2, 1, 2)
+	   && d->perm.series_p (1, 2, vec_len + 1, 2))
+    even = false;
+  else
+    return false;
+
+  /* Success!  */
+  if (d->testing_p)
+    return true;
+
+  rtx ops[] = {gen_lowpart (vmode, d->target), gen_lowpart (vmode, d->op0),
+	       gen_lowpart (vmode, d->op1)};
+
+  insn_code icode
+    = code_for_xt_pred (even ? UNSPEC_XT_VILE : UNSPEC_XT_VILO, vmode);
+
+  emit_vlmax_insn (icode, (unsigned) __NORMAL_OP_TA2 | BINARY_OP_P, ops);
+
+  return true;
+}
+
 /* Recognize the patterns that we can use compress operation to shuffle the
    vectors.  The perm selector of compress pattern is divided into 2 part:
    The first part is the random index number < NUNITS.
@@ -3808,6 +3788,13 @@ shuffle_slide_patterns (struct expand_vec_perm_d *d)
 	}
       else
 	return false;
+
+      /* Check if the beginning and end of the sequence corresponds
+	 to OP0 and OP1 respectively */
+      if (!(known_eq (d->perm[0], vlen - slideup_cnt)
+	  && known_eq (d->perm[vlen - 1], 2 * vlen - 1 - slideup_cnt)))
+	return false;
+
     }
 
   /* Check for a monotonic sequence with one or two pivots.  */
@@ -3820,8 +3807,14 @@ shuffle_slide_patterns (struct expand_vec_perm_d *d)
       if (i > 0 && i != pivot
 	  && maybe_ne (d->perm[i], d->perm[i - 1] + 1))
 	{
-	  /* A second pivot would indicate the vector length and is in OP0.  */
-	  if (known_ge (d->perm[i], vec_len) || pivot == -1 || len != 0)
+	  /* A second pivot would indicate the vector length and is in OP0.
+	     Also a second pivot would indicate three or more monotonic
+	     sequences in the given permutation which cannot be handled by
+	     slideup function. */
+	  if (known_ge (d->perm[i], vec_len)
+	      || pivot == -1
+	      || len != 0
+	      || need_slideup_p)
 	    return false;
 	  len = i;
 	}
@@ -3890,6 +3883,50 @@ shuffle_slide_patterns (struct expand_vec_perm_d *d)
       emit_nonvlmax_insn (icode, BINARY_OP_TUMA, ops,
 			  gen_int_mode (len, Pmode));
     }
+
+  return true;
+}
+
+/* Implement extraction of a D.OP_MODE sized part of D.OP0.  */
+static bool
+shuffle_extract_patterns (struct expand_vec_perm_d *d)
+{
+  poly_uint64 extract_size = GET_MODE_SIZE (d->vmode);
+  poly_uint64 full_size = GET_MODE_SIZE (d->op_mode);
+
+  if (maybe_ge (extract_size, full_size))
+    return false;
+
+  if (maybe_ne (GET_MODE_UNIT_SIZE (d->vmode),
+		GET_MODE_UNIT_SIZE (d->op_mode)))
+    return false;
+
+  if (!d->one_vector_p)
+    return false;
+
+  if (maybe_gt (GET_MODE_NUNITS (d->vmode) + d->perm[0],
+		GET_MODE_NUNITS (d->op_mode)))
+    return false;
+
+  /* We can only extract consecutive parts.  */
+  if (!d->perm.series_p (0, 1, d->perm[0], 1))
+    return false;
+
+  if (d->testing_p)
+    return true;
+
+  rtx tmp;
+  if (known_ne (d->perm[0], 0))
+    {
+      tmp = gen_reg_rtx (d->op_mode);
+      rtx ops[] = {tmp, d->op0, gen_int_mode (d->perm[0], Pmode)};
+      insn_code icode = code_for_pred_slide (UNSPEC_VSLIDEDOWN, d->op_mode);
+      emit_vlmax_insn (icode, BINARY_OP, ops);
+    }
+  else
+    tmp = d->op0;
+
+  emit_move_insn (d->target, gen_lowpart (d->vmode, tmp));
 
   return true;
 }
@@ -4013,12 +4050,11 @@ shuffle_even_odd_patterns (struct expand_vec_perm_d *d)
      vnsrl instructions, each extracting the even/odd elements of one source,
      and a vslideup instruction to merge them into one vector.
 
-     PR target/124996: VLS mode subregs larger than what
-     riscv_regmode_natural_size allows cause a memory roundtrip.  Therefore, for
-     now, we only do this when the mode size is no greater than the natural size
-     of the register.  Once this is fixed, the condition should be replaced by
-     the ELEN condition.  */
-  if (known_le (GET_MODE_SIZE (vmode), riscv_regmode_natural_size (vmode)))
+     We still need the natural-size check to avoid multi-register spills
+     for LMUL > 1 cases.  */
+  unsigned int max_elen = TARGET_VECTOR_ELEN_64 ? 64 : 32;
+  if (GET_MODE_BITSIZE (GET_MODE_INNER (vmode)) * 2 <= max_elen
+      && known_le (GET_MODE_SIZE (vmode), riscv_regmode_natural_size (vmode)))
     {
       unsigned int elen = GET_MODE_BITSIZE (GET_MODE_INNER (vmode));
       unsigned int elen2x = elen * 2;
@@ -4029,6 +4065,9 @@ shuffle_even_odd_patterns (struct expand_vec_perm_d *d)
       machine_mode vmode_half = get_vector_mode (smode, vlen / 2).require ();
       unsigned int shift_amt = even ? 0 : elen;
       insn_code icode = code_for_pred_narrow_scalar (LSHIFTRT, vmode_elen2x);
+      /* TODO: Although vec_concat is supported, it does not cover mixed
+	 VLA/VLS modes under -mrvv-vector-bits=zvl.  Keep these lowpart
+	 subreg workarounds for now.  */
       rtx tmp = gen_reg_rtx (vmode);
       rtx ops_shift1[]
 	= {gen_lowpart (vmode_half, d->target),
@@ -4453,6 +4492,8 @@ expand_vec_perm_const_1 (struct expand_vec_perm_d *d)
 	    return true;
 	  if (shuffle_consecutive_patterns (d))
 	    return true;
+	  if (shuffle_interleave_even_odd_patterns (d))
+	    return true;
 	  if (shuffle_slide_patterns (d))
 	    return true;
 	  if (shuffle_interleave_patterns (d))
@@ -4474,7 +4515,11 @@ expand_vec_perm_const_1 (struct expand_vec_perm_d *d)
 	  return false;
 	}
       else
-	return false;
+	{
+	  if (shuffle_extract_patterns (d))
+	    return true;
+	  return false;
+	}
     }
   return false;
 }
@@ -4488,6 +4533,14 @@ expand_vec_perm_const (machine_mode vmode, machine_mode op_mode, rtx target,
   /* RVV doesn't have Mask type pack/unpack instructions and we don't use
      mask to do the iteration loop control.  Just disable it directly.  */
   if (GET_MODE_CLASS (vmode) == MODE_VECTOR_BOOL)
+    return false;
+
+  if (riscv_tuple_mode_p (vmode)
+      || !riscv_vector_mode_p (op_mode)
+      || riscv_tuple_mode_p (op_mode))
+    return false;
+
+  if (!ordered_p (GET_MODE_SIZE (vmode), REGMODE_NATURAL_SIZE (op_mode)))
     return false;
 
   struct expand_vec_perm_d d;
@@ -4509,7 +4562,7 @@ expand_vec_perm_const (machine_mode vmode, machine_mode op_mode, rtx target,
     d.one_vector_p = false;
 
   d.perm.new_vector (sel.encoding (), d.one_vector_p ? 1 : 2,
-		     sel.nelts_per_input ());
+		     GET_MODE_NUNITS (op_mode));
   d.vmode = vmode;
   d.op_mode = op_mode;
   d.target = target;
@@ -4784,7 +4837,7 @@ get_gather_scatter_code (machine_mode vec_mode, machine_mode idx_mode,
 	  (UNSPEC_UNORDERED, vec_mode);
       else
 	return code_for_pred_indexed_store_same_eew
-	  (UNSPEC_UNORDERED, vec_mode);
+	  (UNSPEC_ORDERED, vec_mode);
     }
   else if (dst_eew_bitsize > src_eew_bitsize)
     {
@@ -4799,21 +4852,21 @@ get_gather_scatter_code (machine_mode vec_mode, machine_mode idx_mode,
 	  else
 	    return
 	      code_for_pred_indexed_store_x2_greater_eew
-		(UNSPEC_UNORDERED, vec_mode);
+		(UNSPEC_ORDERED, vec_mode);
 	case 4:
 	  if (is_load)
 	    return code_for_pred_indexed_load_x4_greater_eew
 		(UNSPEC_UNORDERED, vec_mode);
 	  else
 	    return code_for_pred_indexed_store_x4_greater_eew
-		(UNSPEC_UNORDERED, vec_mode);
+		(UNSPEC_ORDERED, vec_mode);
 	case 8:
 	  if (is_load)
 	    return code_for_pred_indexed_load_x8_greater_eew
 	      (UNSPEC_UNORDERED, vec_mode);
 	  else
 	    return code_for_pred_indexed_store_x8_greater_eew
-	      (UNSPEC_UNORDERED, vec_mode);
+	      (UNSPEC_ORDERED, vec_mode);
 	default:
 	  gcc_unreachable ();
 	}
@@ -4829,21 +4882,21 @@ get_gather_scatter_code (machine_mode vec_mode, machine_mode idx_mode,
 	      (UNSPEC_UNORDERED, vec_mode);
 	  else
 	    return code_for_pred_indexed_store_x2_smaller_eew
-	      (UNSPEC_UNORDERED, vec_mode);
+	      (UNSPEC_ORDERED, vec_mode);
 	case 4:
 	  if (is_load)
 	    return code_for_pred_indexed_load_x4_smaller_eew
 	      (UNSPEC_UNORDERED, vec_mode);
 	  else
 	    return code_for_pred_indexed_store_x4_smaller_eew
-	      (UNSPEC_UNORDERED, vec_mode);
+	      (UNSPEC_ORDERED, vec_mode);
 	case 8:
 	  if (is_load)
 	    return code_for_pred_indexed_load_x8_smaller_eew
 	      (UNSPEC_UNORDERED, vec_mode);
 	  else
 	    return code_for_pred_indexed_store_x8_smaller_eew
-	      (UNSPEC_UNORDERED, vec_mode);
+	      (UNSPEC_ORDERED, vec_mode);
 	default:
 	  gcc_unreachable ();
 	}
@@ -5027,8 +5080,8 @@ expand_mask_reduction (rtx *ops, rtx_code code)
   else
     gcc_unreachable ();
 
-  rtx els = gen_label_rtx ();
-  rtx end = gen_label_rtx ();
+  rtx_code_label *els = gen_label_rtx ();
+  rtx_code_label *end = gen_label_rtx ();
 
   riscv_expand_conditional_branch (els, eq_zero ? EQ : NE, tmp, const0_rtx);
   emit_move_insn (dest, const0_rtx);
@@ -5137,8 +5190,8 @@ expand_fold_extract_last (rtx *ops)
   rtx anchor = gen_reg_rtx (Pmode);
   rtx index = gen_reg_rtx (Pmode);
   rtx vect = ops[3];
-  rtx else_label = gen_label_rtx ();
-  rtx end_label = gen_label_rtx ();
+  rtx_code_label *else_label = gen_label_rtx ();
+  rtx_code_label *end_label = gen_label_rtx ();
   rtx len = ops[4];
   machine_mode mode = GET_MODE (vect);
   machine_mode mask_mode = GET_MODE (mask);
@@ -6471,6 +6524,100 @@ splat_to_scalar_move_p (rtx *ops)
 	 && satisfies_constraint_k01 (ops[4])
 	 && INTVAL (ops[7]) == NONVLMAX
 	 && known_ge (GET_MODE_SIZE (Pmode), GET_MODE_SIZE (GET_MODE (ops[3])));
+}
+
+static inline bool
+riscv_v_reg_group_overlap_p (unsigned int regno, machine_mode mode,
+			     unsigned int ref_regno, machine_mode ref_mode)
+{
+  gcc_checking_assert (V_REG_P (regno));
+  gcc_checking_assert (V_REG_P (ref_regno));
+
+  gcc_checking_assert (riscv_vector_mode_p (mode));
+  gcc_checking_assert (riscv_vector_mode_p (ref_mode));
+
+  unsigned int nregs = riscv_hard_regno_nregs (regno, mode);
+  unsigned int ref_nregs = riscv_hard_regno_nregs (ref_regno, ref_mode);
+
+  return !(regno + nregs <= ref_regno || ref_regno + ref_nregs <= regno);
+}
+
+/* Return true if REGNO in MODE can be used as source in a widening
+   instruction with destination WIDE_REGNO in WIDE_MODE.
+   This is true if either there is no overlap at all, or the overlap
+   is in the highest-numbered part of the destination group.  */
+
+bool
+riscv_v_widen_constraint_ok (unsigned int regno, machine_mode mode,
+			     unsigned int wide_regno, machine_mode wide_mode)
+{
+  /* If the referenced regno is no hard reg, allow everything.
+     Note: Even if we don't have a wide_regno yet, here we could also decline
+	   operands based on just regno alone.  If we decided to accept only
+	   overlapping registers in this constraint, we'd might need to e.g.
+	   decline a regno = v0 right away, even if we don't know wide_regno
+	   yet.  Otherwise, the return true here could get us into unsatisfiable
+	   situations in LRA later, as no wide reg can overlap v0 in the high
+	   part.  */
+  if (wide_regno == INVALID_REGNUM)
+    return true;
+
+  if (!V_REG_P (regno) || !V_REG_P (wide_regno) || regno == wide_regno)
+    return false;
+
+  gcc_checking_assert (riscv_vector_mode_p (mode)
+		       && riscv_vector_mode_p (wide_mode));
+
+  if (riscv_tuple_mode_p (mode) || wide_mode == mode)
+     return false;
+
+  unsigned int wide_nregs = riscv_hard_regno_nregs (wide_regno, wide_mode);
+  unsigned int nregs = riscv_hard_regno_nregs (regno, mode);
+
+  if (wide_nregs == nregs)
+    return nregs == 1;   /* Only allow dest LMUL <= 1.  */
+  else if (wide_nregs < nregs)
+    return false;
+
+  gcc_checking_assert ((wide_nregs % nregs) == 0);
+
+  /* No overlap.  */
+  if (!riscv_v_reg_group_overlap_p (regno, mode, wide_regno, wide_mode))
+    return true;
+
+  if (is_frac_vlmul_p (mode)) /* Source LMUL < 1.  */
+    return false;
+
+  unsigned int highest_num = wide_nregs - nregs;
+
+  return (regno % wide_nregs) == highest_num;
+}
+
+/* Return true if REGNO in MODE does not overlap the vector register group
+   starting at REF_REGNO in REF_MODE.
+
+   The widening reductions vwredsum[u].vs / vfwred[o|u]sum.vs read vs1 with
+   EEW = 2 * SEW (EMUL = 1) and vs2 with EEW = SEW (EMUL = LMUL).  Section 5.2
+   of the vector spec reserves any encoding in which one vector register
+   supplies source operands with two or more different EEWs, so vs1 must not
+   fall inside the vs2 group.  See
+   https://github.com/riscv/riscv-isa-manual/issues/2350.  */
+
+bool
+riscv_v_widen_non_overlap_constraint_ok (unsigned int regno, machine_mode mode,
+					 unsigned int ref_regno,
+					 machine_mode ref_mode)
+{
+  if (ref_regno == INVALID_REGNUM)
+    return true;
+
+  if (!V_REG_P (regno) || !V_REG_P (ref_regno))
+    return false;
+
+  if (riscv_tuple_mode_p (mode) || ref_mode == mode)
+    return false;
+
+  return !riscv_v_reg_group_overlap_p (regno, mode, ref_regno, ref_mode);
 }
 
 } // namespace riscv_vector
